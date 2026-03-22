@@ -33,11 +33,22 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
    - `devenv shell just` - enters dev shell
    - `just fmt` - formats nix and python files
 
-### Pending: Branch Protections
-Configure in GitHub repo settings:
-- [ ] Require PR before merge to main
-- [ ] Require CI checks to pass (format, lint, test)
-- [ ] No force push to main
+4. **CodeRabbit review** of initial commit (11 findings):
+   - `.coderabbit.yaml` added (assertive profile, agent-friendly)
+   - Fixed: `just ci` using `fmt` instead of `check` (bug)
+   - Fixed: dead `tomli` dependency in pyproject.toml
+   - Fixed: duplicate ruff-format pre-commit hook in devenv.nix
+   - Fixed: justfile lint/typecheck/test guards for missing dirs
+   - Fixed: AGENTS.md markdown lint (MD022, MD040, MD047)
+   - Issue #1: Extract CI setup into composite action (tech-debt)
+   - Issue #2: Guard install-fish for missing Phase 8 files (enhancement)
+   - Dismissed: parallel CI jobs (fine), ProviderConfig in sketch (not code)
+
+### Branch Protections ✅
+Configured via GitHub ruleset ("Protect main"):
+- [x] Require PR before merge to main
+- [ ] Require CI status checks to pass (add once check names are registered)
+- [x] No force push to main
 
 ---
 

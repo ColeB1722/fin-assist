@@ -20,21 +20,45 @@ check:
     treefmt --ci
 
 lint:
-    uv run ruff check src/
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check src/
+    else
+        echo "src/ not found, skipping lint"
+    fi
 
 lint-fix:
-    uv run ruff check --fix src/
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check --fix src/
+    else
+        echo "src/ not found, skipping lint-fix"
+    fi
 
 typecheck:
-    uv run ty check src/
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ty check src/
+    else
+        echo "src/ not found, skipping typecheck"
+    fi
 
 test *args:
-    uv run pytest tests/ {{ args }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d tests/ ]; then
+        uv run pytest tests/ {{ args }}
+    else
+        echo "tests/ not found, skipping tests"
+    fi
 
 test-cov:
     uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
 
-ci: fmt lint typecheck test
+ci: check lint typecheck test
 
 # ── Local dev ────────────────────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ Terminal inline assistant for fish shell. See `docs/architecture.md` for full ar
 This project follows an **SSD → TDD** implementation pattern:
 
 ### 1. Sketch-Driven Design (SSD)
+
 Before implementing any feature:
 1. Review `docs/architecture.md` for alignment
 2. Sketch the design in `handoff.md` under "Design Sketches"
@@ -14,6 +15,7 @@ Before implementing any feature:
 4. Identify edge cases and error handling
 
 ### 2. Test-Driven Development (TDD)
+
 After design is sketched:
 1. Write failing tests first
 2. Implement minimal code to pass
@@ -38,7 +40,7 @@ After design is sketched:
 
 ## Project Structure
 
-```
+```text
 src/fin_assist/       - Main package
 ├── app.py            - Textual App entry
 ├── ui/               - UI widgets
@@ -75,12 +77,14 @@ docs/                 - Architecture docs
 `handoff.md` is the rolling context document for multi-session development. It enables seamless handoffs between coding sessions (including AI agent sessions).
 
 ### Purpose
+
 - Capture what was accomplished in each session
 - Document design sketches before implementation
 - Track implementation progress across phases
 - Provide quick-start context for fresh sessions
 
 ### When to Update
+
 - **Start of session**: Read handoff.md first for context
 - **After design work**: Add sketches to "Design Sketches" section
 - **At checkpoints**: Update "What Was Accomplished"
@@ -88,6 +92,7 @@ docs/                 - Architecture docs
 - **Phase completion**: Update "Implementation Progress" table
 
 ### Fresh Session Quick-Start
+
 1. Read `handoff.md` - current state and next steps
 2. Read `docs/architecture.md` - full architecture
 3. Read `AGENTS.md` - dev patterns (this file)

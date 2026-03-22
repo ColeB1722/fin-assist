@@ -38,16 +38,6 @@
       types = [ "python" ];
       pass_filenames = false;
     };
-
-    ruff-format = {
-      enable = true;
-      name = "ruff-format";
-      description = "Format Python code with ruff";
-      entry = "${pkgs.ruff}/bin/ruff format --check src/";
-      language = "system";
-      types = [ "python" ];
-      pass_filenames = false;
-    };
   };
 
   enterShell = ''

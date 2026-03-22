@@ -713,7 +713,6 @@ requires-dist = [
     { name = "pytest-textual-snapshot", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
     { name = "textual", specifier = ">=3.0" },
-    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
 ]
 provides-extras = ["dev"]
 
