@@ -21,9 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v16
         with:
-          name: devenv
+          extra_nix_config: |
+            extra-substituters = https://devenv.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
+            accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
       - run: devenv test
@@ -34,9 +37,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v16
         with:
-          name: devenv
+          extra_nix_config: |
+            extra-substituters = https://devenv.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
+            accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
       - run: |
@@ -55,9 +61,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v16
         with:
-          name: devenv
+          extra_nix_config: |
+            extra-substituters = https://devenv.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=
+            accept-flake-config = true
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
       - run: |
