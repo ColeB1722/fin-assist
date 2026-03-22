@@ -1,0 +1,104 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+# Assertive profile — more feedback for coding agent consumption
+reviews:
+  profile: assertive
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  collapse_walkthrough: false
+  review_details: true
+  sequence_diagrams: true
+  enable_prompt_for_ai_agents: true
+  poem: false
+  in_progress_fortune: false
+
+  # Path-specific review instructions aligned with docs/architecture.md
+  path_instructions:
+    - path: "src/fin_assist/**"
+      instructions: |
+        Python package using pydantic-ai + Textual TUI. Review for:
+        - Pydantic model correctness and type safety
+        - Proper async patterns (Textual workers, pydantic-ai async)
+        - Clean separation between LLM, UI, context, and config layers
+        - Test coverage for core logic
+        - Alignment with decisions in docs/architecture.md
+    - path: "src/fin_assist/ui/**"
+      instructions: |
+        Textual TUI widgets and screens. Review for:
+        - Proper use of Textual reactive attributes and message passing
+        - Widget composability and reusability
+        - Accessibility considerations
+    - path: "src/fin_assist/llm/**"
+      instructions: |
+        pydantic-ai LLM integration layer. Review for:
+        - Correct pydantic-ai Agent/Tool patterns
+        - FallbackModel configuration
+        - Proper error handling for provider failures
+        - Token/cost awareness
+    - path: "src/fin_assist/context/**"
+      instructions: |
+        Context gathering (files, git, history, env). Review for:
+        - Security: no leaking of secrets or credentials into context
+        - Subprocess safety (shell injection prevention)
+        - Reasonable size limits on gathered context
+    - path: "fish/**"
+      instructions: |
+        Fish shell plugin (keybinding, helper functions). Review for:
+        - Fish 3.2+ compatibility
+        - Correct use of fish event system and keybindings
+        - Proper quoting and variable expansion
+    - path: "tests/**"
+      instructions: |
+        Test suite using pytest + pytest-asyncio. Review for:
+        - Meaningful assertions (not just smoke tests)
+        - Proper async test patterns
+        - Test isolation (no shared mutable state)
+        - Coverage of edge cases
+    - path: "docs/**"
+      instructions: |
+        Architecture and project documentation. Review for:
+        - Technical accuracy and consistency with implementation
+        - Alignment with decisions in docs/architecture.md
+    - path: ".github/**"
+      instructions: |
+        CI/CD configuration. Review for:
+        - Correct use of GitHub Actions best practices
+        - Nix caching efficiency (DeterminateSystems actions)
+        - Job dependencies and matrix strategy correctness
+
+  # Skip generated/lock files
+  path_filters:
+    - "!uv.lock"
+    - "!devenv.lock"
+    - "!**/.direnv/**"
+    - "!**/.devenv/**"
+    - "!.pre-commit-config.yaml"
+
+  # Tools relevant to Python + fish + Nix stack
+  tools:
+    ruff:
+      enabled: true
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    yamllint:
+      enabled: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+  learnings:
+    scope: local
