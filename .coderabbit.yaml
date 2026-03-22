@@ -4,6 +4,8 @@ language: en-US
 
 # Assertive profile — more feedback for coding agent consumption
 reviews:
+  auto_review:
+    enabled: false
   profile: assertive
   high_level_summary: true
   high_level_summary_in_walkthrough: true
