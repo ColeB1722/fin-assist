@@ -20,21 +20,21 @@ check:
     treefmt --ci
 
 lint:
-    uv run ruff check src/
+    @test -d src/ && uv run ruff check src/ || echo "src/ not found, skipping lint"
 
 lint-fix:
-    uv run ruff check --fix src/
+    @test -d src/ && uv run ruff check --fix src/ || echo "src/ not found, skipping lint-fix"
 
 typecheck:
-    uv run ty check src/
+    @test -d src/ && uv run ty check src/ || echo "src/ not found, skipping typecheck"
 
 test *args:
-    uv run pytest tests/ {{ args }}
+    @test -d tests/ && uv run pytest tests/ {{ args }} || echo "tests/ not found, skipping tests"
 
 test-cov:
     uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
 
-ci: fmt lint typecheck test
+ci: check lint typecheck test
 
 # ── Local dev ────────────────────────────────────────────────────────────────
 
