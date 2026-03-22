@@ -1,0 +1,58 @@
+[project]
+name = "fin-assist"
+version = "0.1.0"
+description = "Terminal inline assistant for fish shell"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=3.0",
+    "pydantic-ai>=0.1",
+    "pydantic-settings>=2.0",
+    "tomli>=2.0; python_version < '3.11'",
+    "httpx>=0.27",
+    "keyring>=25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "pytest-textual-snapshot>=1.0",
+    "ruff>=0.9",
+]
+
+[project.scripts]
+fin-assist = "fin_assist.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fin_assist"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "TCH",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["fin_assist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
