@@ -20,16 +20,40 @@ check:
     treefmt --ci
 
 lint:
-    @test -d src/ && uv run ruff check src/ || echo "src/ not found, skipping lint"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check src/
+    else
+        echo "src/ not found, skipping lint"
+    fi
 
 lint-fix:
-    @test -d src/ && uv run ruff check --fix src/ || echo "src/ not found, skipping lint-fix"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check --fix src/
+    else
+        echo "src/ not found, skipping lint-fix"
+    fi
 
 typecheck:
-    @test -d src/ && uv run ty check src/ || echo "src/ not found, skipping typecheck"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ty check src/
+    else
+        echo "src/ not found, skipping typecheck"
+    fi
 
 test *args:
-    @test -d tests/ && uv run pytest tests/ {{ args }} || echo "tests/ not found, skipping tests"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d tests/ ]; then
+        uv run pytest tests/ {{ args }}
+    else
+        echo "tests/ not found, skipping tests"
+    fi
 
 test-cov:
     uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
