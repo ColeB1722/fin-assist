@@ -47,8 +47,9 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 ### Branch Protections ✅
 Configured via GitHub ruleset ("Protect main"):
 - [x] Require PR before merge to main
-- [ ] Require CI status checks to pass (add once check names are registered)
+- [x] Require CI status checks to pass (Format check, Lint, Test)
 - [x] No force push to main
+- [x] Auto-delete branches on merge
 
 ---
 
