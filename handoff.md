@@ -4,7 +4,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
-## Current Session: Phase 1 - Repo Setup
+## Previous Session: Phase 1 - Repo Setup
 
 **Date**: 2026-03-22
 **Status**: ✅ Complete
@@ -25,7 +25,6 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
    - `treefmt.toml` - Unified formatting
    - `.gitignore`, `.envrc` - Standard ignores, direnv
    - `secretspec.toml` - Dev secrets management
-   - `.github/workflows/ci.yml` - CI pipeline
    - `AGENTS.md` - AI agent instructions (SSD → TDD pattern)
    - `handoff.md` - This file
 
@@ -47,8 +46,45 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 ### Branch Protections ✅
 Configured via GitHub ruleset ("Protect main"):
 - [x] Require PR before merge to main
-- [ ] Require CI status checks to pass (add once check names are registered)
 - [x] No force push to main
+- [x] Auto-delete branches on merge
+- [ ] Require CI status checks — deferred to Phase 2
+
+---
+
+## Current Session: CI & Docs Cleanup
+
+**Date**: 2026-03-24
+**Branch**: `chore/ci-and-docs-cleanup`
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **Removed CI workflow** (`.github/workflows/ci.yml`)
+   - The devenv-based CI was too heavy for Phase 1 (~4.5 min for format check alone)
+   - 5 of 6 historical runs failed (flake.nix requirement, devenv eval errors)
+   - No code to lint/test yet (`src/` and `tests/` don't exist)
+   - CI will be re-added in Phase 2 using targeted `nix shell` approach (design already in `architecture.md`)
+
+2. **Updated branch protections**
+   - Removed required status checks from "Protect main" ruleset
+   - Kept: require PR before merge, no force push, auto-delete branches
+   - Status checks will be re-enabled when CI is re-added in Phase 2
+
+3. **Updated `docs/architecture.md`**
+   - Marked CI section as Phase 2 target with rationale
+   - Updated branch protections to reflect deferred checks
+   - Moved "Add GitHub Actions CI workflow" from Phase 1 to Phase 2
+
+4. **Closed issue #1** (Revisit CI strategy) — resolved by deferral
+
+### Decision Record
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| CI in Phase 1 | Remove entirely | No code to check, devenv approach too heavy, 83% failure rate |
+| CI approach for Phase 2 | `nix shell` + DeterminateSystems actions | Already designed in architecture.md, ~1 min vs ~4.5 min |
+| Branch protections | Keep PR req, drop status checks | No CI to check against; re-add in Phase 2 |
 
 ---
 
@@ -59,6 +95,8 @@ Configured via GitHub ruleset ("Protect main"):
 2. Implement config loading (`config/schema.py`, `config/loader.py`)
 3. Set up pydantic settings
 4. Write initial tests
+5. Re-add CI workflow (using `nix shell` approach from `architecture.md`)
+6. Re-enable required status checks in branch protections
 
 ### Design Sketches
 
