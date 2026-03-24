@@ -666,6 +666,11 @@ OPENROUTER_API_KEY = { description = "OpenRouter API key for development", requi
 
 ### GitHub Actions CI
 
+> **Note**: CI workflow is deferred until Phase 2 when `src/` and `tests/` exist.
+> The devenv-based workflow from Phase 1 was removed due to excessive overhead
+> (~4.5 min builds for no-op checks). The design below is the target for Phase 2,
+> using targeted `nix shell` commands instead of full devenv evaluation.
+
 ```yaml
 # .github/workflows/ci.yml
 name: CI
@@ -724,7 +729,7 @@ jobs:
 Configure in GitHub repo settings:
 
 - **Require PR before merge**: Yes
-- **Require CI checks to pass**: format, lint, test
+- **Require CI checks to pass**: deferred until Phase 2 (format, lint, test)
 - **No force push to main**: Enabled
 - **Require linear history**: Optional (prefer squash merge)
 
@@ -739,11 +744,12 @@ Configure in GitHub repo settings:
 - [ ] Configure treefmt.toml for formatting
 - [ ] Add .gitignore, .envrc
 - [ ] Create secretspec.toml for dev secrets
-- [ ] Add GitHub Actions CI workflow
-- [ ] Enable branch protections
+- [ ] Enable branch protections (PR requirement + no force push)
 
 ### Phase 2: Core Package Structure
 - [ ] Create src/fin_assist/ package layout
+- [ ] Add GitHub Actions CI workflow (using nix shell approach)
+- [ ] Re-enable required status checks in branch protections
 - [ ] Implement config loading (config/schema.py, config/loader.py)
 - [ ] Set up pydantic settings
 
