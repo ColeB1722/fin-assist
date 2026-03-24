@@ -215,7 +215,6 @@ fin-assist/
 ├── justfile
 ├── devenv.nix
 ├── devenv.yaml
-├── flake.nix
 ├── treefmt.toml
 ├── .envrc
 ├── .gitignore
@@ -424,7 +423,7 @@ Command:
 | **Package Mgmt** | uv | Fast Python package installer |
 | **TUI Framework** | Textual | Terminal UI widgets |
 | **LLM Abstraction** | pydantic-ai | Multi-provider LLM interface |
-| **Config Parsing** | tomli | TOML parsing |
+| **Config Parsing** | tomllib (stdlib) | TOML parsing (Python 3.11+) |
 | **Data Validation** | pydantic | Settings/models |
 | **HTTP Client** | httpx | Async HTTP (via pydantic-ai) |
 | **Shell Integration** | fish 3.2+ | Primary target shell |
@@ -434,28 +433,32 @@ Command:
 
 ```nix
 { pkgs, ... }:
+
 {
   packages = with pkgs; [
-    # Nix
-    nixfmt
+    nixfmt-rfc-style
     nil
 
-    # Python
-    python312
+    python3
     uv
     ruff
 
-    # General
     just
     jq
     treefmt
-    secretspec
 
-    # Optional runtimes for testing
     fd
     fzf
     git
   ];
+
+  languages.python = {
+    enable = true;
+    uv = {
+      enable = true;
+      sync.enable = true;
+    };
+  };
 
   git-hooks.hooks = {
     treefmt.enable = true;
@@ -469,30 +472,20 @@ Command:
       types = [ "python" ];
       pass_filenames = false;
     };
-
-    ruff-format = {
-      enable = true;
-      name = "ruff-format";
-      description = "Format Python code with ruff";
-      entry = "${pkgs.ruff}/bin/ruff format --check src/";
-      language = "system";
-      types = [ "python" ];
-      pass_filenames = false;
-    };
-
-    ty-check = {
-      enable = true;
-      name = "ty-typecheck";
-      description = "Type-check with ty";
-      entry = "${pkgs.uv}/bin/uv run ty check src/";
-      language = "system";
-      types = [ "python" ];
-      pass_filenames = false;
-    };
   };
 
   enterShell = ''
     echo "fin-assist dev shell"
+    echo "Python: $(python --version)"
+    echo "uv:     $(uv --version)"
+    echo ""
+    echo "Commands:"
+    echo "  just          - List available tasks"
+    echo "  just dev      - Enter dev shell"
+    echo "  just fmt      - Format code"
+    echo "  just lint     - Run linter"
+    echo "  just test     - Run tests"
+    echo "  just run      - Run the TUI"
   '';
 }
 ```
@@ -504,23 +497,26 @@ Command:
 name = "fin-assist"
 version = "0.1.0"
 description = "Terminal inline assistant for fish shell"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "textual>=3.0",
     "pydantic-ai>=0.1",
     "pydantic-settings>=2.0",
-    "tomli>=2.0",
     "httpx>=0.27",
-    "keyring>=25.0",  # Optional OS keyring support
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    "pytest-textual-snapshot>=1.0",
     "ruff>=0.9",
-    "ty>=0.0.0a1",
 ]
+
+[project.scripts]
+fin-assist = "fin_assist.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -546,10 +542,14 @@ select = [
     "TCH", # flake8-type-checking
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["fin_assist"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+addopts = "-v --tb=short"
 ```
 
 ### justfile
@@ -560,13 +560,13 @@ asyncio_mode = "auto"
 set dotenv-load := false
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-default:
+_default:
     @just --list
 
 # ── Dev shell ────────────────────────────────────────────────────────────────
 
 dev:
-    nix develop
+    devenv shell
 
 # ── Code quality ─────────────────────────────────────────────────────────────
 
@@ -575,39 +575,73 @@ fmt:
 
 check:
     treefmt --ci
-    nix flake check
 
 lint:
-    uv run ruff check src/
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check src/
+    else
+        echo "src/ not found, skipping lint"
+    fi
+
+lint-fix:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ruff check --fix src/
+    else
+        echo "src/ not found, skipping lint-fix"
+    fi
 
 typecheck:
-    uv run ty check src/
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d src/ ]; then
+        uv run ty check src/
+    else
+        echo "src/ not found, skipping typecheck"
+    fi
 
-test:
-    uv run pytest tests/
+test *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -d tests/ ]; then
+        uv run pytest tests/ {{ args }}
+    else
+        echo "tests/ not found, skipping tests"
+    fi
 
-ci: lint typecheck test
+test-cov:
+    uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
+
+ci: check lint typecheck test
 
 # ── Local dev ────────────────────────────────────────────────────────────────
 
-# Run the TUI directly (for testing)
 run:
     uv run python -m fin_assist
 
-# Install fish plugin locally
 install-fish:
     mkdir -p ~/.config/fish/conf.d
     mkdir -p ~/.config/fish/functions
     cp fish/conf.d/fin_assist.fish ~/.config/fish/conf.d/
     cp fish/functions/fin_assist.fish ~/.config/fish/functions/
 
-# ── Secrets ──────────────────────────────────────────────────────────────────
+# Install package in dev mode
+install-dev:
+    uv pip install -e .
 
-secrets-check:
-    secretspec check
+# ── Build ────────────────────────────────────────────────────────────────────
 
-secrets-run *args:
-    secretspec run -- {{ args }}
+build:
+    uv build
+
+clean:
+    rm -rf dist/ build/ *.egg-info src/*.egg-info
+    find . -type d -name __pycache__ -exec rm -rf {} +
+    find . -type d -name .pytest_cache -exec rm -rf {} +
+    find . -type d -name .ruff_cache -exec rm -rf {} +
 ```
 
 ### .gitignore
@@ -631,6 +665,22 @@ dist/
 build/
 .venv/
 .eggs/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
 
 # Editor
 *.swp
@@ -638,18 +688,25 @@ build/
 *~
 .idea/
 .vscode/
+*.sublime-*
 
 # OS
 .DS_Store
 Thumbs.db
+ehthumbs.db
 
 # Secrets
+.env
 .env.local
+.env.*.local
 *.age
 !secrets/*.age
 
 # Local config overrides
 config.local.toml
+
+# Test snapshots (generated)
+tests/snapshots/*.svg
 ```
 
 ### secretspec.toml
@@ -738,7 +795,7 @@ Configure in GitHub repo settings:
 ## Implementation Phases
 
 ### Phase 1: Repo Setup
-- [ ] Initialize devenv (flake.nix, devenv.nix, devenv.yaml)
+- [ ] Initialize devenv (devenv.nix, devenv.yaml)
 - [ ] Create pyproject.toml with dependencies
 - [ ] Set up justfile with common tasks
 - [ ] Configure treefmt.toml for formatting
