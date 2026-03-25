@@ -13,16 +13,14 @@ concurrency:
 
 jobs:
   format:
-    name: Check formatting
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@v21
       - uses: DeterminateSystems/magic-nix-cache-action@v13
-      - run: nix fmt -- --ci
+      - run: nix shell nixpkgs#treefmt nixpkgs#nixfmt-rfc-style nixpkgs#ruff --command treefmt --ci
 
   lint:
-    name: Lint & typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +34,6 @@ jobs:
           "
 
   test:
-    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
