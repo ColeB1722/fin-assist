@@ -88,11 +88,12 @@ Configured via GitHub ruleset ("Protect main"):
 
 ---
 
-## Current Session: Phase 2 - Core Package Structure
+## Previous Session: Phase 2 - Core Package Structure
 
 **Date**: 2026-03-24
-**Branch**: `feat/phase2-core-package`
-**Status**: ✅ Complete
+**Branch**: `feature/phase-2`
+**PR**: #13
+**Status**: ✅ Complete (merged)
 
 ### What Was Accomplished
 
@@ -112,7 +113,7 @@ Configured via GitHub ruleset ("Protect main"):
    - `tests/test_package.py` - 3 smoke tests
 
 3. **Config schema implemented** (`config/schema.py`)
-   - `GeneralSettings` - default_provider, default_model, keybinding (env prefix: `FIN_`)
+   - `GeneralSettings` - default_provider, default_model (`claude-sonnet-4-6`), keybinding (env prefix: `FIN_`)
    - `ContextSettings` - max_file_size, max_history_items, include_git_status, include_env_vars
    - `ProviderConfig` - enabled, base_url, default_model (non-secret settings)
    - `Config` - aggregates all settings, providers dict
@@ -125,19 +126,20 @@ Configured via GitHub ruleset ("Protect main"):
 
 5. **CI workflow added** (`.github/workflows/ci.yml`)
    - Uses `nix shell` approach per architecture.md design
-   - Three jobs: format, lint (includes typecheck), test
-   - DeterminateSystems actions for nix-installer + magic-nix-cache
+   - Three jobs: format (treefmt), lint (ruff + ty), test (pytest)
+   - DeterminateSystems actions pinned: nix-installer@v21, magic-nix-cache@v13
+   - Job names match ruleset requirements (format, lint, test)
 
 6. **Branch protections updated**
-   - Re-enabled required status checks: format, lint, test
+   - Required status checks: format, lint, test
    - All checks must pass before merge to main
 
-7. **CodeRabbit config updated**
-   - Added `review_status: false` to disable status messages in PRs
-
-8. **justfile cleaned up**
-   - Removed guards from lint, lint-fix, typecheck, test tasks
-   - Tasks now fail fast if src/tests missing (appropriate for CI)
+7. **CodeRabbit review fixes applied**
+   - Pinned GitHub Action versions
+   - Added subprocess timeout in tests
+   - Fixed config module docstring
+   - Simplified loader conditionals
+   - Issues #10, #11, #12 created for deferred items
 
 ### Decision Record
 
@@ -147,6 +149,7 @@ Configured via GitHub ruleset ("Protect main"):
 | Empty config file | Return defaults | Same behavior as missing file |
 | ProviderConfig design | `dict[str, ProviderConfig]` | Extensible, matches TOML structure, non-secret settings only |
 | Test scope | Schema + loader + smoke test | Enough for CI without over-engineering |
+| CI format job | treefmt via nix shell | nix fmt requires flake.nix; treefmt uses same config as local dev |
 
 ### Test Summary
 
