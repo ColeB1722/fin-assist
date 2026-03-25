@@ -232,7 +232,7 @@ fin-assist/
 ```toml
 [general]
 default_provider = "anthropic"
-default_model = "claude-sonnet-4-5"
+default_model = "claude-sonnet-4-6"
 keybinding = "ctrl-enter"
 
 [context]
@@ -336,10 +336,10 @@ from pydantic_ai.models.fallback import FallbackModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 
 # Simple usage - provider auto-detected from model name
-agent = Agent('anthropic:claude-sonnet-4-5')
+agent = Agent('anthropic:claude-sonnet-4-6')
 
 # With fallback
-primary = AnthropicModel('claude-sonnet-4-5')
+primary = AnthropicModel('claude-sonnet-4-6')
 fallback = OpenAIChatModel('gpt-4o', provider=OpenRouterProvider())
 agent = Agent(FallbackModel(primary, fallback))
 
@@ -786,7 +786,7 @@ jobs:
 Configure in GitHub repo settings:
 
 - **Require PR before merge**: Yes
-- **Require CI checks to pass**: deferred until Phase 2 (format, lint, test)
+- **Require CI checks to pass**: Yes (format, lint, test)
 - **No force push to main**: Enabled
 - **Require linear history**: Optional (prefer squash merge)
 
@@ -795,20 +795,20 @@ Configure in GitHub repo settings:
 ## Implementation Phases
 
 ### Phase 1: Repo Setup
-- [ ] Initialize devenv (devenv.nix, devenv.yaml)
-- [ ] Create pyproject.toml with dependencies
-- [ ] Set up justfile with common tasks
-- [ ] Configure treefmt.toml for formatting
-- [ ] Add .gitignore, .envrc
-- [ ] Create secretspec.toml for dev secrets
-- [ ] Enable branch protections (PR requirement + no force push)
+- [x] Initialize devenv (devenv.nix, devenv.yaml)
+- [x] Create pyproject.toml with dependencies
+- [x] Set up justfile with common tasks
+- [x] Configure treefmt.toml for formatting
+- [x] Add .gitignore, .envrc
+- [x] Create secretspec.toml for dev secrets
+- [x] Enable branch protections (PR requirement + no force push)
 
 ### Phase 2: Core Package Structure
-- [ ] Create src/fin_assist/ package layout
-- [ ] Add GitHub Actions CI workflow (using nix shell approach)
-- [ ] Re-enable required status checks in branch protections
-- [ ] Implement config loading (config/schema.py, config/loader.py)
-- [ ] Set up pydantic settings
+- [x] Create src/fin_assist/ package layout
+- [x] Add GitHub Actions CI workflow (using nix shell approach)
+- [x] Re-enable required status checks in branch protections
+- [x] Implement config loading (config/schema.py, config/loader.py)
+- [x] Set up pydantic settings
 
 ### Phase 3: LLM Module
 - [ ] Integrate pydantic-ai for provider abstraction

@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "textual>=3.0",
-    "pydantic-ai>=0.1",
+    "pydantic-ai>=1.0",
     "pydantic-settings>=2.0",
     "httpx>=0.27",
     "keyring>=25.0",
@@ -18,6 +18,7 @@ dev = [
     "pytest-asyncio>=0.25",
     "pytest-textual-snapshot>=1.0",
     "ruff>=0.9",
+    "ty>=0.0.1a1",
 ]
 
 [project.scripts]
