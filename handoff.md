@@ -48,11 +48,11 @@ Configured via GitHub ruleset ("Protect main"):
 - [x] Require PR before merge to main
 - [x] No force push to main
 - [x] Auto-delete branches on merge
-- [ ] Require CI status checks — deferred to Phase 2
+- [x] Require CI status checks — enabled in Phase 2
 
 ---
 
-## Current Session: CI & Docs Cleanup
+## Previous Session: CI & Docs Cleanup
 
 **Date**: 2026-03-24
 **Branch**: `chore/ci-and-docs-cleanup`
@@ -88,53 +88,96 @@ Configured via GitHub ruleset ("Protect main"):
 
 ---
 
-## Next Session: Phase 2 - Core Package Structure
+## Current Session: Phase 2 - Core Package Structure
+
+**Date**: 2026-03-24
+**Branch**: `feat/phase2-core-package`
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **Dependencies aligned** (`pyproject.toml`)
+   - Updated `pydantic-ai` from `>=0.1` to `>=1.0` (latest is v1.71)
+   - Added `ty` type checker to dev dependencies (was missing)
+   - All other dependencies verified current
+
+2. **Package layout created** (TDD approach)
+   - `src/fin_assist/__init__.py` - package root
+   - `src/fin_assist/__main__.py` - entry point (stub)
+   - `src/fin_assist/config/__init__.py` - config module
+   - `src/fin_assist/config/schema.py` - pydantic-settings models
+   - `src/fin_assist/config/loader.py` - TOML config loader
+   - `tests/__init__.py` - test package
+   - `tests/test_config.py` - 19 tests for schema + loader
+   - `tests/test_package.py` - 3 smoke tests
+
+3. **Config schema implemented** (`config/schema.py`)
+   - `GeneralSettings` - default_provider, default_model, keybinding (env prefix: `FIN_`)
+   - `ContextSettings` - max_file_size, max_history_items, include_git_status, include_env_vars
+   - `ProviderConfig` - enabled, base_url, default_model (non-secret settings)
+   - `Config` - aggregates all settings, providers dict
+
+4. **Config loader implemented** (`config/loader.py`)
+   - Loads from `~/.config/fin/config.toml` by default
+   - Returns defaults if file missing or empty
+   - Parses TOML and validates via pydantic
+   - Handles partial configs (missing sections get defaults)
+
+5. **CI workflow added** (`.github/workflows/ci.yml`)
+   - Uses `nix shell` approach per architecture.md design
+   - Three jobs: format, lint (includes typecheck), test
+   - DeterminateSystems actions for nix-installer + magic-nix-cache
+
+6. **Branch protections updated**
+   - Re-enabled required status checks: format, lint, test
+   - All checks must pass before merge to main
+
+7. **CodeRabbit config updated**
+   - Added `review_status: false` to disable status messages in PRs
+
+8. **justfile cleaned up**
+   - Removed guards from lint, lint-fix, typecheck, test tasks
+   - Tasks now fail fast if src/tests missing (appropriate for CI)
+
+### Decision Record
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Loader return type | Return `Config` directly | Simpler; loader's job is to produce valid Config |
+| Empty config file | Return defaults | Same behavior as missing file |
+| ProviderConfig design | `dict[str, ProviderConfig]` | Extensible, matches TOML structure, non-secret settings only |
+| Test scope | Schema + loader + smoke test | Enough for CI without over-engineering |
+
+### Test Summary
+
+```
+tests/test_config.py: 19 tests (schema + loader)
+tests/test_package.py: 3 tests (smoke)
+Total: 22 tests, all passing
+```
+
+---
+
+## Next Session: Phase 3 - LLM Module
 
 ### Goals
-1. Create `src/fin_assist/` package layout
-2. Implement config loading (`config/schema.py`, `config/loader.py`)
-3. Set up pydantic settings
-4. Write initial tests
-5. Re-add CI workflow (using `nix shell` approach from `architecture.md`)
-6. Re-enable required status checks in branch protections
+1. Integrate pydantic-ai for provider abstraction
+2. Implement Agent wrapper (`llm/agent.py`)
+3. Create provider registry (`llm/providers.py`)
+4. Write system prompts (`llm/prompts.py`)
 
-### Design Sketches
+### Design Questions to Resolve
+- How to handle FallbackModel configuration (in code vs config)?
+- Should providers be discovered dynamically or hardcoded?
+- How to inject credentials from credential store into providers?
 
-#### Config Schema (initial)
-```python
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-class GeneralSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FIN_")
-    default_provider: str = "anthropic"
-    default_model: str = "claude-sonnet-4-5"
-    keybinding: str = "ctrl-enter"
-
-class ContextSettings(BaseSettings):
-    max_file_size: int = 100_000
-    max_history_items: int = 50
-    include_git_status: bool = True
-    include_env_vars: list[str] = ["PATH", "HOME", "USER", "PWD"]
-
-class Config(BaseSettings):
-    general: GeneralSettings = GeneralSettings()
-    context: ContextSettings = ContextSettings()
-    providers: dict[str, ProviderConfig] = {}
+### Directory to Create
 ```
-
-#### Directory to Create
-```
-src/
-└── fin_assist/
-    ├── __init__.py
-    ├── __main__.py
-    └── config/
-        ├── __init__.py
-        ├── schema.py
-        └── loader.py
-tests/
+src/fin_assist/llm/
 ├── __init__.py
-└── test_config.py
+├── agent.py
+├── providers.py
+└── prompts.py
 ```
 
 ---
@@ -144,7 +187,7 @@ tests/
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Repo Setup | ✅ Complete |
-| 2 | Core Package Structure | ⬜ Not Started |
+| 2 | Core Package Structure | ✅ Complete |
 | 3 | LLM Module (pydantic-ai) | ⬜ Not Started |
 | 4 | Credential Management | ⬜ Not Started |
 | 5 | Context Module | ⬜ Not Started |
