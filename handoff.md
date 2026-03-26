@@ -165,54 +165,64 @@ Total: 22 tests, all passing
 
 **Date**: 2026-03-25
 **Branch**: `feature/phase-3`
-**Status**: ✅ Complete
+**PR**: #17
+**Status**: ✅ Complete (merged)
 
 ### What Was Accomplished
 
 1. **LLM Module implemented** (`src/fin_assist/llm/`)
-   - `agent.py` - `LLMAgent` class with `CommandResult` model, FallbackModel support, backtick stripping
-   - `providers.py` - `ProviderRegistry` with hardcoded providers (anthropic, openai, openrouter, google)
-   - `prompts.py` - `SYSTEM_PROMPT` and `PromptBuilder` for context injection
+   - `agent.py` - `LLMAgent` class with `CommandResult` model, FallbackModel support
+   - `providers.py` - `ProviderRegistry` with providers (anthropic, openai, openrouter, google, custom)
+   - `prompts.py` - `SYSTEM_INSTRUCTIONS` (static, cached) + `build_user_message()` (dynamic)
 
 2. **Credentials Module implemented** (`src/fin_assist/credentials/`)
    - `store.py` - `CredentialStore` with env var → file → keyring fallback chain
-   - `keyring.py` - Optional keyring backend using `keyring` library
+   - Keyring functions consolidated into `store.py` (no separate module)
 
 3. **Design Decisions Made**
    - FallbackModel: Hybrid — hardcoded providers, config controls enablement/order
-   - Provider Discovery: Static list (anthropic, openai, openrouter, google) + config base_url override
+   - Provider Discovery: Static list + CUSTOM for self-hosted
    - Credential Injection: Explicit — pass API keys to provider constructors
    - Output Format: `CommandResult(command: str, warnings: list[str])`
-   - Post-gen Validation: Skipped (potential future enhancement)
-   - Credential Priority: env vars → file → keyring
+   - Prompt Structure: Static `SYSTEM_INSTRUCTIONS` (cached) + dynamic user message (context + prompt)
+   - pydantic-ai structured output via `output_type=CommandResult` handles normalization
 
 4. **Tests added**
-   - `tests/test_llm/test_agent.py` - 14 tests for CommandResult, LLMAgent
+   - `tests/test_llm/test_agent.py` - 11 tests for CommandResult, LLMAgent
    - `tests/test_llm/test_providers.py` - 12 tests for ProviderRegistry
-   - `tests/test_llm/test_prompts.py` - 6 tests for PromptBuilder
+   - `tests/test_llm/test_prompts.py` - 6 tests for prompts
    - `tests/test_credentials/test_store.py` - 10 tests for CredentialStore
 
-5. **Issue filed for future enhancement**
-   - #15: Live command verification — check if generated command's executables are installed
+5. **Issues filed**
+   - #14: LLM evals for shell command generation
+   - #15: MCP tool integration for extended capabilities
+   - #16: Validation and test cleanup for LLM/credentials modules
+
+### CodeRabbit Review Fixes (PR #17)
+- Fix CUSTOM provider unreachable bug (add to PROVIDERS dict)
+- Fix event loop blocking (use async `agent.run()` instead of `run_sync()`)
+- Security: restrict credential file permissions to 0600
+- Fix tests for async run() change and CUSTOM provider count
 
 ### Decision Record
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Ollama support | Removed | pydantic-ai v1 doesn't have `pydantic_ai.models.ollama` |
+| Ollama support | CUSTOM provider | Self-hosted via OpenAI-compatible API |
 | FallbackModel | Hybrid | Hardcoded providers, config controls order |
 | Credential priority | env → file → keyring | Supports `op run` / secretspec injection |
-| Output format | CommandResult model | Structured, extensible |
-| Post-gen validation | Skipped | Current models don't need it; can add later |
+| Output format | CommandResult model | Structured via pydantic-ai tool calling |
+| Prompt structure | Static instructions + dynamic user message | Enables prompt caching |
+| Keyring integration | Consolidated in store.py | Simple, no abstraction benefit from separate file |
 
 ### Test Summary
 
 ```
-tests/test_llm/test_agent.py: 14 tests
+tests/test_llm/test_agent.py: 11 tests
 tests/test_llm/test_providers.py: 12 tests
 tests/test_llm/test_prompts.py: 6 tests
 tests/test_credentials/test_store.py: 10 tests
-Total: 64 tests, all passing
+Total: 63 tests, all passing
 ```
 
 ---
@@ -267,5 +277,5 @@ To quickly get context in a new session:
 
 - Target fish 3.2+ for shell integration
 - Config stored in `~/.config/fin/config.toml`
-- Credentials stored in `~/.local/share/fin/credentials.json`
+- Credentials stored in `~/.local/share/fin/credentials.json` (0600 permissions)
 - System prompt optimized for fish shell syntax
