@@ -20,6 +20,7 @@ PROVIDERS: dict[str, ProviderKind] = {
     "openai": ProviderKind.OPENAI,
     "openrouter": ProviderKind.OPENROUTER,
     "google": ProviderKind.GOOGLE,
+    "custom": ProviderKind.CUSTOM,
 }
 
 

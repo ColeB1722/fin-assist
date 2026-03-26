@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ class CredentialStore:
     def _write_file(self, data: dict[str, dict]) -> None:
         self._credentials_file.parent.mkdir(parents=True, exist_ok=True)
         self._credentials_file.write_text(json.dumps(data, indent=2))
+        self._credentials_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     @staticmethod
     def _get_timestamp() -> str:

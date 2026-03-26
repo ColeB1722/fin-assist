@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -50,7 +50,7 @@ class TestLLMAgentGenerate:
         mock_agent = MagicMock()
         mock_result = MagicMock()
         mock_result.output = CommandResult(command="ls -la")
-        mock_agent.run_sync.return_value = mock_result
+        mock_agent.run = AsyncMock(return_value=mock_result)
 
         with patch.object(LLMAgent, "_get_agent", return_value=mock_agent):
             agent = LLMAgent(mock_config, mock_credentials)
@@ -74,13 +74,13 @@ class TestLLMAgentGenerate:
         mock_agent = MagicMock()
         mock_result = MagicMock()
         mock_result.output = CommandResult(command="grep test test.py")
-        mock_agent.run_sync.return_value = mock_result
+        mock_agent.run = AsyncMock(return_value=mock_result)
 
         with patch.object(LLMAgent, "_get_agent", return_value=mock_agent):
             agent = LLMAgent(mock_config, mock_credentials)
             await agent.generate("find in file", context=context)
 
-            mock_agent.run_sync.assert_called_once()
+            mock_agent.run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_generate_returns_warnings_from_result(self) -> None:
@@ -95,7 +95,7 @@ class TestLLMAgentGenerate:
         mock_agent = MagicMock()
         mock_result = MagicMock()
         mock_result.output = CommandResult(command="rm -rf /", warnings=["Destructive operation"])
-        mock_agent.run_sync.return_value = mock_result
+        mock_agent.run = AsyncMock(return_value=mock_result)
 
         with patch.object(LLMAgent, "_get_agent", return_value=mock_agent):
             agent = LLMAgent(mock_config, mock_credentials)

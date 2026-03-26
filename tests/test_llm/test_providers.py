@@ -23,7 +23,7 @@ class TestProviderRegistryListProviders:
 
     def test_returns_only_known_providers(self, registry: ProviderRegistry) -> None:
         providers = registry.list_providers()
-        assert len(providers) == 4
+        assert len(providers) == 5
 
 
 class TestProviderRegistryGetProviderKind:

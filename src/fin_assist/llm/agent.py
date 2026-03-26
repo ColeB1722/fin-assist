@@ -42,7 +42,7 @@ class LLMAgent:
     ) -> CommandResult:
         agent = await self._get_agent()
         user_message = build_user_message(prompt, context)
-        result = agent.run_sync(user_message)
+        result = await agent.run(user_message)
         return result.output
 
     async def _get_agent(self) -> CommandAgent:
