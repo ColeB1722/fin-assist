@@ -56,3 +56,11 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 addopts = "-v --tb=short"
+
+[tool.pyright]
+venvPath = ".devenv/state"
+venv = "venv"
+pythonVersion = "3.13"
+extraPaths = ["src"]
+reportMissingImports = true
+reportMissingTypeStubs = false
