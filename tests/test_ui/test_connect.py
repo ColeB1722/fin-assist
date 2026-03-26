@@ -79,7 +79,7 @@ class TestConnectDialogStep2:
         dialog._go_to_step(ConnectDialog.Step.ENTER_API_KEY)
         assert dialog._step == ConnectDialog.Step.CONFIRM
 
-    def test_anthroopic_requires_api_key(self) -> None:
+    def test_anthropic_requires_api_key(self) -> None:
         from fin_assist.ui.connect import ConnectDialog
 
         dialog = ConnectDialog(credential_store=CredentialStore())

@@ -63,7 +63,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 ### What Was Accomplished
 
 1. **UI Module created** (`src/fin_assist/ui/`)
-   - `__init__.py` - exports `ConnectDialog`, `PROVIDER_OPTIONS`, `PROVIDERS_REQUIRING_API_KEY`
+   - `__init__.py` - exports `ConnectDialog`, `PROVIDER_META`, `get_providers_requiring_api_key`
    - `connect.py` - `ConnectDialog` widget with multi-step flow
 
 2. **ConnectDialog implemented** (`ui/connect.py`)
@@ -85,7 +85,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ### Test Summary
 
-```
+```text
 tests/test_ui/test_connect.py: 19 tests
 Total: 82 tests, all passing (was 63 before Phase 4)
 ```
@@ -120,7 +120,7 @@ Total: 82 tests, all passing (was 63 before Phase 4)
 
 ### Test Summary
 
-```
+```text
 tests/test_llm/test_agent.py: 11 tests
 tests/test_llm/test_providers.py: 12 tests
 tests/test_llm/test_prompts.py: 6 tests

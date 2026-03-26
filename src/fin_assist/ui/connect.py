@@ -61,7 +61,11 @@ class ConnectDialog(Static):
 
     def _go_to_step(self, step: Step | int) -> None:
         step_num = int(step)
-        if step_num == self.Step.ENTER_API_KEY and not self._requires_api_key:
+        if (
+            step_num == self.Step.ENTER_API_KEY
+            and self._selected_provider is not None
+            and not self._requires_api_key
+        ):
             step_num = self.Step.CONFIRM
         self._step = self.Step(step_num)
         if self.is_mounted:

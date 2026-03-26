@@ -13,7 +13,7 @@ PROVIDERS: dict[str, str] = {pid: pid for pid in get_provider_ids() if pid != "o
 
 class ProviderRegistry:
     def list_providers(self) -> list[str]:
-        return get_provider_ids()
+        return list(PROVIDERS.keys())
 
     def get_kind(self, provider: str) -> str:
         if provider not in PROVIDERS:
