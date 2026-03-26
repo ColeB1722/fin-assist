@@ -88,11 +88,12 @@ Configured via GitHub ruleset ("Protect main"):
 
 ---
 
-## Current Session: Phase 2 - Core Package Structure
+## Previous Session: Phase 2 - Core Package Structure
 
 **Date**: 2026-03-24
-**Branch**: `feat/phase2-core-package`
-**Status**: ✅ Complete
+**Branch**: `feature/phase-2`
+**PR**: #13
+**Status**: ✅ Complete (merged)
 
 ### What Was Accomplished
 
@@ -112,7 +113,7 @@ Configured via GitHub ruleset ("Protect main"):
    - `tests/test_package.py` - 3 smoke tests
 
 3. **Config schema implemented** (`config/schema.py`)
-   - `GeneralSettings` - default_provider, default_model, keybinding (env prefix: `FIN_`)
+   - `GeneralSettings` - default_provider, default_model (`claude-sonnet-4-6`), keybinding (env prefix: `FIN_`)
    - `ContextSettings` - max_file_size, max_history_items, include_git_status, include_env_vars
    - `ProviderConfig` - enabled, base_url, default_model (non-secret settings)
    - `Config` - aggregates all settings, providers dict
@@ -125,19 +126,20 @@ Configured via GitHub ruleset ("Protect main"):
 
 5. **CI workflow added** (`.github/workflows/ci.yml`)
    - Uses `nix shell` approach per architecture.md design
-   - Three jobs: format, lint (includes typecheck), test
-   - DeterminateSystems actions for nix-installer + magic-nix-cache
+   - Three jobs: format (treefmt), lint (ruff + ty), test (pytest)
+   - DeterminateSystems actions pinned: nix-installer@v21, magic-nix-cache@v13
+   - Job names match ruleset requirements (format, lint, test)
 
 6. **Branch protections updated**
-   - Re-enabled required status checks: format, lint, test
+   - Required status checks: format, lint, test
    - All checks must pass before merge to main
 
-7. **CodeRabbit config updated**
-   - Added `review_status: false` to disable status messages in PRs
-
-8. **justfile cleaned up**
-   - Removed guards from lint, lint-fix, typecheck, test tasks
-   - Tasks now fail fast if src/tests missing (appropriate for CI)
+7. **CodeRabbit review fixes applied**
+   - Pinned GitHub Action versions
+   - Added subprocess timeout in tests
+   - Fixed config module docstring
+   - Simplified loader conditionals
+   - Issues #10, #11, #12 created for deferred items
 
 ### Decision Record
 
@@ -147,6 +149,7 @@ Configured via GitHub ruleset ("Protect main"):
 | Empty config file | Return defaults | Same behavior as missing file |
 | ProviderConfig design | `dict[str, ProviderConfig]` | Extensible, matches TOML structure, non-secret settings only |
 | Test scope | Schema + loader + smoke test | Enough for CI without over-engineering |
+| CI format job | treefmt via nix shell | nix fmt requires flake.nix; treefmt uses same config as local dev |
 
 ### Test Summary
 
@@ -158,27 +161,68 @@ Total: 22 tests, all passing
 
 ---
 
-## Next Session: Phase 3 - LLM Module
+## Previous Session: Phase 3 - LLM Module
+
+**Date**: 2026-03-25
+**Branch**: `feature/phase-3`
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **LLM Module implemented** (`src/fin_assist/llm/`)
+   - `agent.py` - `LLMAgent` class with `CommandResult` model, FallbackModel support, backtick stripping
+   - `providers.py` - `ProviderRegistry` with hardcoded providers (anthropic, openai, openrouter, google)
+   - `prompts.py` - `SYSTEM_PROMPT` and `PromptBuilder` for context injection
+
+2. **Credentials Module implemented** (`src/fin_assist/credentials/`)
+   - `store.py` - `CredentialStore` with env var → file → keyring fallback chain
+   - `keyring.py` - Optional keyring backend using `keyring` library
+
+3. **Design Decisions Made**
+   - FallbackModel: Hybrid — hardcoded providers, config controls enablement/order
+   - Provider Discovery: Static list (anthropic, openai, openrouter, google) + config base_url override
+   - Credential Injection: Explicit — pass API keys to provider constructors
+   - Output Format: `CommandResult(command: str, warnings: list[str])`
+   - Post-gen Validation: Skipped (potential future enhancement)
+   - Credential Priority: env vars → file → keyring
+
+4. **Tests added**
+   - `tests/test_llm/test_agent.py` - 14 tests for CommandResult, LLMAgent
+   - `tests/test_llm/test_providers.py` - 12 tests for ProviderRegistry
+   - `tests/test_llm/test_prompts.py` - 6 tests for PromptBuilder
+   - `tests/test_credentials/test_store.py` - 10 tests for CredentialStore
+
+5. **Issue filed for future enhancement**
+   - #15: Live command verification — check if generated command's executables are installed
+
+### Decision Record
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Ollama support | Removed | pydantic-ai v1 doesn't have `pydantic_ai.models.ollama` |
+| FallbackModel | Hybrid | Hardcoded providers, config controls order |
+| Credential priority | env → file → keyring | Supports `op run` / secretspec injection |
+| Output format | CommandResult model | Structured, extensible |
+| Post-gen validation | Skipped | Current models don't need it; can add later |
+
+### Test Summary
+
+```
+tests/test_llm/test_agent.py: 14 tests
+tests/test_llm/test_providers.py: 12 tests
+tests/test_llm/test_prompts.py: 6 tests
+tests/test_credentials/test_store.py: 10 tests
+Total: 64 tests, all passing
+```
+
+---
+
+## Next Session: Phase 4 - Credential UI + Context Module
 
 ### Goals
-1. Integrate pydantic-ai for provider abstraction
-2. Implement Agent wrapper (`llm/agent.py`)
-3. Create provider registry (`llm/providers.py`)
-4. Write system prompts (`llm/prompts.py`)
-
-### Design Questions to Resolve
-- How to handle FallbackModel configuration (in code vs config)?
-- Should providers be discovered dynamically or hardcoded?
-- How to inject credentials from credential store into providers?
-
-### Directory to Create
-```
-src/fin_assist/llm/
-├── __init__.py
-├── agent.py
-├── providers.py
-└── prompts.py
-```
+1. Add `/connect` command UI (Phase 4)
+2. Implement context gathering (Phase 5)
+3. Or: Add Ollama support if pydantic-ai adds it
 
 ---
 
@@ -188,8 +232,8 @@ src/fin_assist/llm/
 |-------|-------------|--------|
 | 1 | Repo Setup | ✅ Complete |
 | 2 | Core Package Structure | ✅ Complete |
-| 3 | LLM Module (pydantic-ai) | ⬜ Not Started |
-| 4 | Credential Management | ⬜ Not Started |
+| 3 | LLM Module (pydantic-ai) | ✅ Complete |
+| 4 | Credential Management (UI) | ⬜ Not Started |
 | 5 | Context Module | ⬜ Not Started |
 | 6 | UI Layer (Textual) | ⬜ Not Started |
 | 7 | Multiplexer Integration | ⬜ Not Started |
