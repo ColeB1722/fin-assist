@@ -4,159 +4,90 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
-## Previous Session: Phase 1 - Repo Setup
+## Previous Session: Architecture Consolidation & Design Direction
 
-**Date**: 2026-03-22
+**Date**: 2026-03-26
+**Status**: ✅ Complete
+**Branch**: `feature/phase-2` (merged)
+
+### What Was Accomplished
+
+1. **Design session completed** — explored expanding fin-assist scope:
+   - From: single-purpose shell command generator
+   - To: multi-agent personal platform with specialized agents
+
+2. **Key decisions made**:
+   - **Agents as code, not declarative** — custom classes, not YAML/TOML configs. The fun is in the implementation.
+   - **fasta2a (A2A protocol)** adopted as the server backend — inspired by OpenCode's server/client architecture
+   - **OpenCode pattern** — server starts on TUI launch, persists, multiple clients can connect
+   - **Local-only** — server binds to 127.0.0.1, no network exposure by default
+   - **Agent specialization** — DefaultAgent (shell), SDDAgent (design), TDDAgent (implementation)
+   - **Explicit routing** — `/shell`, `/sdd`, `/tdd` command prefixes
+
+3. **Architecture doc consolidated** (`docs/architecture.md`):
+   - Absorbed agent specialization design from `docs/agent-specialization.md`
+   - Added fasta2a/A2A server architecture section
+   - Updated component diagram to show server/client separation
+   - Rewrote implementation phases (Phases 1-4 complete, 5-13 redefined)
+   - Updated directory structure to include `agents/`, `server/` packages
+
+4. **`docs/agent-specialization.md`** removed — content absorbed into `docs/architecture.md`.
+
+### References
+
+| Resource | Link |
+|----------|------|
+| OpenCode Architecture | https://opencode.ai/docs/core-concepts/architecture |
+| OpenCode Server Docs | https://opencode.ai/docs/server/ |
+| fasta2a (GitHub) | https://github.com/pydantic/fasta2a |
+| A2A Protocol | https://a2aprotocol.ai/ |
+
+### Open Questions (Unresolved)
+
+| Question | Notes |
+|----------|-------|
+| Conversation storage | Deferred to Phase 9 — SQLite recommended for multi-turn query capability |
+| Server lifecycle | On-demand subprocess vs background daemon (`fin-assist serve`) — both supported |
+| File storage format | JSON per conversation — simple for Phase 1; migrate to SQLite if needed |
+| Agent-to-agent calls | SDD→TDD handoff — future consideration, not Phase 1 |
+| Web/GUI clients | Future consideration — A2A protocol enables any client |
+
+---
+
+## Previous Session: Phase 4 - Credential UI
+
+**Date**: 2026-03-26
+**Branch**: `feature/phase-4`
 **Status**: ✅ Complete
 
 ### What Was Accomplished
 
-1. **Architecture finalized** (`docs/architecture.md`)
-   - Python 3.12+ (3.13 in nixos-unstable)
-   - pydantic-ai for LLM abstraction
-   - tmux + zellij multiplexer support
-   - `/connect` command pattern for provider setup
-   - Separate credential storage from config
+1. **UI Module created** (`src/fin_assist/ui/`)
+   - `__init__.py` - exports `ConnectDialog`, `PROVIDER_OPTIONS`, `PROVIDERS_REQUIRING_API_KEY`
+   - `connect.py` - `ConnectDialog` widget with multi-step flow
 
-2. **Repo initialized** with full dev environment (devenv, no flakes):
-   - `devenv.nix`, `devenv.yaml` - Nix dev shell
-   - `pyproject.toml` - Python package with dependencies
-   - `justfile` - Task runner with common commands
-   - `treefmt.toml` - Unified formatting
-   - `.gitignore`, `.envrc` - Standard ignores, direnv
-   - `secretspec.toml` - Dev secrets management
-   - `AGENTS.md` - AI agent instructions (SSD → TDD pattern)
-   - `handoff.md` - This file
+2. **ConnectDialog implemented** (`ui/connect.py`)
+   - Step 1: Provider selection via button grid (anthropic, openai, openrouter, google, ollama, custom)
+   - Step 2: API key input (skipped for ollama/custom - no key needed)
+   - Step 3: Confirmation with success/error message
+   - Optional keyring storage checkbox
+   - Cancel dismisses without saving
 
-3. **Verified working**:
-   - `devenv shell just` - enters dev shell
-   - `just fmt` - formats nix and python files
+3. **Design Decisions Made**
+   - Provider selection via Buttons in Vertical container (not RadioSet - simpler)
+   - Skip API key step for ollama/custom (self-hosted, no API key)
+   - `is_mounted` guard in `_update_ui()` for testability
+   - Helper functions `keyring_available()` and `set_keyring_key()` at module level
 
-4. **CodeRabbit review** of initial commit (11 findings):
-   - `.coderabbit.yaml` added (assertive profile, agent-friendly)
-   - Fixed: `just ci` using `fmt` instead of `check` (bug)
-   - Fixed: dead `tomli` dependency in pyproject.toml
-   - Fixed: duplicate ruff-format pre-commit hook in devenv.nix
-   - Fixed: justfile lint/typecheck/test guards for missing dirs
-   - Fixed: AGENTS.md markdown lint (MD022, MD040, MD047)
-   - Issue #1: Extract CI setup into composite action (tech-debt)
-   - Issue #2: Guard install-fish for missing Phase 8 files (enhancement)
-   - Dismissed: parallel CI jobs (fine), ProviderConfig in sketch (not code)
-
-### Branch Protections ✅
-Configured via GitHub ruleset ("Protect main"):
-- [x] Require PR before merge to main
-- [x] No force push to main
-- [x] Auto-delete branches on merge
-- [x] Require CI status checks — enabled in Phase 2
-
----
-
-## Previous Session: CI & Docs Cleanup
-
-**Date**: 2026-03-24
-**Branch**: `chore/ci-and-docs-cleanup`
-**Status**: ✅ Complete
-
-### What Was Accomplished
-
-1. **Removed CI workflow** (`.github/workflows/ci.yml`)
-   - The devenv-based CI was too heavy for Phase 1 (~4.5 min for format check alone)
-   - 5 of 6 historical runs failed (flake.nix requirement, devenv eval errors)
-   - No code to lint/test yet (`src/` and `tests/` don't exist)
-   - CI will be re-added in Phase 2 using targeted `nix shell` approach (design already in `architecture.md`)
-
-2. **Updated branch protections**
-   - Removed required status checks from "Protect main" ruleset
-   - Kept: require PR before merge, no force push, auto-delete branches
-   - Status checks will be re-enabled when CI is re-added in Phase 2
-
-3. **Updated `docs/architecture.md`**
-   - Marked CI section as Phase 2 target with rationale
-   - Updated branch protections to reflect deferred checks
-   - Moved "Add GitHub Actions CI workflow" from Phase 1 to Phase 2
-
-4. **Closed issue #1** (Revisit CI strategy) — resolved by deferral
-
-### Decision Record
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| CI in Phase 1 | Remove entirely | No code to check, devenv approach too heavy, 83% failure rate |
-| CI approach for Phase 2 | `nix shell` + DeterminateSystems actions | Already designed in architecture.md, ~1 min vs ~4.5 min |
-| Branch protections | Keep PR req, drop status checks | No CI to check against; re-add in Phase 2 |
-
----
-
-## Previous Session: Phase 2 - Core Package Structure
-
-**Date**: 2026-03-24
-**Branch**: `feature/phase-2`
-**PR**: #13
-**Status**: ✅ Complete (merged)
-
-### What Was Accomplished
-
-1. **Dependencies aligned** (`pyproject.toml`)
-   - Updated `pydantic-ai` from `>=0.1` to `>=1.0` (latest is v1.71)
-   - Added `ty` type checker to dev dependencies (was missing)
-   - All other dependencies verified current
-
-2. **Package layout created** (TDD approach)
-   - `src/fin_assist/__init__.py` - package root
-   - `src/fin_assist/__main__.py` - entry point (stub)
-   - `src/fin_assist/config/__init__.py` - config module
-   - `src/fin_assist/config/schema.py` - pydantic-settings models
-   - `src/fin_assist/config/loader.py` - TOML config loader
-   - `tests/__init__.py` - test package
-   - `tests/test_config.py` - 19 tests for schema + loader
-   - `tests/test_package.py` - 3 smoke tests
-
-3. **Config schema implemented** (`config/schema.py`)
-   - `GeneralSettings` - default_provider, default_model (`claude-sonnet-4-6`), keybinding (env prefix: `FIN_`)
-   - `ContextSettings` - max_file_size, max_history_items, include_git_status, include_env_vars
-   - `ProviderConfig` - enabled, base_url, default_model (non-secret settings)
-   - `Config` - aggregates all settings, providers dict
-
-4. **Config loader implemented** (`config/loader.py`)
-   - Loads from `~/.config/fin/config.toml` by default
-   - Returns defaults if file missing or empty
-   - Parses TOML and validates via pydantic
-   - Handles partial configs (missing sections get defaults)
-
-5. **CI workflow added** (`.github/workflows/ci.yml`)
-   - Uses `nix shell` approach per architecture.md design
-   - Three jobs: format (treefmt), lint (ruff + ty), test (pytest)
-   - DeterminateSystems actions pinned: nix-installer@v21, magic-nix-cache@v13
-   - Job names match ruleset requirements (format, lint, test)
-
-6. **Branch protections updated**
-   - Required status checks: format, lint, test
-   - All checks must pass before merge to main
-
-7. **CodeRabbit review fixes applied**
-   - Pinned GitHub Action versions
-   - Added subprocess timeout in tests
-   - Fixed config module docstring
-   - Simplified loader conditionals
-   - Issues #10, #11, #12 created for deferred items
-
-### Decision Record
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Loader return type | Return `Config` directly | Simpler; loader's job is to produce valid Config |
-| Empty config file | Return defaults | Same behavior as missing file |
-| ProviderConfig design | `dict[str, ProviderConfig]` | Extensible, matches TOML structure, non-secret settings only |
-| Test scope | Schema + loader + smoke test | Enough for CI without over-engineering |
-| CI format job | treefmt via nix shell | nix fmt requires flake.nix; treefmt uses same config as local dev |
+4. **Tests added**
+   - `tests/test_ui/__init__.py` - test package
+   - `tests/test_ui/test_connect.py` - 19 tests for ConnectDialog
 
 ### Test Summary
 
 ```
-tests/test_config.py: 19 tests (schema + loader)
-tests/test_package.py: 3 tests (smoke)
-Total: 22 tests, all passing
+tests/test_ui/test_connect.py: 19 tests
+Total: 82 tests, all passing (was 63 before Phase 4)
 ```
 
 ---
@@ -187,34 +118,6 @@ Total: 22 tests, all passing
    - Prompt Structure: Static `SYSTEM_INSTRUCTIONS` (cached) + dynamic user message (context + prompt)
    - pydantic-ai structured output via `output_type=CommandResult` handles normalization
 
-4. **Tests added**
-   - `tests/test_llm/test_agent.py` - 11 tests for CommandResult, LLMAgent
-   - `tests/test_llm/test_providers.py` - 12 tests for ProviderRegistry
-   - `tests/test_llm/test_prompts.py` - 6 tests for prompts
-   - `tests/test_credentials/test_store.py` - 10 tests for CredentialStore
-
-5. **Issues filed**
-   - #14: LLM evals for shell command generation
-   - #15: MCP tool integration for extended capabilities
-   - #16: Validation and test cleanup for LLM/credentials modules
-
-### CodeRabbit Review Fixes (PR #17)
-- Fix CUSTOM provider unreachable bug (add to PROVIDERS dict)
-- Fix event loop blocking (use async `agent.run()` instead of `run_sync()`)
-- Security: restrict credential file permissions to 0600
-- Fix tests for async run() change and CUSTOM provider count
-
-### Decision Record
-
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Ollama support | CUSTOM provider | Self-hosted via OpenAI-compatible API |
-| FallbackModel | Hybrid | Hardcoded providers, config controls order |
-| Credential priority | env → file → keyring | Supports `op run` / secretspec injection |
-| Output format | CommandResult model | Structured via pydantic-ai tool calling |
-| Prompt structure | Static instructions + dynamic user message | Enables prompt caching |
-| Keyring integration | Consolidated in store.py | Simple, no abstraction benefit from separate file |
-
 ### Test Summary
 
 ```
@@ -227,12 +130,47 @@ Total: 63 tests, all passing
 
 ---
 
-## Next Session: Phase 4 - Credential UI + Context Module
+## Previous Session: Phase 2 - Core Package Structure
+
+**Date**: 2026-03-24
+**Branch**: `feature/phase-2`
+**PR**: #13
+**Status**: ✅ Complete (merged)
+
+### What Was Accomplished
+
+- Dependencies aligned (pydantic-ai >=1.0)
+- Package layout created with config, tests
+- Config schema and loader implemented
+- CI workflow added
+
+---
+
+## Previous Session: Phase 1 - Repo Setup
+
+**Date**: 2026-03-22
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+- Architecture finalized in `docs/architecture.md`
+- Full dev environment (devenv, pyproject.toml, justfile, treefmt, etc.)
+- Branch protections configured
+
+---
+
+## Next Session: Phase 5 - Context Module
 
 ### Goals
-1. Add `/connect` command UI (Phase 4)
-2. Implement context gathering (Phase 5)
-3. Or: Add Ollama support if pydantic-ai adds it
+1. Implement context gathering (Phase 5) — ContextProvider ABC, FileFinder, GitContext, ShellHistory, Environment
+2. Add fasta2a dependency to pyproject.toml
+
+### Relevant Files
+- `src/fin_assist/context/base.py` — ContextProvider ABC (to be created)
+- `src/fin_assist/context/files.py` — FileFinder (to be created)
+- `src/fin_assist/context/git.py` — GitContext (to be created)
+- `src/fin_assist/context/history.py` — ShellHistory (to be created)
+- `src/fin_assist/context/environment.py` — Environment (to be created)
 
 ---
 
@@ -243,12 +181,16 @@ Total: 63 tests, all passing
 | 1 | Repo Setup | ✅ Complete |
 | 2 | Core Package Structure | ✅ Complete |
 | 3 | LLM Module (pydantic-ai) | ✅ Complete |
-| 4 | Credential Management (UI) | ⬜ Not Started |
+| 4 | Credential Management (UI) | ✅ Complete |
 | 5 | Context Module | ⬜ Not Started |
-| 6 | UI Layer (Textual) | ⬜ Not Started |
-| 7 | Multiplexer Integration | ⬜ Not Started |
-| 8 | Fish Plugin | ⬜ Not Started |
-| 9 | Testing & Documentation | ⬜ Not Started |
+| 6 | Agent Protocol & Registry | ⬜ Not Started |
+| 7 | Specialization — SDDAgent | ⬜ Not Started |
+| 8 | Specialization — TDDAgent | ⬜ Not Started |
+| 9 | fasta2a Server Integration | ⬜ Not Started |
+| 10 | TUI Client → A2A Client | ⬜ Not Started |
+| 11 | Fish Plugin (Server-Aware) | ⬜ Not Started |
+| 12 | Multiplexer Integration | ⬜ Not Started |
+| 13 | Testing & Documentation | ⬜ Not Started |
 
 ---
 
@@ -279,3 +221,6 @@ To quickly get context in a new session:
 - Config stored in `~/.config/fin/config.toml`
 - Credentials stored in `~/.local/share/fin/credentials.json` (0600 permissions)
 - System prompt optimized for fish shell syntax
+- Server binds to `127.0.0.1` only (local-only)
+- A2A protocol via fasta2a for multi-client support
+- Server lifecycle: on-demand via TUI, or standalone via `fin-assist serve`

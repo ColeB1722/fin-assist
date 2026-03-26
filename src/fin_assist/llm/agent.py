@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel
 
+from fin_assist.llm.model_registry import ProviderRegistry
 from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, ContextItem, build_user_message
-from fin_assist.llm.providers import ProviderRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
