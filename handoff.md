@@ -102,9 +102,9 @@ Total: 82 tests, all passing (was 63 before Phase 4)
 ### What Was Accomplished
 
 1. **LLM Module implemented** (`src/fin_assist/llm/`)
-   - `agent.py` - `LLMAgent` class with `CommandResult` model, FallbackModel support
-   - `providers.py` - `ProviderRegistry` with providers (anthropic, openai, openrouter, google, custom)
+   - `model_registry.py` - `ProviderRegistry` with providers (anthropic, openai, openrouter, google, custom)
    - `prompts.py` - `SYSTEM_INSTRUCTIONS` (static, cached) + `build_user_message()` (dynamic)
+   - `CommandResult` later moved to `agents/results.py` (Phase 6 refactor)
 
 2. **Credentials Module implemented** (`src/fin_assist/credentials/`)
    - `store.py` - `CredentialStore` with env var → file → keyring fallback chain
@@ -121,11 +121,10 @@ Total: 82 tests, all passing (was 63 before Phase 4)
 ### Test Summary
 
 ```text
-tests/test_llm/test_agent.py: 11 tests
-tests/test_llm/test_providers.py: 12 tests
+tests/test_llm/test_model_registry.py: 12 tests
 tests/test_llm/test_prompts.py: 6 tests
 tests/test_credentials/test_store.py: 10 tests
-Total: 63 tests, all passing
+Total: 28 tests (Phase 3 baseline)
 ```
 
 ---
@@ -177,8 +176,8 @@ Total: 63 tests, all passing
 2. **ContextItem refactored** (pure refactor, no re-export)
    - Moved from `llm/prompts.py` → `context/base.py`
    - Added `status` and `error_reason` fields for explicit error handling
-   - Updated imports in `llm/agent.py`, `llm/__init__.py`
-   - Updated tests in `test_llm/test_agent.py`, `test_llm/test_prompts.py`
+   - Updated imports throughout codebase
+   - Updated tests in `test_llm/test_prompts.py`, `test_context/test_base.py`
 
 3. **Security hardening**
    - Shell history: filters commands with embedded credentials (API keys, tokens, passwords)
@@ -206,18 +205,77 @@ Total: 130 tests, all passing (was 82 before Phase 5)
 
 ---
 
-## Next Session: Phase 6 - Agent Protocol & Registry
+## Previous Session: Phase 6 - Agent Protocol & Registry
+
+**Date**: 2026-03-27
+**Branch**: `feature/phase-6`
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **Agents Package created** (`src/fin_assist/agents/`)
+   - `base.py` — `AgentResult` dataclass, `BaseAgent[T]` ABC with abstract properties/methods
+   - `registry.py` — `AgentRegistry` with decorator-based registration
+   - `default.py` — `DefaultAgent(BaseAgent[CommandResult])` shell agent implementation
+   - `__init__.py` — public exports
+
+2. **`AgentResult`** — Result envelope with `success`, `output`, `warnings`, `metadata`
+
+3. **`BaseAgent[T]` ABC** — Abstract base defining agent contract:
+   - `@property abstract name() -> str` — agent identifier ('shell', 'sdd', 'tdd')
+   - `@property abstract description() -> str` — human-readable description
+   - `@property abstract system_prompt() -> str` — agent-specific instructions
+   - `@property abstract output_type() -> type[T]` — Pydantic output model
+   - `@abstractmethod supports_context(ct: str) -> bool`
+   - `@abstractmethod async run(prompt, context) -> AgentResult`
+
+4. **`AgentRegistry`** — Registry with decorator-based registration:
+   - `register(agent_cls)` — class decorator for self-registration
+   - `get(name) -> BaseAgent | None` — get agent instance by name
+   - `list_agents() -> list[tuple[str, str]]` — list all (name, description)
+
+5. **`DefaultAgent`** — Shell command generation agent:
+   - Migrated LLMAgent logic into BaseAgent protocol
+   - `name='shell'`, supports file/git/history/environment context
+   - `run()` returns `AgentResult[CommandResult]`
+   - Reuses `SYSTEM_INSTRUCTIONS`, `build_user_message()`, `ProviderRegistry`
+
+6. **Design Decisions Made**
+   - `DefaultAgent` NOT auto-registered (requires config/credentials at init)
+   - `AgentRegistry.register()` instantiates agent to get name — requires no-arg constructor
+   - `LLMAgent` deleted entirely — greenfield, no orphaned code
+   - `CommandResult` moved from `llm/agent.py` → `agents/results.py`
+   - Routing prefixes (`/shell`, `/sdd`, `/tdd`) deferred to future phase
+
+7. **Tests added** (`tests/test_agents/`)
+   - `test_base.py` — AgentResult creation, BaseAgent ABC contract tests
+   - `test_registry.py` — AgentRegistry registration, get, list_agents tests
+   - `test_default.py` — DefaultAgent properties, run, model building tests
+
+### Test Summary
+
+```text
+tests/test_agents/: 41 tests (new)
+Total: 158 tests, all passing (was 117 before Phase 6, removed 13 redundant LLMAgent tests)
+```
+
+---
+
+## Next Session: Phase 7 - Specialization — SDDAgent
 
 ### Goals
-1. Define `BaseAgent` ABC with `AgentResult` model
-2. Create `AgentRegistry` with decorator-based registration
-3. Migrate current `LLMAgent` → `DefaultAgent` (shell agent)
-4. Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
+1. Create `SDDAgent` class for architectural brainstorming and design
+2. Define `SketchResult` model for design output
+3. Implement doc-reading tools for SDDAgent
+4. Note: Routing prefixes (`/shell`, `/sdd`, `/tdd`) deferred to future phase
 
 ### Relevant Files
-- `src/fin_assist/agents/base.py` — BaseAgent ABC, AgentResult (to be created)
-- `src/fin_assist/agents/registry.py` — AgentRegistry (to be created)
-- `src/fin_assist/agents/default.py` — DefaultAgent (to be created)
+- `src/fin_assist/agents/sdd.py` — SDDAgent (to be created)
+- `src/fin_assist/agents/results.py` — SketchResult model (to be created)
+
+### Process Notes
+- **Phase 6 TDD lapse**: Implemented code before tests. Tests served as verification rather than specification. Going forward, must write failing tests BEFORE implementation per AGENTS.md SSD→TDD workflow.
+- **Test quality**: Refactored tests to use public API instead of private state, test behavior not implementation details.
 
 ---
 
@@ -230,7 +288,7 @@ Total: 130 tests, all passing (was 82 before Phase 5)
 | 3 | LLM Module (pydantic-ai) | ✅ Complete |
 | 4 | Credential Management (UI) | ✅ Complete |
 | 5 | Context Module | ✅ Complete |
-| 6 | Agent Protocol & Registry | ⬜ Not Started |
+| 6 | Agent Protocol & Registry | ✅ Complete |
 | 7 | Specialization — SDDAgent | ⬜ Not Started |
 | 8 | Specialization — TDDAgent | ⬜ Not Started |
 | 9 | fasta2a Server Integration | ⬜ Not Started |

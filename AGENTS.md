@@ -16,11 +16,18 @@ Before implementing any feature:
 
 ### 2. Test-Driven Development (TDD)
 
-After design is sketched:
-1. Write failing tests first
-2. Implement minimal code to pass
-3. Refactor while keeping tests green
-4. Update handoff.md with progress
+After design is sketched, write tests BEFORE writing implementation code:
+
+1. **Write failing test first** — test specifies expected behavior
+2. **Implement minimal code** — just enough to pass the test
+3. **Refactor** — improve code while keeping tests green
+4. **Update handoff.md** — document what was accomplished
+
+**Test quality standards:**
+- Test behavior, not implementation (avoid exact string matches)
+- Use public API, not private state
+- Derive expected values from centralized types (e.g., `ContextType`)
+- Fixtures for reusable setup, avoid `setup_method` with manual cleanup
 
 ## Commands
 
