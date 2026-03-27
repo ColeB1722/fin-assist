@@ -162,41 +162,46 @@ Total: 63 tests, all passing
 ## Previous Session: Phase 5 - Context Module
 
 **Date**: 2026-03-26
-**Branch**: `feature/phase-5` (to be created)
+**Branch**: `feature/phase-5`
 **Status**: ✅ Complete
 
 ### What Was Accomplished
 
 1. **Context Module implemented** (`src/fin_assist/context/`)
-   - `base.py` — `ContextItem` dataclass, `ContextProvider` ABC, `ContextType` literal
-   - `files.py` — `FileFinder` using `fd` for discovery, `fzf` for filtering
+   - `base.py` — `ContextItem` dataclass, `ContextProvider` ABC, `ContextType`, `ItemStatus` literals
+   - `files.py` — `FileFinder` using `find` for discovery (no fd dependency)
    - `git.py` — `GitContext` with diff, status, log commands
-   - `history.py` — `ShellHistory` using `fish -c 'history'` command
-   - `environment.py` — `Environment` with PWD, HOME, USER + configurable env vars
+   - `history.py` — `ShellHistory` using `fish -c 'history'` command, with caching and security filtering
+   - `environment.py` — `Environment` with PWD, HOME, USER + configurable env vars, with security filtering
 
 2. **ContextItem refactored** (pure refactor, no re-export)
    - Moved from `llm/prompts.py` → `context/base.py`
+   - Added `status` and `error_reason` fields for explicit error handling
    - Updated imports in `llm/agent.py`, `llm/__init__.py`
    - Updated tests in `test_llm/test_agent.py`, `test_llm/test_prompts.py`
 
-3. **Tests added** (`tests/test_context/`)
+3. **Security hardening**
+   - Shell history: filters commands with embedded credentials (API keys, tokens, passwords)
+   - Environment: redacts sensitive env vars (API_KEY, TOKEN, SECRET, etc.) with `status="excluded"`
+
+4. **Tests added** (`tests/test_context/`)
    - `test_base.py` — ContextItem validation, ContextProvider ABC
-   - `test_files.py` — FileFinder with mocked fd/fzf
+   - `test_files.py` — FileFinder with mocked find
    - `test_git.py` — GitContext with mocked git commands
    - `test_history.py` — ShellHistory with mocked fish
    - `test_environment.py` — Environment with mocked os.environ
 
-4. **Design Decisions Made**
-   - `ContextItem` moved (pure refactor, no re-export)
-   - Shell history via `fish -c 'history'` command (robust, official interface)
-   - File discovery via `fd` when available, graceful degradation
-   - `ContextProvider` ABC with `_supported_types()` for agent filtering
+5. **CodeRabbit review fixes**
+   - Exported `ContextType` and `ItemStatus` from context package
+   - Added `_get_history()` caching
+   - Fixed hardcoded `type="git_diff"` in git.py error cases
+   - Added missing status assertion in test_files.py
 
 ### Test Summary
 
 ```text
 tests/test_context/: 51 tests (new)
-Total: 133 tests, all passing (was 82 before Phase 5)
+Total: 130 tests, all passing (was 82 before Phase 5)
 ```
 
 ---

@@ -66,6 +66,7 @@ class TestFileFinder:
                     result = finder.get_item("/test/large_file.py")
                     assert result is not None
                     assert result.type == "file"
+                    assert result.status == "excluded"
                     assert result.metadata["size_exceeded"] is True
                     assert result.metadata["size"] == 1000
                     assert result.metadata["limit"] == 50

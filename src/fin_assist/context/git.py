@@ -39,7 +39,7 @@ class GitContext(ContextProvider):
         if len(parts) != 2:
             return ContextItem(
                 id=id,
-                type="git_diff",
+                type="git_status",
                 status="not_found",
                 error_reason="invalid_id_format",
             )
@@ -54,7 +54,7 @@ class GitContext(ContextProvider):
             case _:
                 return ContextItem(
                     id=id,
-                    type="git_diff",
+                    type="git_status",
                     status="not_found",
                     error_reason=f"unknown_git_context_type: {context_type}",
                 )

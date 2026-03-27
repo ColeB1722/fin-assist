@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING
 
 from fin_assist.context.base import ContextItem, ContextProvider, ContextType
 
 if TYPE_CHECKING:
     from fin_assist.config.schema import ContextSettings
+
+SENSITIVE_ENV_VAR_PATTERNS = [
+    re.compile(r"API[_-]?KEY", re.IGNORECASE),
+    re.compile(r"TOKEN", re.IGNORECASE),
+    re.compile(r"SECRET", re.IGNORECASE),
+    re.compile(r"PASSWORD", re.IGNORECASE),
+    re.compile(r"PRIVATE[_-]?KEY", re.IGNORECASE),
+    re.compile(r"ACCESS[_-]?KEY", re.IGNORECASE),
+    re.compile(r"AUTH", re.IGNORECASE),
+    re.compile(r"CREDENTIAL", re.IGNORECASE),
+]
+
+
+def _is_env_var_sensitive(name: str) -> bool:
+    return any(pattern.search(name) for pattern in SENSITIVE_ENV_VAR_PATTERNS)
 
 
 class Environment(ContextProvider):
@@ -73,6 +89,18 @@ class Environment(ContextProvider):
         )
         for var in env_vars:
             if var in ("PWD", "HOME", "USER"):
+                continue
+            if _is_env_var_sensitive(var):
+                items.append(
+                    ContextItem(
+                        id=var,
+                        type="env",
+                        content="[REDACTED]",
+                        metadata={"name": var, "source": "environ", "redacted": True},
+                        status="excluded",
+                        error_reason="sensitive_env_var",
+                    )
+                )
                 continue
             value = os.environ.get(var, "")
             items.append(

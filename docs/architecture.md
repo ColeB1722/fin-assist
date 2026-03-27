@@ -556,11 +556,11 @@ Unchanged from original design — still the provider setup flow within the TUI.
 - [x] Add optional OS keyring backend (credentials/keyring.py)
 
 ### Phase 5: Context Module
-- [ ] Implement ContextProvider ABC (context/base.py)
-- [ ] File finder with fd/fzf (context/files.py)
-- [ ] Git context gatherer (context/git.py)
-- [ ] Fish history parser (context/history.py)
-- [ ] Environment context (context/environment.py)
+- [x] Implement ContextProvider ABC (context/base.py)
+- [x] File finder with find (context/files.py)
+- [x] Git context gatherer (context/git.py)
+- [x] Fish history parser (context/history.py)
+- [x] Environment context (context/environment.py)
 
 ### Phase 6: Agent Protocol & Registry
 - [ ] Define `BaseAgent` ABC with `AgentResult`

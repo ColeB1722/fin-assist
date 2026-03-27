@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -8,11 +9,23 @@ from fin_assist.context.base import ContextItem, ContextProvider, ContextType
 if TYPE_CHECKING:
     from fin_assist.config.schema import ContextSettings
 
+SENSITIVE_PATTERNS = [
+    re.compile(r"export\s+\w*(?:API|TOKEN|KEY|SECRET|PASSWORD|PASS)\w*=", re.IGNORECASE),
+    re.compile(r"\b(?:api[_-]?key|token|secret|password)\b.*=", re.IGNORECASE),
+    re.compile(r"-H\s+['\"]Authorization:\s*Bearer", re.IGNORECASE),
+    re.compile(r"aws_access_key_id|aws_secret_access_key", re.IGNORECASE),
+]
+
+
+def _is_command_sensitive(command: str) -> bool:
+    return any(pattern.search(command) for pattern in SENSITIVE_PATTERNS)
+
 
 class ShellHistory(ContextProvider):
     def __init__(self, settings: ContextSettings | None = None) -> None:
         self._settings = settings
         self._fish_available: bool | None = None
+        self._cache: list[ContextItem] | None = None
 
     def _supported_types(self) -> set[ContextType]:
         types: set[ContextType] = {"history"}
@@ -69,6 +82,8 @@ class ShellHistory(ContextProvider):
         return self._get_history()
 
     def _get_history(self) -> list[ContextItem]:
+        if self._cache is not None:
+            return self._cache
         if not self._is_fish_available():
             return []
         try:
@@ -85,7 +100,7 @@ class ShellHistory(ContextProvider):
             items = []
             for idx, line in enumerate(lines[:max_items]):
                 line = line.strip()
-                if line and not line.startswith("#"):
+                if line and not line.startswith("#") and not _is_command_sensitive(line):
                     items.append(
                         ContextItem(
                             id=str(idx),
@@ -95,6 +110,7 @@ class ShellHistory(ContextProvider):
                             status="available",
                         )
                     )
-            return items
+            self._cache = items
+            return self._cache
         except (subprocess.SubprocessError, OSError):
             return []
