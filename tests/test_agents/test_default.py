@@ -81,6 +81,8 @@ class TestDefaultAgentRun:
             agent = DefaultAgent(mock_config, mock_credentials)
             await agent.run("find in file", context=context)
             mock_agent.run.assert_called_once()
+            call_args = mock_agent.run.call_args
+            assert call_args is not None
 
     @pytest.mark.asyncio
     async def test_run_returns_warnings_from_result(self, mock_config, mock_credentials) -> None:

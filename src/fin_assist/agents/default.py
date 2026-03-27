@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, get_args
 
 from fin_assist.agents.base import AgentResult, BaseAgent
 from fin_assist.agents.results import CommandResult
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     type ShellAgent = Agent[None, CommandResult]
 
 
-SUPPORTED_CONTEXT_TYPES = frozenset(ContextType.__args__)
+SUPPORTED_CONTEXT_TYPES = frozenset(get_args(ContextType))
 
 
 class DefaultAgent(BaseAgent[CommandResult]):
@@ -62,13 +62,21 @@ class DefaultAgent(BaseAgent[CommandResult]):
         prompt: str,
         context: list[ContextItem],
     ) -> AgentResult:
-        command_result = await self.generate(prompt, context)
-        return AgentResult(
-            success=True,
-            output=command_result.command,
-            warnings=command_result.warnings,
-            metadata={},
-        )
+        try:
+            command_result = await self.generate(prompt, context)
+            return AgentResult(
+                success=True,
+                output=command_result.command,
+                warnings=command_result.warnings or [],
+                metadata={},
+            )
+        except Exception as e:
+            return AgentResult(
+                success=False,
+                output="",
+                warnings=[str(e)],
+                metadata={},
+            )
 
     async def generate(
         self,
