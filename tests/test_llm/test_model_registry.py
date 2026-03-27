@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from fin_assist.llm.providers import (
-    ProviderKind,
-    ProviderRegistry,
-)
+from fin_assist.llm.model_registry import ProviderRegistry
 
 
 @pytest.fixture
@@ -28,16 +25,16 @@ class TestProviderRegistryListProviders:
 
 class TestProviderRegistryGetProviderKind:
     def test_returns_kind_for_anthropic(self, registry: ProviderRegistry) -> None:
-        assert registry.get_kind("anthropic") == ProviderKind.ANTHROPIC
+        assert registry.get_kind("anthropic") == "anthropic"
 
     def test_returns_kind_for_openai(self, registry: ProviderRegistry) -> None:
-        assert registry.get_kind("openai") == ProviderKind.OPENAI
+        assert registry.get_kind("openai") == "openai"
 
     def test_returns_kind_for_openrouter(self, registry: ProviderRegistry) -> None:
-        assert registry.get_kind("openrouter") == ProviderKind.OPENROUTER
+        assert registry.get_kind("openrouter") == "openrouter"
 
     def test_returns_kind_for_google(self, registry: ProviderRegistry) -> None:
-        assert registry.get_kind("google") == ProviderKind.GOOGLE
+        assert registry.get_kind("google") == "google"
 
     def test_raises_for_unknown_provider(self, registry: ProviderRegistry) -> None:
         with pytest.raises(ValueError, match="Unknown provider"):
@@ -46,17 +43,3 @@ class TestProviderRegistryGetProviderKind:
     def test_unknown_provider_error_message(self, registry: ProviderRegistry) -> None:
         with pytest.raises(ValueError, match="unknown"):
             registry.get_kind("unknown")
-
-
-class TestProviderRegistryProviderKinds:
-    def test_anthropic_kind_value(self, registry: ProviderRegistry) -> None:
-        assert ProviderKind.ANTHROPIC == "anthropic"
-
-    def test_openai_kind_value(self, registry: ProviderRegistry) -> None:
-        assert ProviderKind.OPENAI == "openai"
-
-    def test_openrouter_kind_value(self, registry: ProviderRegistry) -> None:
-        assert ProviderKind.OPENROUTER == "openrouter"
-
-    def test_google_kind_value(self, registry: ProviderRegistry) -> None:
-        assert ProviderKind.GOOGLE == "google"

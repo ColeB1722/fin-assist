@@ -117,7 +117,7 @@ class TestLLMAgentBuildModel:
         mock_model = MagicMock()
 
         with patch(
-            "fin_assist.llm.providers.ProviderRegistry.create_model", return_value=mock_model
+            "fin_assist.llm.model_registry.ProviderRegistry.create_model", return_value=mock_model
         ):
             agent = LLMAgent(mock_config, mock_credentials)
             result = agent._build_model()
@@ -139,7 +139,7 @@ class TestLLMAgentBuildModel:
         mock_model1 = MagicMock()
         mock_model2 = MagicMock()
 
-        with patch("fin_assist.llm.providers.ProviderRegistry.create_model") as mock_create:
+        with patch("fin_assist.llm.model_registry.ProviderRegistry.create_model") as mock_create:
             mock_create.side_effect = [mock_model1, mock_model2]
 
             with patch("pydantic_ai.models.fallback.FallbackModel") as mock_fallback_class:

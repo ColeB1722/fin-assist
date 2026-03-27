@@ -2,161 +2,177 @@
 
 ## Overview
 
-fin-assist is a terminal inline assistant for fish shell, inspired by Zed's inline assistant. It provides a TUI for natural language command generation with context injection, multi-provider LLM support, and a seamless accept/run workflow.
+fin-assist is a **personal AI agent platform** for terminal workflows, inspired by Zed's inline assistant and OpenCode's server/client architecture. It provides a TUI for natural language interaction with specialized agents, multi-provider LLM support, and a seamless accept/run workflow — all built on a **fasta2a (A2A protocol)** backend that enables multiple frontend clients.
 
-## Goals
+## Design Principles
 
-- Natural language → shell command translation
-- Floating panel UI (tmux/zellij) with alternate screen fallback
-- `@` mention system for full project context
-- Multi-provider LLM support via pydantic-ai
-- Accept (edit) or Run directly workflow
-- `/connect` command pattern for provider setup (like opencode)
+1. **Agents as code** — Custom specialized agents, not declarative configurations. The fun is in the implementation.
+2. **Protocol-native** — Built on the A2A (Agent-to-Agent) protocol via fasta2a for standardized agent communication and multi-client support.
+3. **pydantic-ai foundation** — Unified interface for all LLM providers with structured output validation.
+4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
+5. **Fish-shell native** — Primary integration target, but the backend is shell-agnostic.
 
 ## Non-Goals
 
 - Shell-agnostic implementation (fish-first, generalize later)
 - Real-time command suggestions (on-demand only)
-- IDE/editor integration
-- Ghostty multiplexer support (pending upstream feature)
+- IDE/editor integration (beyond future MCP)
+- Network-accessible deployment (personal use only)
 
 ---
 
 ## Architecture
 
+### System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Client Layer (Frontends)                             │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
+│  │  TUI Client     │  │  Web Client     │  │  Future Clients │             │
+│  │  (Textual)      │  │  (HTML/JS)      │  │  (GUI, CLI...)  │             │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘             │
+└───────────┼────────────────────┼────────────────────┼───────────────────────┘
+            │                    │                    │
+            │  A2A Protocol (HTTP + SSE + JSON-RPC)  │
+            └────────────────────┴────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    fin-assist Server (fasta2a / ASGI)                        │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  Agent Router — dispatches incoming requests to the appropriate agent │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                         │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │                    Specialized Agents (pydantic-ai)                    │    │
+│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐      │    │
+│  │  │ Default    │  │ SDD        │  │ TDD        │  │ Future     │      │    │
+│  │  │ Agent      │  │ Agent      │  │ Agent      │  │ Agents     │      │    │
+│  │  │ (one-shot) │  │ (multi-    │  │ (multi-    │  │            │      │    │
+│  │  │            │  │  turn)     │  │  turn)     │  │            │      │    │
+│  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘      │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  Storage — Conversation/task persistence                           │    │
+│  │  (see Open Questions: JSON vs SQLite)                               │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  Shared Services                                                      │    │
+│  │  • CredentialStore (API keys)                                         │    │
+│  │  • ConfigLoader (TOML)                                                │    │
+│  │  • ContextProviders (files, git, history, env)                         │    │
+│  │  • ProviderRegistry (LLM providers)                                    │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Shell Integration (Fish)                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  fin_assist.fish — keybinding launches TUI, receives output           │    │
+│  │  fin_assist serve — starts background server (optional)               │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Component Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          fish shell                                  │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  fin-assist plugin (conf.d/functions)                         │  │
-│  │  - Keybinding: ctrl-enter (configurable)                       │  │
-│  │  - Captures: commandline buffer, pwd, env context              │  │
-│  │  - Launches TUI, receives output                               │  │
-│  │  - Inserts result into commandline                             │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          fish shell                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  fin-assist plugin (conf.d/functions)                                 │   │
+│  │  - Keybinding: ctrl-enter (configurable)                              │   │
+│  │  - Captures: commandline buffer, pwd, env context                     │   │
+│  │  - Launches fin-assist server (if not running) + TUI client           │   │
+│  │  - Receives output, inserts into commandline                          │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                    fin-assist (Python 3.12 / Textual)               │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  UI Layer (Textual widgets)                                    │ │
-│  │  ┌────────────────────────────────────────────────────────────┐ │ │
-│  │  │  PromptInput      - textarea with @ mention trigger        │ │ │
-│  │  │  ModelSelector     - dropdown for provider/model           │ │ │
-│  │  │  ContextPreview    - shows added context items             │ │ │
-│  │  │  ActionButtons     - [Accept] [Run]                         │ │ │
-│  │  │  ConnectDialog     - /connect provider setup UI             │ │ │
-│  │  └────────────────────────────────────────────────────────────┘ │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  Context Module                                                │ │
-│  │  - FileFinder: fd + fzf for file fuzzy search                  │ │
-│  │  - GitContext: git diff/log/status for recent changes          │ │
-│  │  - ShellHistory: parse fish history for context                │ │
-│  │  - Environment: cwd, relevant env vars                        │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  LLM Module (pydantic-ai)                                      │ │
-│  │  - Agent: Unified interface for all providers                  │ │
-│  │  - FallbackModel: Automatic failover between models            │ │
-│  │  - ProviderRegistry: Anthropic, OpenRouter, Ollama, etc.      │ │
-│  │  - PromptBuilder: Constructs system/user prompts              │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  Credential Module                                             │ │
-│  │  - CredentialStore: Secure storage in ~/.local/share/fin/      │ │
-│  │  - KeyringBackend: Optional OS keyring integration             │ │
-│  │  - ConnectCommand: TUI flow for adding providers               │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    fin-assist (Python 3.12 / Textual + fasta2a)              │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Client Layer (Textual TUI — the primary, default client)             │   │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
+│  │  │  PromptInput      - textarea with @ mention trigger              │  │   │
+│  │  │  ModelSelector    - dropdown for provider/model                 │  │   │
+│  │  │  AgentSelector    - tabs/dropdown for agent selection          │  │   │
+│  │  │  ContextPreview   - shows added context items                  │  │   │
+│  │  │  ActionButtons    - [Accept] [Run]                             │  │   │
+│  │  │  ConnectDialog    - /connect provider setup UI                  │  │   │
+│  │  │  ChatHistory      - conversation history for multi-turn agents │  │   │
+│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Server Layer (fasta2a / ASGI)                                        │   │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
+│  │  │  FastA2A App — wraps agents as A2A server                       │  │   │
+│  │  │  • TaskManager — coordinates task lifecycle                     │  │   │
+│  │  │  • Storage — persists tasks and conversation context            │  │   │
+│  │  │  • Broker — schedules async task execution                     │  │   │
+│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Agent System                                                         │   │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
+│  │  │  Agent Protocol (BaseAgent ABC)                                 │  │   │
+│  │  │  • name, description, system_prompt, output_type               │  │   │
+│  │  │  • supports_context(context_type) -> bool                      │  │   │
+│  │  │  • run(prompt, context) -> AgentResult[T]                       │  │   │
+│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
+│  │  │  AgentRegistry — registers and dispatches agents                │  │   │
+│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐       │   │
+│  │  │ Default    │ │ SDD        │ │ TDD        │ │ Future     │       │   │
+│  │  │ Agent     │ │ Agent      │ │ Agent      │ │ Agents     │       │   │
+│  │  │ (shell)   │ │ (design)   │ │ (impl)     │ │            │       │   │
+│  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘       │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Context Module                                                       │   │
+│  │  - FileFinder: fd + fzf for file fuzzy search                        │   │
+│  │  - GitContext: git diff/log/status for recent changes               │   │
+│  │  - ShellHistory: parse fish history for context                      │   │
+│  │  - Environment: cwd, relevant env vars                               │   │
+│  │  - Agent-specific filtering (SDD→docs only, TDD→code only)          │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  LLM Module (pydantic-ai)                                            │   │
+│  │  - Agent: Unified interface for all providers                         │   │
+│  │  - FallbackModel: Automatic failover between models                   │   │
+│  │  - ProviderRegistry: Anthropic, OpenRouter, Ollama, etc.            │   │
+│  │  - PromptBuilder: Constructs system/user prompts                     │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Credential Module                                                    │   │
+│  │  - CredentialStore: Secure storage in ~/.local/share/fin/            │   │
+│  │  - KeyringBackend: Optional OS keyring integration                    │   │
+│  │  - ConnectCommand: TUI flow for adding providers                     │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
                                │
                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                  Multiplexer Integration                            │
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  tmux                                                           ││
-│  │  - Detection: check $TMUX env var                              ││
-│  │  - FloatingPane: display-popup command                         ││
-│  │  - ContextCapture: capture-pane for terminal content           ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  zellij                                                         ││
-│  │  - Detection: check $ZELLIJ_SESSION_NAME env var               ││
-│  │  - FloatingPane: plugin --floating command                     ││
-│  │  - Context: Limited (no capture-pane equivalent)              ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  ghostty (future)                                              ││
-│  │  - Detection: check $GHOSTTY_SESSION env var                   ││
-│  │  - Status: Pending upstream popup support (issue #3197)       ││
-│  │  - Fallback: Alternate screen buffer                           ││
-│  └─────────────────────────────────────────────────────────────────┘│
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │  Fallback (no multiplexer)                                     ││
-│  │  - Alternate screen buffer (like fzf, lazygit)                 ││
-│  │  - No context capture available                                ││
-│  └─────────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow
-
-```
-User presses ctrl-enter
-         │
-         ▼
-┌─────────────────────┐
-│ Fish plugin         │
-│ - Get commandline   │
-│ - Get pwd, env      │
-│ - Launch fin-assist │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Detect multiplexer  │
-│ tmux → floating     │
-│ zellij → floating    │
-│ none → alt screen    │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Textual TUI runs    │
-│ - User types prompt │
-│ - Adds @ context    │
-│ - Selects model     │
-│ - Clicks Accept/Run │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ pydantic-ai Agent   │
-│ generates command   │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Output to stdout    │
-│ Format: JSON        │
-│ {command, action}   │
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│ Fish plugin         │
-│ - Parse output      │
-│ - Insert command    │
-│ - If Run: execute   │
-│ - If Accept: edit   │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  Multiplexer Integration                                     │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │  tmux — FloatingPane via display-popup                                │  │
+│  │  zellij — FloatingPane via plugin --floating                         │  │
+│  │  ghostty (future) — Pending upstream popup support                   │  │
+│  │  Fallback — Alternate screen buffer                                   │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -168,46 +184,59 @@ fin-assist/
 ├── src/
 │   └── fin_assist/
 │       ├── __init__.py
-│       ├── __main__.py              # Entry point
-│       ├── app.py                   # Textual App class
-│       ├── ui/
+│       ├── __main__.py              # CLI entry: `fin-assist [serve|tui|...]`
+│       ├── server/
 │       │   ├── __init__.py
-│       │   ├── prompt_input.py      # PromptInput widget
-│       │   ├── model_selector.py
-│       │   ├── context_preview.py
-│       │   ├── actions.py
-│       │   └── connect.py           # /connect dialog
-│       ├── context/
+│       │   ├── app.py               # fasta2a ASGI app setup
+│       │   ├── router.py           # Agent routing logic
+│       │   └── lifespan.py         # Server lifespan (start/stop hooks)
+│       ├── agents/
 │       │   ├── __init__.py
-│       │   ├── base.py              # ContextProvider ABC
-│       │   ├── files.py             # FileFinder
-│       │   ├── git.py               # GitContext
-│       │   ├── history.py           # ShellHistory
-│       │   └── environment.py
+│       │   ├── base.py             # BaseAgent ABC, AgentResult model
+│       │   ├── registry.py         # AgentRegistry (decorator-based registration)
+│       │   ├── default.py          # DefaultAgent (one-shot shell commands)
+│       │   ├── sdd.py              # SDDAgent (sketch-driven design)
+│       │   └── tdd.py              # TDDAgent (test-driven development)
 │       ├── llm/
 │       │   ├── __init__.py
-│       │   ├── agent.py             # pydantic-ai Agent wrapper
-│       │   ├── providers.py         # Provider registry
-│       │   └── prompts.py           # System prompts
+│       │   ├── agent.py            # pydantic-ai Agent wrapper (per agent)
+│       │   ├── providers.py        # Provider registry
+│       │   └── prompts.py          # System prompts (per agent)
+│       ├── context/
+│       │   ├── __init__.py
+│       │   ├── base.py             # ContextProvider ABC
+│       │   ├── files.py            # FileFinder
+│       │   ├── git.py             # GitContext
+│       │   ├── history.py          # ShellHistory
+│       │   └── environment.py
 │       ├── credentials/
 │       │   ├── __init__.py
-│       │   ├── store.py             # Credential storage
-│       │   └── keyring.py           # OS keyring backend
+│       │   └── store.py            # Credential storage + keyring
 │       ├── multiplexer/
 │       │   ├── __init__.py
-│       │   ├── base.py              # Multiplexer ABC
+│       │   ├── base.py             # Multiplexer ABC
 │       │   ├── tmux.py
 │       │   ├── zellij.py
 │       │   └── fallback.py
-│       └── config/
+│       ├── config/
+│       │   ├── __init__.py
+│       │   ├── loader.py           # Load config.toml
+│       │   └── schema.py           # Config dataclasses
+│       └── ui/                     # TUI Client (Textual)
 │           ├── __init__.py
-│           ├── loader.py            # Load config.toml
-│           └── schema.py            # Config dataclasses
+│           ├── app.py              # Textual App
+│           ├── prompt_input.py
+│           ├── model_selector.py
+│           ├── agent_selector.py   # NEW: agent tab/dropdown
+│           ├── context_preview.py
+│           ├── actions.py
+│           ├── chat_history.py     # NEW: multi-turn history viewer
+│           └── connect.py          # /connect dialog
 ├── fish/
 │   ├── conf.d/
-│   │   └── fin_assist.fish         # Auto-load config
+│   │   └── fin_assist.fish
 │   └── functions/
-│       └── fin_assist.fish         # Main function
+│       └── fin_assist.fish
 ├── tests/
 │   ├── unit/
 │   └── integration/
@@ -225,127 +254,141 @@ fin-assist/
 
 ---
 
-## Configuration
-
-### Config File (~/.config/fin/config.toml)
-
-```toml
-[general]
-default_provider = "anthropic"
-default_model = "claude-sonnet-4-6"
-keybinding = "ctrl-enter"
-
-[context]
-max_file_size = 100000
-max_history_items = 50
-include_git_status = true
-include_env_vars = ["PATH", "HOME", "USER", "PWD"]
-
-[providers.anthropic]
-# API key stored separately via /connect command
-
-[providers.openrouter]
-# API key stored separately via /connect command
-
-[providers.ollama]
-base_url = "http://localhost:11434"
-# No API key needed for local Ollama
-```
-
-### Credential Storage (~/.local/share/fin/credentials.json)
-
-Credentials are stored separately from config, allowing config to be shared/committed without exposing secrets.
-
-```json
-{
-  "anthropic": {
-    "api_key": "encrypted:...",
-    "created_at": "2026-03-22T10:00:00Z"
-  },
-  "openrouter": {
-    "api_key": "encrypted:...",
-    "created_at": "2026-03-22T10:05:00Z"
-  }
-}
-```
-
-**Security options:**
-1. **Default**: Encrypted file storage in `~/.local/share/fin/`
-2. **Optional**: OS keyring via `keyring` library (macOS Keychain, Linux Secret Service, Windows Credential Manager)
-3. **Environment variables**: Also supported for CI/headless environments
-
----
-
-## /connect Command Pattern
-
-Inspired by opencode's `/connect` command:
-
-```
-/connect
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  Provider Selector (fuzzy searchable)   │
-│  ┌─────────────────────────────────────┐│
-│  │  ○ Anthropic                        ││
-│  │  ○ OpenRouter                       ││
-│  │  ○ OpenAI                           ││
-│  │  ○ Ollama (local)                   ││
-│  │  ○ Groq                             ││
-│  │  ○ Other...                         ││
-│  └─────────────────────────────────────┘│
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  Auth Method (if applicable)           │
-│  ┌─────────────────────────────────────┐│
-│  │  ● Enter API Key                    ││
-│  │  ○ OAuth (if supported)             ││
-│  └─────────────────────────────────────┘│
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  API Key Input (masked)                 │
-│  ┌─────────────────────────────────────┐│
-│  │  API key: **************            ││
-│  │                                     ││
-│  │  [Cancel]              [Save]       ││
-│  └─────────────────────────────────────┘│
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  Model Selection                        │
-│  /models to select default model        │
-└─────────────────────────────────────────┘
-```
-
----
-
 ## Key Interfaces
 
-### LLM Module (pydantic-ai)
+### Agent Protocol
 
 ```python
-from pydantic_ai import Agent
-from pydantic_ai.models.anthropic import AnthropicModel
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.models.fallback import FallbackModel
-from pydantic_ai.providers.openrouter import OpenRouterProvider
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import Generic, TypeVar
 
-# Simple usage - provider auto-detected from model name
-agent = Agent('anthropic:claude-sonnet-4-6')
+T = TypeVar('T')
 
-# With fallback
-primary = AnthropicModel('claude-sonnet-4-6')
-fallback = OpenAIChatModel('gpt-4o', provider=OpenRouterProvider())
-agent = Agent(FallbackModel(primary, fallback))
+@dataclass
+class AgentResult:
+    """Base result type for all agents."""
+    success: bool
+    output: str
+    warnings: list[str]
+    metadata: dict[str, Any]
 
-# Generate command
-result = agent.run_sync(prompt, context=context_items)
-command = result.output
+class BaseAgent(ABC, Generic[T]):
+    """Protocol that all specialized agents must implement."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Agent identifier (used for routing, e.g. 'shell', 'sdd', 'tdd')."""
+        ...
+
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        """Human-readable description for agent selection UI."""
+        ...
+
+    @property
+    @abstractmethod
+    def system_prompt(self) -> str:
+        """Agent-specific system instructions."""
+        ...
+
+    @property
+    @abstractmethod
+    def output_type(self) -> type[T]:
+        """Pydantic model for structured output."""
+        ...
+
+    @abstractmethod
+    def supports_context(self, context_type: str) -> bool:
+        """Check if agent can use a given context type."""
+        ...
+
+    @abstractmethod
+    async def run(
+        self,
+        prompt: str,
+        context: list[ContextItem],
+    ) -> AgentResult[T]:
+        """Execute the agent."""
+        ...
+```
+
+### Agent Registry
+
+```python
+class AgentRegistry:
+    _agents: dict[str, BaseAgent]
+
+    @classmethod
+    def register(cls, agent_cls: type[BaseAgent]) -> type[BaseAgent]:
+        """Decorator to register an agent class."""
+        ...
+
+    @classmethod
+    def get(cls, name: str) -> BaseAgent | None:
+        """Get agent by name."""
+        ...
+
+    @classmethod
+    def list_agents(cls) -> list[tuple[str, str]]:
+        """List all registered agents (name, description)."""
+        ...
+```
+
+### Specialized Agents
+
+#### DefaultAgent (shell)
+
+- **Purpose**: Fast shell command generation
+- **Mode**: One-shot
+- **Context**: Files, git, history, environment
+- **Output**: `CommandResult(command: str, warnings: list[str])`
+- **Tools**: None (stateless prompt → command)
+- **Prefix**: `/shell` or implicit (no prefix)
+
+#### SDDAgent (sketch-driven design)
+
+- **Purpose**: Architectural brainstorming and design
+- **Mode**: Multi-turn conversation
+- **Context**: Docs only (`docs/`)
+- **Output**: `SketchResult(diagram: str, decisions: list[Decision], next_steps: list[str])`
+- **Tools**:
+  - `read_file(path: str)` — read docs
+  - `write_file(path: str, content: str)` — update sketches
+  - `list_docs()` — enumerate available documentation
+- **Prefix**: `/sdd`
+
+#### TDDAgent (test-driven development)
+
+- **Purpose**: Directed implementation with test generation
+- **Mode**: Multi-turn (test → impl → verify)
+- **Context**: Code files, test files, project structure
+- **Output**: `TDDResult(impl_code: str, test_code: str, verified: bool)`
+- **Tools**:
+  - `read_file(path: str)` — read code
+  - `write_file(path: str, content: str)` — write code/tests
+  - `run_command(cmd: str)` — run tests with verification
+  - `list_files(pattern: str)` — find relevant files
+- **Prefix**: `/tdd`
+
+### A2A Server (fasta2a)
+
+```python
+from fasta2a import FastA2A
+from fasta2a.broker import InMemoryBroker
+from fasta2a.storage import InMemoryStorage
+
+from fin_assist.agents import AgentRegistry
+
+app = FastA2A(
+    storage=InMemoryStorage(),
+    broker=InMemoryBroker(),
+)
+
+# Agent exposure via pydantic-ai's to_a2a()
+# Each agent wraps a pydantic-ai Agent and exposes as A2A service
 ```
 
 ### Context Provider Interface
@@ -368,13 +411,14 @@ class ContextProvider(ABC):
 
     @abstractmethod
     def get_item(self, id: str) -> ContextItem | None: ...
+
+    @abstractmethod
+    def get_all(self) -> list[ContextItem]: ...
 ```
 
 ### Multiplexer Interface
 
 ```python
-from abc import ABC, abstractmethod
-
 class Multiplexer(ABC):
     @classmethod
     @abstractmethod
@@ -389,406 +433,96 @@ class Multiplexer(ABC):
 
 ---
 
-## System Prompt
+## A2A Protocol Integration
+
+### Background
+
+**A2A (Agent-to-Agent)** is an open protocol (originated by Google, adopted by pydantic) for standardized agent communication. **fasta2a** is pydantic's Python implementation, built on Starlette/ASGI.
+
+Key benefits for fin-assist:
+- **Standardized interface** — any A2A-compatible client can talk to the server
+- **Agent discovery** — Agent Cards at `/.well-known/agent.json`
+- **Task lifecycle** — built-in task state management (pending, working, completed, failed)
+- **Conversation context** — `context_id` links multi-turn conversations across tasks
+- **Streaming** — SSE support for real-time token streaming
+
+### fasta2a Components
+
+- **Storage** — persists tasks and conversation context (default: `InMemoryStorage`; file-backed for production)
+- **Broker** — schedules async task execution (default: `InMemoryBroker`)
+- **Worker** — executes agent logic (pydantic-ai provides this via `Agent.to_a2a()`)
+
+### OpenCode-Inspired Server Pattern
+
+Following OpenCode's architecture:
 
 ```
-You are a shell command assistant. Given a user's natural language request and context, generate a single shell command.
-
-Rules:
-1. Output ONLY the command, no explanation
-2. Use fish shell syntax
-3. Consider the provided context (files, git state, history)
-4. If uncertain, prefer safer commands
-5. Use pipes and redirects appropriately
-6. For dangerous operations (rm, dd, mkfs), warn the user
-
-Context:
-{context}
-
-User request:
-{prompt}
-
-Command:
+fin-assist          → starts server (if not running) + TUI client
+fin-assist serve    → starts standalone server on 127.0.0.1:4096
+fin-assist tui      → starts TUI client only (connects to existing server)
 ```
+
+Server lifecycle:
+- **On-demand**: TUI starts server as subprocess if not already running
+- **Background**: `fin-assist serve` starts server that persists after TUI closes
+- **Auth**: Optional HTTP Basic Auth via `FIN_SERVER_PASSWORD` env var
+
+### Local-Only Security
+
+The server binds to `127.0.0.1` by default, ensuring only local processes can communicate with agents. This is intentional — fin-assist is designed for personal use on a trusted machine.
 
 ---
 
-## Repo Setup
+## Configuration
 
-### Dependencies
-
-| Category | Tool/Library | Purpose |
-|----------|--------------|---------|
-| **Language** | Python 3.12+ | Runtime (3.13 in nixos-unstable) |
-| **Package Mgmt** | uv | Fast Python package installer |
-| **TUI Framework** | Textual | Terminal UI widgets |
-| **LLM Abstraction** | pydantic-ai | Multi-provider LLM interface |
-| **Config Parsing** | tomllib (stdlib) | TOML parsing (Python 3.11+) |
-| **Data Validation** | pydantic | Settings/models |
-| **HTTP Client** | httpx | Async HTTP (via pydantic-ai) |
-| **Shell Integration** | fish 3.2+ | Primary target shell |
-| **Secrets (dev)** | secretspec | Local development secrets |
-
-### Dev Environment (devenv.nix)
-
-```nix
-{ pkgs, ... }:
-
-{
-  packages = with pkgs; [
-    nixfmt-rfc-style
-    nil
-
-    python3
-    uv
-    ruff
-
-    just
-    jq
-    treefmt
-
-    fd
-    fzf
-    git
-  ];
-
-  languages.python = {
-    enable = true;
-    uv = {
-      enable = true;
-      sync.enable = true;
-    };
-  };
-
-  git-hooks.hooks = {
-    treefmt.enable = true;
-
-    ruff-check = {
-      enable = true;
-      name = "ruff-check";
-      description = "Lint Python code with ruff";
-      entry = "${pkgs.ruff}/bin/ruff check src/";
-      language = "system";
-      types = [ "python" ];
-      pass_filenames = false;
-    };
-  };
-
-  enterShell = ''
-    echo "fin-assist dev shell"
-    echo "Python: $(python --version)"
-    echo "uv:     $(uv --version)"
-    echo ""
-    echo "Commands:"
-    echo "  just          - List available tasks"
-    echo "  just dev      - Enter dev shell"
-    echo "  just fmt      - Format code"
-    echo "  just lint     - Run linter"
-    echo "  just test     - Run tests"
-    echo "  just run      - Run the TUI"
-  '';
-}
-```
-
-### pyproject.toml
+### Config File (~/.config/fin/config.toml)
 
 ```toml
-[project]
-name = "fin-assist"
-version = "0.1.0"
-description = "Terminal inline assistant for fish shell"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "textual>=3.0",
-    "pydantic-ai>=0.1",
-    "pydantic-settings>=2.0",
-    "httpx>=0.27",
-    "keyring>=25.0",
-]
+[general]
+default_provider = "anthropic"
+default_model = "claude-sonnet-4-6"
+keybinding = "ctrl-enter"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.25",
-    "pytest-textual-snapshot>=1.0",
-    "ruff>=0.9",
-]
+[server]
+host = "127.0.0.1"
+port = 4096
 
-[project.scripts]
-fin-assist = "fin_assist.__main__:main"
+[context]
+max_file_size = 100000
+max_history_items = 50
+include_git_status = true
+include_env_vars = ["PATH", "HOME", "USER", "PWD"]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[agents.shell]
+enabled = true
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/fin_assist"]
+[agents.sdd]
+enabled = true
+docs_only = true
 
-[tool.ruff]
-target-version = "py312"
-line-length = 100
-src = ["src"]
+[agents.tdd]
+enabled = true
+code_only = true
 
-[tool.ruff.lint]
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "UP",  # pyupgrade
-    "B",   # flake8-bugbear
-    "SIM", # flake8-simplify
-    "TCH", # flake8-type-checking
-]
+[providers.anthropic]
+# API key stored separately via /connect
 
-[tool.ruff.lint.isort]
-known-first-party = ["fin_assist"]
+[providers.openrouter]
+# API key stored separately via /connect
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-asyncio_mode = "auto"
-addopts = "-v --tb=short"
+[providers.ollama]
+base_url = "http://localhost:11434"
 ```
 
-### justfile
+### Credential Storage (~/.local/share/fin/credentials.json)
 
-```just
-# fin-assist task runner
+Credentials stored separately from config (same as before).
 
-set dotenv-load := false
-set shell := ["bash", "-euo", "pipefail", "-c"]
+---
 
-_default:
-    @just --list
+## /connect Command Pattern
 
-# ── Dev shell ────────────────────────────────────────────────────────────────
-
-dev:
-    devenv shell
-
-# ── Code quality ─────────────────────────────────────────────────────────────
-
-fmt:
-    treefmt
-
-check:
-    treefmt --ci
-
-lint:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -d src/ ]; then
-        uv run ruff check src/
-    else
-        echo "src/ not found, skipping lint"
-    fi
-
-lint-fix:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -d src/ ]; then
-        uv run ruff check --fix src/
-    else
-        echo "src/ not found, skipping lint-fix"
-    fi
-
-typecheck:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -d src/ ]; then
-        uv run ty check src/
-    else
-        echo "src/ not found, skipping typecheck"
-    fi
-
-test *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -d tests/ ]; then
-        uv run pytest tests/ {{ args }}
-    else
-        echo "tests/ not found, skipping tests"
-    fi
-
-test-cov:
-    uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
-
-ci: check lint typecheck test
-
-# ── Local dev ────────────────────────────────────────────────────────────────
-
-run:
-    uv run python -m fin_assist
-
-install-fish:
-    mkdir -p ~/.config/fish/conf.d
-    mkdir -p ~/.config/fish/functions
-    cp fish/conf.d/fin_assist.fish ~/.config/fish/conf.d/
-    cp fish/functions/fin_assist.fish ~/.config/fish/functions/
-
-# Install package in dev mode
-install-dev:
-    uv pip install -e .
-
-# ── Build ────────────────────────────────────────────────────────────────────
-
-build:
-    uv build
-
-clean:
-    rm -rf dist/ build/ *.egg-info src/*.egg-info
-    find . -type d -name __pycache__ -exec rm -rf {} +
-    find . -type d -name .pytest_cache -exec rm -rf {} +
-    find . -type d -name .ruff_cache -exec rm -rf {} +
-```
-
-### .gitignore
-
-```gitignore
-# Nix
-result
-result-*
-.direnv/
-.devenv/
-
-# Generated by devenv git-hooks
-.pre-commit-config.yaml
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-dist/
-build/
-.venv/
-.eggs/
-*.egg
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Ruff
-.ruff_cache/
-
-# Editor
-*.swp
-*.swo
-*~
-.idea/
-.vscode/
-*.sublime-*
-
-# OS
-.DS_Store
-Thumbs.db
-ehthumbs.db
-
-# Secrets
-.env
-.env.local
-.env.*.local
-*.age
-!secrets/*.age
-
-# Local config overrides
-config.local.toml
-
-# Test snapshots (generated)
-tests/snapshots/*.svg
-```
-
-### secretspec.toml
-
-```toml
-[project]
-name = "fin-assist"
-revision = "1.0"
-
-[profiles.dev]
-ANTHROPIC_API_KEY = { description = "Anthropic API key for development" }
-OPENROUTER_API_KEY = { description = "OpenRouter API key for development", required = false }
-```
-
-### GitHub Actions CI
-
-> **Note**: CI workflow is deferred until Phase 2 when `src/` and `tests/` exist.
-> The devenv-based workflow from Phase 1 was removed due to excessive overhead
-> (~4.5 min builds for no-op checks). The design below is the target for Phase 2,
-> using targeted `nix shell` commands instead of full devenv evaluation.
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-
-on:
-  pull_request:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-jobs:
-  format:
-    name: Check formatting
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: nix fmt -- --ci
-
-  lint:
-    name: Lint & typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: |
-          nix shell nixpkgs#uv nixpkgs#ruff --command bash -c "
-            uv sync --all-extras
-            ruff check src/
-            uv run ty check src/
-          "
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
-      - run: |
-          nix shell nixpkgs#uv --command bash -c "
-            uv sync --all-extras
-            uv run pytest tests/ -x --tb=short
-          "
-```
-
-### Branch Protections
-
-Configure in GitHub repo settings:
-
-- **Require PR before merge**: Yes
-- **Require CI checks to pass**: Yes (format, lint, test)
-- **No force push to main**: Enabled
-- **Require linear history**: Optional (prefer squash merge)
+Unchanged from original design — still the provider setup flow within the TUI.
 
 ---
 
@@ -811,15 +545,15 @@ Configure in GitHub repo settings:
 - [x] Set up pydantic settings
 
 ### Phase 3: LLM Module
-- [ ] Integrate pydantic-ai for provider abstraction
-- [ ] Implement Agent wrapper (llm/agent.py)
-- [ ] Create provider registry (llm/providers.py)
-- [ ] Write system prompts (llm/prompts.py)
+- [x] Integrate pydantic-ai for provider abstraction
+- [x] Implement Agent wrapper (llm/agent.py)
+- [x] Create provider registry (llm/providers.py)
+- [x] Write system prompts (llm/prompts.py)
 
 ### Phase 4: Credential Management
-- [ ] Implement /connect command UI (ui/connect.py)
-- [ ] Create credential store (credentials/store.py)
-- [ ] Add optional OS keyring backend (credentials/keyring.py)
+- [x] Implement /connect command UI (ui/connect.py)
+- [x] Create credential store (credentials/store.py)
+- [x] Add optional OS keyring backend (credentials/keyring.py)
 
 ### Phase 5: Context Module
 - [ ] Implement ContextProvider ABC (context/base.py)
@@ -828,26 +562,54 @@ Configure in GitHub repo settings:
 - [ ] Fish history parser (context/history.py)
 - [ ] Environment context (context/environment.py)
 
-### Phase 6: UI Layer
-- [ ] Create Textual App (app.py)
-- [ ] Prompt input with @ mentions (ui/prompt_input.py)
-- [ ] Model selector dropdown (ui/model_selector.py)
-- [ ] Context preview panel (ui/context_preview.py)
-- [ ] Action buttons (ui/actions.py)
+### Phase 6: Agent Protocol & Registry
+- [ ] Define `BaseAgent` ABC with `AgentResult`
+- [ ] Create `AgentRegistry` with decorator-based registration
+- [ ] Migrate current `LLMAgent` → `DefaultAgent` (shell agent)
+- [ ] Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
 
-### Phase 7: Multiplexer Integration
+### Phase 7: Specialization — SDDAgent
+- [ ] Create `agents/sdd.py`
+- [ ] Define `SketchResult` model
+- [ ] Implement tools: `read_file`, `write_file`, `list_docs`
+- [ ] Add SDD-specific system prompt (questions before answers, trade-off analysis)
+- [ ] Add conversation history storage (file-backed)
+
+### Phase 8: Specialization — TDDAgent
+- [ ] Create `agents/tdd.py`
+- [ ] Define `TDDResult` model
+- [ ] Implement tools: `read_file`, `write_file`, `run_command`, `list_files`
+- [ ] Add TDD-specific system prompt (test-first, minimal impl)
+- [ ] Add conversation history storage
+
+### Phase 9: fasta2a Server Integration
+- [ ] Install fasta2a dependency
+- [ ] Create `server/app.py` (FastA2A setup)
+- [ ] Create `server/router.py` (agent routing)
+- [ ] Create `server/lifespan.py` (server lifecycle)
+- [ ] Expose agents via `Agent.to_a2a()`
+- [ ] File-backed storage for conversation persistence
+
+### Phase 10: TUI Client → A2A Client
+- [ ] Refactor TUI from direct agent calls to A2A client calls
+- [ ] Add `AgentSelector` component (tabs/dropdown)
+- [ ] Add `ChatHistory` viewer for multi-turn agents
+- [ ] Server auto-start on TUI launch (if not running)
+- [ ] Support connecting to existing server (`fin-assist tui --host ... --port ...`)
+
+### Phase 11: Fish Plugin (Server-Aware)
+- [ ] Update fish plugin to start server if needed
+- [ ] Update fish plugin to use A2A client or spawn TUI client
+- [ ] Handle `/shell`, `/sdd`, `/tdd` command prefixes
+- [ ] Wire up keybinding
+
+### Phase 12: Multiplexer Integration
 - [ ] Multiplexer ABC (multiplexer/base.py)
 - [ ] tmux implementation (multiplexer/tmux.py)
 - [ ] zellij implementation (multiplexer/zellij.py)
 - [ ] Fallback (alternate screen) (multiplexer/fallback.py)
 
-### Phase 8: Fish Plugin
-- [ ] Create fish/conf.d/fin_assist.fish
-- [ ] Create fish/functions/fin_assist.fish
-- [ ] Wire up keybinding
-- [ ] Handle command insertion
-
-### Phase 9: Testing & Documentation
+### Phase 13: Testing & Documentation
 - [ ] Unit tests for each module
 - [ ] Integration tests for full flow
 - [ ] User documentation
@@ -855,23 +617,46 @@ Configure in GitHub repo settings:
 
 ---
 
-## Risks & Mitigations
+## Open Questions
 
-| Risk | Mitigation |
-|------|------------|
-| LLM generates dangerous commands | System prompt warns; UI shows confirmation for rm/dd/mkfs |
-| Context too large for API | Truncate/summarize; configurable limits |
-| tmux/zellij not available | Fallback to alternate screen buffer |
-| Fish version incompatibility | Target fish 3.2+ (current stable) |
-| API key exposure | Separate credential storage; optional keyring; never log |
-| pydantic-ai API changes | Pin version; abstract in llm/agent.py |
+These are decisions deferred until the relevant phase. They are noted here to avoid premature commitment.
+
+| Question | Phase | Options | Recommendation |
+|----------|-------|---------|----------------|
+| Conversation storage | Phase 9 | JSON files vs SQLite | SQLite preferred for multi-turn query capability |
+| Server lifecycle | Phase 9 | On-demand subprocess vs background daemon | Both supported; `fin-assist serve` for daemon mode |
+| Agent-to-agent handoff | Phase 7+ | SDDAgent outputs → TDDAgent inputs | Future consideration, not Phase 1 |
 
 ---
 
 ## Future Considerations
 
-- **Shell expansion**: bash, zsh support after fish is stable
-- **Ghostty support**: When popup feature lands (issue #3197)
-- **Command history learning**: Learn from accepted commands
-- **Custom prompts**: User-defined prompt templates
-- **Team sharing**: Share provider configs (not keys) via dotfiles
+- **Web client** — HTML/JS frontend as A2A client
+- **Agent-to-agent** — SDDAgent outputs decisions that TDDAgent consumes
+- **MCP integration** — expose fin-assist agents as MCP servers (#15)
+- **Shell expansion** — bash, zsh support after fish is stable
+- **Ghostty support** — when popup feature lands (upstream issue #3197)
+- **Command history learning** — learn from accepted commands
+- **Custom prompts** — user-defined prompt templates
+
+---
+
+## Related Issues
+
+- #14: LLM evals for shell command generation
+- #15: MCP tool integration for extended capabilities
+- #16: Validation and test cleanup for LLM/credentials modules
+
+---
+
+## Appendix: Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| A2A over custom REST | fasta2a | Protocol-native multi-client, agent discovery, streaming built-in |
+| Agents as code | Custom classes | Learning vehicle; declarative loses the interesting parts |
+| Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
+| Server pattern | OpenCode-inspired | TUI as client, server persists; multiple clients possible |
+| Conversation storage | TBD (Phase 9) | JSON for simplicity; SQLite if query/browse needed for multi-turn agents |
+| Agent registry | Decorator-based | Clean, type-safe, self-registering |
+| Explicit routing | Prefix commands | `/shell`, `/sdd`, `/tdd` — clear intent, no auto-detection complexity |
