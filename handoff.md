@@ -159,18 +159,60 @@ Total: 63 tests, all passing
 
 ---
 
-## Next Session: Phase 5 - Context Module
+## Previous Session: Phase 5 - Context Module
+
+**Date**: 2026-03-26
+**Branch**: `feature/phase-5` (to be created)
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **Context Module implemented** (`src/fin_assist/context/`)
+   - `base.py` — `ContextItem` dataclass, `ContextProvider` ABC, `ContextType` literal
+   - `files.py` — `FileFinder` using `fd` for discovery, `fzf` for filtering
+   - `git.py` — `GitContext` with diff, status, log commands
+   - `history.py` — `ShellHistory` using `fish -c 'history'` command
+   - `environment.py` — `Environment` with PWD, HOME, USER + configurable env vars
+
+2. **ContextItem refactored** (pure refactor, no re-export)
+   - Moved from `llm/prompts.py` → `context/base.py`
+   - Updated imports in `llm/agent.py`, `llm/__init__.py`
+   - Updated tests in `test_llm/test_agent.py`, `test_llm/test_prompts.py`
+
+3. **Tests added** (`tests/test_context/`)
+   - `test_base.py` — ContextItem validation, ContextProvider ABC
+   - `test_files.py` — FileFinder with mocked fd/fzf
+   - `test_git.py` — GitContext with mocked git commands
+   - `test_history.py` — ShellHistory with mocked fish
+   - `test_environment.py` — Environment with mocked os.environ
+
+4. **Design Decisions Made**
+   - `ContextItem` moved (pure refactor, no re-export)
+   - Shell history via `fish -c 'history'` command (robust, official interface)
+   - File discovery via `fd` when available, graceful degradation
+   - `ContextProvider` ABC with `_supported_types()` for agent filtering
+
+### Test Summary
+
+```text
+tests/test_context/: 51 tests (new)
+Total: 133 tests, all passing (was 82 before Phase 5)
+```
+
+---
+
+## Next Session: Phase 6 - Agent Protocol & Registry
 
 ### Goals
-1. Implement context gathering (Phase 5) — ContextProvider ABC, FileFinder, GitContext, ShellHistory, Environment
-2. Add fasta2a dependency to pyproject.toml
+1. Define `BaseAgent` ABC with `AgentResult` model
+2. Create `AgentRegistry` with decorator-based registration
+3. Migrate current `LLMAgent` → `DefaultAgent` (shell agent)
+4. Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
 
 ### Relevant Files
-- `src/fin_assist/context/base.py` — ContextProvider ABC (to be created)
-- `src/fin_assist/context/files.py` — FileFinder (to be created)
-- `src/fin_assist/context/git.py` — GitContext (to be created)
-- `src/fin_assist/context/history.py` — ShellHistory (to be created)
-- `src/fin_assist/context/environment.py` — Environment (to be created)
+- `src/fin_assist/agents/base.py` — BaseAgent ABC, AgentResult (to be created)
+- `src/fin_assist/agents/registry.py` — AgentRegistry (to be created)
+- `src/fin_assist/agents/default.py` — DefaultAgent (to be created)
 
 ---
 
@@ -182,7 +224,7 @@ Total: 63 tests, all passing
 | 2 | Core Package Structure | ✅ Complete |
 | 3 | LLM Module (pydantic-ai) | ✅ Complete |
 | 4 | Credential Management (UI) | ✅ Complete |
-| 5 | Context Module | ⬜ Not Started |
+| 5 | Context Module | ✅ Complete |
 | 6 | Agent Protocol & Registry | ⬜ Not Started |
 | 7 | Specialization — SDDAgent | ⬜ Not Started |
 | 8 | Specialization — TDDAgent | ⬜ Not Started |

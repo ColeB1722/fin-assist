@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fin_assist.context.base import ContextItem
 from fin_assist.llm.agent import CommandResult, LLMAgent
-from fin_assist.llm.prompts import ContextItem
 
 
 class TestCommandResult:

@@ -4,7 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, ContextItem, build_user_message
+from fin_assist.context.base import ContextItem
+from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, build_user_message
 
 
 class TestBuildUserMessage:

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel
 
 from fin_assist.llm.model_registry import ProviderRegistry
-from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, ContextItem, build_user_message
+from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, build_user_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from fin_assist.config.schema import Config
+    from fin_assist.context.base import ContextItem
     from fin_assist.credentials.store import CredentialStore
 
     type CommandAgent = Agent[None, CommandResult]

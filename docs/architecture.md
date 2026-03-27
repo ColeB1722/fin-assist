@@ -140,7 +140,7 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Context Module                                                       │   │
-│  │  - FileFinder: fd + fzf for file fuzzy search                        │   │
+│  │  - FileFinder: find for file discovery (fd optional)                  │   │
 │  │  - GitContext: git diff/log/status for recent changes               │   │
 │  │  - ShellHistory: parse fish history for context                      │   │
 │  │  - Environment: cwd, relevant env vars                               │   │
