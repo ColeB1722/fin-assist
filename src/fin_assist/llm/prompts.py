@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from fin_assist.context.base import ContextItem
 
 SYSTEM_INSTRUCTIONS = """\
 You are a shell command assistant. Given a user's natural language \
@@ -18,14 +19,6 @@ Rules:
 
 Output format: Just the command, no preamble.\
 """
-
-
-@dataclass
-class ContextItem:
-    id: str
-    type: Literal["file", "git_diff", "history", "env"]
-    content: str
-    metadata: dict
 
 
 def format_context(context: Sequence[ContextItem] | None) -> str:
