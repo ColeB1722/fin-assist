@@ -4,6 +4,14 @@
 
 fin-assist is a **personal AI agent platform** for terminal workflows, inspired by Zed's inline assistant and OpenCode's server/client architecture. It provides a TUI for natural language interaction with specialized agents, multi-provider LLM support, and a seamless accept/run workflow — all built on a **fasta2a (A2A protocol)** backend that enables multiple frontend clients.
 
+### Core Vision
+
+**Agent = Chain-of-Thought** — Like OpenCode's "thinking" before responding, agents take natural language input and produce thoughtful output through reasoning. The DefaultAgent is the base agent (multi-turn capable), while specialized agents (shell completion, SDD, TDD) slot into the framework naturally.
+
+**Skills + MCP** — Agents can be extended with configurable skills (behaviors) and MCP tools, exposed as natural language interfaces.
+
+**Per-Agent UI** — The TUI adapts to each agent's capabilities, hiding irrelevant selectors (e.g., model selector when agent only works with one model).
+
 ## Design Principles
 
 1. **Agents as code** — Custom specialized agents, not declarative configurations. The fun is in the implementation.
@@ -48,10 +56,10 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │                    Specialized Agents (pydantic-ai)                    │    │
 │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐      │    │
-│  │  │ Default    │  │ SDD        │  │ TDD        │  │ Future     │      │    │
-│  │  │ Agent      │  │ Agent      │  │ Agent      │  │ Agents     │      │    │
-│  │  │ (one-shot) │  │ (multi-    │  │ (multi-    │  │            │      │    │
-│  │  │            │  │  turn)     │  │  turn)     │  │            │      │    │
+│  │  │ Default    │  │ Shell      │  │ SDD        │  │ TDD        │      │    │
+│  │  │ Agent      │  │ Agent      │  │ Agent      │  │ Agent      │      │    │
+│  │  │ (chain-of- │  │ (special-  │  │ (future)   │  │ (future)   │      │    │
+│  │  │  thought)  │  │  ized)     │  │            │  │            │      │    │
 │  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘      │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
@@ -64,8 +72,10 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 │  │  Shared Services                                                      │    │
 │  │  • CredentialStore (API keys)                                         │    │
 │  │  • ConfigLoader (TOML)                                                │    │
-│  │  • ContextProviders (files, git, history, env)                         │    │
+│  │  • ContextProviders (files, git, history, env)                      │    │
 │  │  • ProviderRegistry (LLM providers)                                    │    │
+│  │  • Skills (configurable behaviors)                                     │    │
+│  │  • MCP Client (tool integration)                                       │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                  │
@@ -185,26 +195,31 @@ fin-assist/
 │   └── fin_assist/
 │       ├── __init__.py
 │       ├── __main__.py              # CLI entry: `fin-assist [serve|tui|...]`
-│       ├── server/
+│       ├── server/                  # Future: fasta2a server
 │       │   ├── __init__.py
-│       │   ├── app.py               # fasta2a ASGI app setup
+│       │   ├── app.py               # FastA2A ASGI app setup
 │       │   ├── router.py           # Agent routing logic
 │       │   └── lifespan.py         # Server lifespan (start/stop hooks)
 │       ├── agents/
 │       │   ├── __init__.py
 │       │   ├── base.py             # BaseAgent ABC, AgentResult model
 │       │   ├── registry.py         # AgentRegistry (decorator-based registration)
-│       │   ├── default.py          # DefaultAgent (one-shot shell commands)
-│       │   ├── sdd.py              # SDDAgent (sketch-driven design)
-│       │   └── tdd.py              # TDDAgent (test-driven development)
+│       │   ├── default.py          # DefaultAgent (chain-of-thought base)
+│       │   ├── shell.py            # Future: ShellAgent (shell command generation)
+│       │   ├── sdd.py              # Future: SDDAgent (design)
+│       │   └── tdd.py              # Future: TDDAgent (test-driven)
+│       ├── skills/                  # Future: Skills framework
+│       │   └── __init__.py
+│       ├── mcp/                    # Future: MCP client integration
+│       │   └── __init__.py
 │       ├── llm/
 │       │   ├── __init__.py
 │       │   ├── agent.py            # pydantic-ai Agent wrapper (per agent)
-│       │   ├── providers.py        # Provider registry
+│       │   ├── model_registry.py   # Provider registry
 │       │   └── prompts.py          # System prompts (per agent)
 │       ├── context/
 │       │   ├── __init__.py
-│       │   ├── base.py             # ContextProvider ABC
+│       │   ├── base.py             # ContextProvider ABC, ContextItem
 │       │   ├── files.py            # FileFinder
 │       │   ├── git.py             # GitContext
 │       │   ├── history.py          # ShellHistory
@@ -212,7 +227,7 @@ fin-assist/
 │       ├── credentials/
 │       │   ├── __init__.py
 │       │   └── store.py            # Credential storage + keyring
-│       ├── multiplexer/
+│       ├── multiplexer/            # Future: tmux/zellij integration
 │       │   ├── __init__.py
 │       │   ├── base.py             # Multiplexer ABC
 │       │   ├── tmux.py
@@ -224,17 +239,17 @@ fin-assist/
 │       │   └── schema.py           # Config dataclasses
 │       └── ui/                     # TUI Client (Textual)
 │           ├── __init__.py
-│           ├── app.py              # Textual App
-│           ├── prompt_input.py
-│           ├── model_selector.py
-│           ├── agent_selector.py   # NEW: agent tab/dropdown
-│           ├── context_preview.py
-│           ├── actions.py
-│           ├── chat_history.py     # NEW: multi-turn history viewer
-│           └── connect.py          # /connect dialog
-├── fish/
+│           ├── app.py              # Textual App (Phase 7)
+│           ├── prompt_input.py     # Text area for input (Phase 7)
+│           ├── agent_output.py     # Output display (Phase 7)
+│           ├── agent_selector.py   # Agent switcher (Phase 7)
+│           ├── model_selector.py   # Provider/model dropdown (Phase 7)
+│           ├── context_preview.py  # Future: context items display
+│           ├── chat_history.py    # Future: multi-turn history
+│           └── connect.py          # /connect dialog (done)
+├── fish/                           # Fish shell plugin
 │   ├── conf.d/
-│   │   └── fin_assist.fish
+│   │   └── fin_assist.fish        # Keybinding, TUI launch
 │   └── functions/
 │       └── fin_assist.fish
 ├── tests/
@@ -339,14 +354,23 @@ class AgentRegistry:
 
 ### Specialized Agents
 
-#### DefaultAgent (shell)
+#### DefaultAgent (chain-of-thought base)
 
-- **Purpose**: Fast shell command generation
-- **Mode**: One-shot
+- **Purpose**: General-purpose natural language interaction with chain-of-thought reasoning
+- **Mode**: Multi-turn capable (uses message history via pydantic-ai)
+- **Context**: Files, git, history, environment (configurable per agent)
+- **Output**: Text response (structured output for specialized agents)
+- **Tools**: None by default; extensible via skills/MCP
+- **Note**: This is the base agent that specialized agents extend
+
+#### ShellAgent (specialized)
+
+- **Purpose**: Shell command generation from natural language
+- **Mode**: One-shot (inherits multi-turn capability but typically single-turn)
 - **Context**: Files, git, history, environment
 - **Output**: `CommandResult(command: str, warnings: list[str])`
 - **Tools**: None (stateless prompt → command)
-- **Prefix**: `/shell` or implicit (no prefix)
+- **Prefix**: `/shell` or implicit when shell agent selected
 
 #### SDDAgent (sketch-driven design)
 
@@ -563,57 +587,70 @@ Unchanged from original design — still the provider setup flow within the TUI.
 - [x] Environment context (context/environment.py)
 
 ### Phase 6: Agent Protocol & Registry
-- [ ] Define `BaseAgent` ABC with `AgentResult`
-- [ ] Create `AgentRegistry` with decorator-based registration
-- [ ] Migrate current `LLMAgent` → `DefaultAgent` (shell agent)
-- [ ] Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
+- [x] Define `BaseAgent` ABC with `AgentResult`
+- [x] Create `AgentRegistry` with decorator-based registration
+- [x] Migrate current `LLMAgent` → `DefaultAgent` (chain-of-thought base)
+- [x] Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
 
-### Phase 7: Specialization — SDDAgent
-- [ ] Create `agents/sdd.py`
-- [ ] Define `SketchResult` model
-- [ ] Implement tools: `read_file`, `write_file`, `list_docs`
-- [ ] Add SDD-specific system prompt (questions before answers, trade-off analysis)
-- [ ] Add conversation history storage (file-backed)
+### Phase 7: TUI Implementation
+- [ ] Refactor DefaultAgent to chain-of-thought base (multi-turn via message history)
+- [ ] Create Textual App (ui/app.py) with run loop
+- [ ] Implement PromptInput component
+- [ ] Implement AgentOutput display
+- [ ] Implement AgentSelector (tabs/dropdown)
+- [ ] Implement ModelSelector (provider/model dropdown)
+- [ ] Wire ConnectDialog into TUI
+- [ ] Add per-agent UI constraints (hide/show selectors based on capabilities)
+- [ ] Config-driven agent selection (global + per-project TOML)
 
-### Phase 8: Specialization — TDDAgent
-- [ ] Create `agents/tdd.py`
-- [ ] Define `TDDResult` model
-- [ ] Implement tools: `read_file`, `write_file`, `run_command`, `list_files`
-- [ ] Add TDD-specific system prompt (test-first, minimal impl)
-- [ ] Add conversation history storage
-
-### Phase 9: fasta2a Server Integration
-- [ ] Install fasta2a dependency
-- [ ] Create `server/app.py` (FastA2A setup)
-- [ ] Create `server/router.py` (agent routing)
-- [ ] Create `server/lifespan.py` (server lifecycle)
-- [ ] Expose agents via `Agent.to_a2a()`
-- [ ] File-backed storage for conversation persistence
-
-### Phase 10: TUI Client → A2A Client
-- [ ] Refactor TUI from direct agent calls to A2A client calls
-- [ ] Add `AgentSelector` component (tabs/dropdown)
-- [ ] Add `ChatHistory` viewer for multi-turn agents
-- [ ] Server auto-start on TUI launch (if not running)
-- [ ] Support connecting to existing server (`fin-assist tui --host ... --port ...`)
-
-### Phase 11: Fish Plugin (Server-Aware)
-- [ ] Update fish plugin to start server if needed
-- [ ] Update fish plugin to use A2A client or spawn TUI client
-- [ ] Handle `/shell`, `/sdd`, `/tdd` command prefixes
-- [ ] Wire up keybinding
-
-### Phase 12: Multiplexer Integration
+### Phase 8: Multiplexer Integration
 - [ ] Multiplexer ABC (multiplexer/base.py)
 - [ ] tmux implementation (multiplexer/tmux.py)
 - [ ] zellij implementation (multiplexer/zellij.py)
 - [ ] Fallback (alternate screen) (multiplexer/fallback.py)
+- [ ] Launch TUI in floating pane
 
-### Phase 13: Testing & Documentation
-- [ ] Unit tests for each module
-- [ ] Integration tests for full flow
+### Phase 9: Fish Plugin
+- [ ] Create fish plugin (fish/conf.d/fin_assist.fish)
+- [ ] Keybinding for TUI launch
+- [ ] Command insertion (receive output, insert into command line)
+- [ ] Server auto-start (launch server if not running)
+- [ ] Handle `/shell`, `/sdd`, `/tdd` command prefixes
+
+### Phase 10: Testing Infrastructure (Deep Evals)
+- [ ] Set up deep evals framework (pytest-compatible)
+- [ ] Define must/must-not/should criteria per agent
+- [ ] Implement LLM-as-judge evaluator (default, configurable per agent)
+- [ ] Create eval suite for DefaultAgent (chain-of-thought quality)
+- [ ] Create eval suite for ShellAgent (command safety, correctness)
+- [ ] Per-agent eval configuration
+
+### Phase 11: CI for Evals
+- [ ] GitHub Action workflow
+- [ ] Trigger: post-merge to main
+- [ ] Run eval suite against main branch
+- [ ] Detect regressions vs previous run
+- [ ] Post regression issues to GitHub
+
+### Phase 12: SDD/TDD Agents
+- [ ] Create `agents/sdd.py` (design brainstorming)
+- [ ] Define `SketchResult` model
+- [ ] Implement tools: `read_file`, `write_file`, `list_docs`
+- [ ] Create `agents/tdd.py` (test-driven development)
+- [ ] Define `TDDResult` model
+- [ ] Implement tools: `read_file`, `write_file`, `run_command`, `list_files`
+- [ ] Multi-turn conversation storage
+
+### Phase 13: Skills + MCP Integration
+- [ ] Skills framework (configurable behaviors per agent)
+- [ ] MCP client integration
+- [ ] TUI components for skill/MCP configuration
+- [ ] Per-project skill/MCP configuration
+
+### Phase 14: Documentation
 - [ ] User documentation
 - [ ] Installation guide
+- [ ] Update architecture.md if needed
 
 ---
 
@@ -625,19 +662,37 @@ These are decisions deferred until the relevant phase. They are noted here to av
 |----------|-------|---------|----------------|
 | Conversation storage | Phase 9 | JSON files vs SQLite | SQLite preferred for multi-turn query capability |
 | Server lifecycle | Phase 9 | On-demand subprocess vs background daemon | Both supported; `fin-assist serve` for daemon mode |
-| Agent-to-agent handoff | Phase 7+ | SDDAgent outputs → TDDAgent inputs | Future consideration, not Phase 1 |
+| ShellAgent vs DefaultAgent | Phase 7 | Separate classes or same with config | Separate ShellAgent (specialized) |
+| Deep evals criteria | Phase 10 | Must/must-not/should per agent | LLM-as-judge default, configurable |
+| Per-agent UI constraints | Phase 7 | Config-driven vs runtime detection | Config-driven (agent declares capabilities) |
 
 ---
 
 ## Future Considerations
 
+### Near-term (Phases 12-13)
+- **Skills framework** — Configurable behaviors (e.g., brainstorming mode, terse mode)
+- **MCP integration** — Natural language interface to configurable MCP tools/servers
+- **Per-project config** — Agent/skill/MCP configuration per project via TOML
+
+### Long-term (AI-Directed-Dev-Pipeline)
 - **Web client** — HTML/JS frontend as A2A client
 - **Agent-to-agent** — SDDAgent outputs decisions that TDDAgent consumes
-- **MCP integration** — expose fin-assist agents as MCP servers (#15)
+- **Agent-to-agent handoff** — SDD→TDD workflow automation
 - **Shell expansion** — bash, zsh support after fish is stable
 - **Ghostty support** — when popup feature lands (upstream issue #3197)
 - **Command history learning** — learn from accepted commands
 - **Custom prompts** — user-defined prompt templates
+
+### Deferred (No Timeline)
+- **RabbitMQ dispatch** — Work queue with N concurrent TDD agents (from AI-Directed-Dev-Pipeline)
+- **DAG-based task execution** — Task dependencies mapped to architectural boundaries
+
+---
+
+## Related Documents
+
+- [AI-Directed-Dev-Pipeline](../sebs-vault/Brainstorming/AI-Directed-Dev-Pipeline.md) — Long-term vision for agent swarm-driven development
 
 ---
 
@@ -660,3 +715,7 @@ These are decisions deferred until the relevant phase. They are noted here to av
 | Conversation storage | TBD (Phase 9) | JSON for simplicity; SQLite if query/browse needed for multi-turn agents |
 | Agent registry | Decorator-based | Clean, type-safe, self-registering |
 | Explicit routing | Prefix commands | `/shell`, `/sdd`, `/tdd` — clear intent, no auto-detection complexity |
+| DefaultAgent | Chain-of-thought base | Multi-turn capable general-purpose agent; specialized agents slot in |
+| ShellAgent | Specialized | Shell command generation as one of many possible specialized agents |
+| Per-agent UI | Config-driven | Agent declares capabilities; TUI adapts (hide/show selectors) |
+| Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |
