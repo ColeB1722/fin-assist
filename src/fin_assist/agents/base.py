@@ -51,6 +51,32 @@ class BaseAgent[T](ABC):
         self,
         prompt: str,
         context: list[ContextItem],
-    ) -> AgentResult[T]:
+    ) -> AgentResult:
         """Execute the agent."""
         ...
+
+    @property
+    def supports_model_selection(self) -> bool:
+        """Whether this agent supports model/provider selection.
+
+        Some agents only work with specific models (e.g., vision models).
+        Return False to hide the model selector in the UI.
+        """
+        return True
+
+    @property
+    def supported_providers(self) -> list[str] | None:
+        """List of providers this agent supports, or None for all providers.
+
+        Some agents may only work with certain providers.
+        Return None to allow all configured providers.
+        """
+        return None
+
+    @property
+    def supports_thinking(self) -> bool:
+        """Whether this agent supports chain-of-thought thinking.
+
+        If False, the thinking selector should be hidden in the UI.
+        """
+        return True

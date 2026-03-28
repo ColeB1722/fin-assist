@@ -10,6 +10,7 @@ class GeneralSettings(BaseSettings):
 
     default_provider: str = "anthropic"
     default_model: str = "claude-sonnet-4-6"
+    thinking_effort: str | None = "medium"
     keybinding: str = "ctrl-enter"
 
 

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from fin_assist.context.base import ContextItem
-from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS, build_user_message
+from fin_assist.llm.prompts import SHELL_INSTRUCTIONS, build_user_message
 
 
 class TestBuildUserMessage:
@@ -46,15 +46,15 @@ class TestBuildUserMessage:
         assert "[GIT_DIFF]" in result
 
 
-class TestSystemInstructions:
-    def test_system_instructions_exists(self) -> None:
-        assert SYSTEM_INSTRUCTIONS is not None
-        assert "shell command assistant" in SYSTEM_INSTRUCTIONS
+class TestShellInstructions:
+    def test_shell_instructions_exists(self) -> None:
+        assert SHELL_INSTRUCTIONS is not None
+        assert "shell command assistant" in SHELL_INSTRUCTIONS
 
-    def test_system_instructions_contains_rules(self) -> None:
-        assert "Output ONLY the command" in SYSTEM_INSTRUCTIONS
-        assert "fish shell syntax" in SYSTEM_INSTRUCTIONS
+    def test_shell_instructions_contains_rules(self) -> None:
+        assert "Output ONLY the command" in SHELL_INSTRUCTIONS
+        assert "fish shell syntax" in SHELL_INSTRUCTIONS
 
-    def test_system_instructions_no_template_placeholders(self) -> None:
-        assert "{context}" not in SYSTEM_INSTRUCTIONS
-        assert "{prompt}" not in SYSTEM_INSTRUCTIONS
+    def test_shell_instructions_no_template_placeholders(self) -> None:
+        assert "{context}" not in SHELL_INSTRUCTIONS
+        assert "{prompt}" not in SHELL_INSTRUCTIONS

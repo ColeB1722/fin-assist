@@ -24,6 +24,7 @@ class TestGeneralSettings:
         settings = GeneralSettings()
         assert settings.default_provider == "anthropic"
         assert settings.default_model == "claude-sonnet-4-6"
+        assert settings.thinking_effort == "medium"
         assert settings.keybinding == "ctrl-enter"
 
     def test_general_settings_from_env(self) -> None:
