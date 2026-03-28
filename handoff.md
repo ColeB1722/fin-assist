@@ -2,6 +2,8 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
+**Current state (2026-03-27)**: Phases 1-6 complete. Architecture pivoted to Agent Hub model. See [Architecture Pivot](#previous-session-architecture-pivot--agent-hub-design) for latest design decisions, [Next Session](#next-session-phase-7--agent-hub-server) for implementation plan, and [Implementation Progress](#implementation-progress) for phase tracker.
+
 ---
 
 ## Previous Session: Architecture Consolidation & Design Direction
@@ -261,107 +263,158 @@ Total: 158 tests, all passing (was 117 before Phase 6, removed 13 redundant LLMA
 
 ---
 
-## Previous Session: Vision Realignment — MVP Focus
+## Previous Session: Architecture Pivot — Agent Hub Design
 
 **Date**: 2026-03-27
 **Status**: ✅ Complete
 
 ### Context
 
-After reviewing the long-term vision (AI-Directed-Dev-Pipeline), we realigned on getting fin-assist to a **usable MVP state** rather than continuing with SDD/TDD agent implementation.
+Deep design session to realign the project with an evolved vision: fin-assist as an **expandable agent platform**, not just a shell assistant. The owner's mental model had grown significantly — encompassing ideas for SDD, TDD, code review, shell completion, computer use, journaling, and hyper-agents — while the codebase was still oriented around a TUI-first MVP.
+
+### What Was Accomplished
+
+1. **Full vision analysis** — compared stream-of-consciousness vision against current architecture and phase plan. Identified significant divergence in priorities (hub-first vs TUI-first) and missing concepts (agent metadata protocol, CLI client, conversation store design).
+
+2. **Key architectural decisions made** (interactive Q&A):
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agent routing model | Multi-path: N agents, N agent cards, path-based routing | True A2A compliance, enables agent-to-agent workflows |
+| CLI strategy | Layered: simple CLI first, then REPL mode | Fast iteration on hub + agent behavior |
+| Conversation store | A2A-native `context_id` via fasta2a's `Storage` ABC | Protocol-native, shared across all agents |
+| UI metadata transport | Split: static in agent card extensions, dynamic in task artifacts | Agent card declares capabilities; per-response hints in artifacts |
+| Parent ASGI framework | Starlette (not FastAPI) | Lighter, stays in pydantic/fasta2a ecosystem |
+| First two agents | Shell (one-shot) + Default (multi-turn) | Maximum UI contrast to prove dynamic adaptation |
+
+3. **Architecture doc rewritten** (`docs/architecture.md`):
+   - New overview: "expandable personal AI agent platform" with Agent Hub
+   - New core vision: hub, dynamic UI via metadata, protocol-native, CLI-first
+   - Updated system overview + component diagrams
+   - New directory structure with `hub/` and `cli/` packages
+   - New key interfaces: `AgentCardMeta`, `AgentHub`, `AgentFactory`, UI metadata flow
+   - Updated A2A section with multi-path routing details
+   - Complete phase plan rewrite (7-16)
+   - Updated open questions, design decisions table
+
+4. **Phase plan reordered** — hub-first development:
+   - Phase 7: Agent Hub Server (Starlette + fasta2a + SQLite storage)
+   - Phase 8: CLI Client (simple commands + Rich display)
+   - Phase 8b: CLI REPL Mode (prompt-toolkit)
+   - Phase 9-10: Multiplexer + Fish (deferred)
+   - Phase 11: TUI Client (reuse existing widgets as A2A client)
+   - Phase 13: Skills + MCP (moved up from later)
+   - Phase 14: Additional Agents (SDD, TDD, code review, etc.)
+   - Phase 15: Multi-agent workflows
+
+### Research Conducted
+
+- fasta2a API: `FastA2A`, `Storage`, `Broker`, `Worker`, `Skill`, `AgentCard` schemas
+- pydantic-ai `Agent.to_a2a()` — creates ASGI sub-app from pydantic-ai agent
+- A2A protocol: agent cards, `context_id` for multi-turn, `DataPart` artifacts for structured output
+- Multi-agent server patterns: path-based routing with separate agent cards per path
+- Agent card structure: `skills[]`, `capabilities`, `extensions` for custom metadata
+
+### What Exists But Is Set Aside
+
+- TUI code (`ui/` package) — functional Textual widgets, will be reused as A2A client in Phase 11
+- `fasta2a>=0.6` already in dependencies but never imported — ready for Phase 7
+
+---
+
+## Previous Session: Vision Realignment — MVP Focus
+
+**Date**: 2026-03-27
+**Status**: ✅ Complete (superseded by Architecture Pivot above)
+
+### Context
+
+After reviewing the long-term vision (AI-Directed-Dev-Pipeline), we realigned on getting fin-assist to a **usable MVP state** rather than continuing with SDD/TDD agent implementation. This session's phase plan was later superseded by the Architecture Pivot session.
 
 ### Key Design Decisions
 
 1. **DefaultAgent = Chain-of-Thought Base**
-   - Agent = input → chain-of-thought → output (like OpenCode "thinking" before responding)
-   - Multi-turn capable via message history (even if not always used)
-   - NOT shell-specific initially — more general-purpose natural language interaction
-   - Skills (e.g., brainstorming) and MCP tools can be added as add-ons
+   - Agent = input -> chain-of-thought -> output
+   - Multi-turn capable via message history
+   - NOT shell-specific initially
 
 2. **Shell Completion = Specialized Agent**
    - A specialized agent that slots into the framework
-   - Uses command-centric output elements
-   - Can be selected via TUI or config
 
 3. **Per-Agent UI Constraints**
-   - Some agents only work with certain models
    - TUI should hide irrelevant selectors based on agent capabilities
 
-4. **Skills + MCP Integration** (future phase)
-   - Skills: configurable behaviors (brainstorming, etc.)
-   - MCP: natural language interface to configurable tool selection
-
-5. **Testing Focus**
+4. **Testing Focus**
    - Deep evals framework (pytest-compatible, LLM-as-judge by default)
-   - Must/must-not/should criteria per agent
-   - CI: GitHub Action post-merge runs evals, posts regressions as issues
-
-### Revised Phase Priority
-
-| Phase | Focus | Status |
-|-------|-------|--------|
-| 7 | TUI Implementation — wire up foundation, agent cycling, per-agent UI | ⬜ Not Started |
-| 8 | Multiplexer Integration — tmux, zellij, fallback | ⬜ Not Started |
-| 9 | Fish Plugin — keybinding, command insertion, server auto-start | ⬜ Not Started |
-| 10 | Testing Infrastructure — deep evals framework | ⬜ Not Started |
-| 11 | CI for Evals — GitHub Action, regression issues | ⬜ Not Started |
-| 12+ | SDD/TDD Agents — deferred for detailed discussion | ⬜ Not Started |
-
-### SDD/TDD Deferred
-
-- These represent the full AI-Directed-Dev-Pipeline vision
-- Want much more detailed design discussion before implementing
-- The framework we're building now will enable that later
 
 ---
 
-## Next Session: Phase 7 — TUI Implementation
+## Next Session: Phase 7 — Agent Hub Server
 
 ### Goals
 
-1. **Wire up the existing foundation** — DefaultAgent → Textual TUI
-2. **Agent cycling** — AgentSelector component, switch between agents
-3. **Per-agent UI constraints** — Hide/show selectors based on agent capabilities
-4. **Config-driven agent selection** — Global + per-project TOML
+Build the core "turnstile" of agents: a Starlette server that mounts N specialized agents as A2A sub-apps.
 
-### DefaultAgent Refactor (First)
+### Implementation Steps (SDD → TDD)
 
-Before TUI work, refactor `DefaultAgent` to be the chain-of-thought base:
-- Remove shell-specific `SYSTEM_INSTRUCTIONS`
-- Add generic chain-of-thought system prompt
-- Multi-turn via `message_history` (pydantic-ai's `ModelMessagesTypeAdapter`)
+1. **Extend `BaseAgent` with `AgentCardMeta`** (agents/base.py)
+   - Add `AgentCardMeta` dataclass: `multi_turn`, `supports_thinking`, `supports_model_selection`, etc.
+   - Add `agent_card_metadata` property to `BaseAgent` with sensible defaults
+   - Update existing tests
 
-### TUI Components (MVP)
+2. **Create `ShellAgent`** (agents/shell.py)
+   - One-shot command generation
+   - Uses `SHELL_INSTRUCTIONS` prompt
+   - Returns `CommandResult` (already exists in `agents/results.py`)
+   - `agent_card_metadata`: `multi_turn=False, supports_thinking=False`
+   - Dynamic metadata: `{"accept_action": "insert_command"}`
 
-- `PromptInput` — text area for natural language input
-- `AgentOutput` — display agent response (chain-of-thought visible)
-- `AgentSelector` — switch between available agents
-- `ModelSelector` — dropdown for provider/model selection
-- `ConnectDialog` — existing `/connect` flow
+3. **Implement SQLite storage** (hub/storage.py)
+   - Implement fasta2a `Storage` ABC with SQLite backend
+   - Tables: tasks (A2A task state) + contexts (conversation history)
+   - Configurable db path via `[server]` config
 
-### Not in MVP (Deferred)
+4. **Implement agent factory** (hub/factory.py)
+   - `BaseAgent` → pydantic-ai `Agent` → `.to_a2a()` sub-app
+   - Map `AgentCardMeta` → fasta2a `Skill` + agent card extensions
+   - Inject shared storage + `InMemoryBroker`
 
-- ContextPreview (add later)
-- ChatHistory (multi-turn for specialized agents)
-- Skills/MCP configuration UI
+5. **Implement hub app** (hub/app.py)
+   - Parent Starlette app
+   - Mount each agent at `/agents/{name}/`
+   - `GET /agents` discovery endpoint
+   - `GET /health` health check
 
----
+6. **Wire entry point** (__main__.py)
+   - `fin-assist serve` starts hub via uvicorn on 127.0.0.1:4096
 
-## Next Session: Phase 7 - Specialization — SDDAgent
+7. **Tests**
+   - Hub creation + agent mounting
+   - Discovery endpoint returns correct agent list
+   - Storage CRUD (tasks + contexts)
+   - ShellAgent properties + agent_card_metadata
+   - Factory creates valid A2A sub-apps
 
-### Goals
-1. Create `SDDAgent` class for architectural brainstorming and design
-2. Define `SketchResult` model for design output
-3. Implement doc-reading tools for SDDAgent
-4. Note: Routing prefixes (`/shell`, `/sdd`, `/tdd`) deferred to future phase
+### Key Files to Create/Modify
 
-### Relevant Files
-- `src/fin_assist/agents/sdd.py` — SDDAgent (to be created)
-- `src/fin_assist/agents/results.py` — SketchResult model (to be created)
+| File | Action |
+|------|--------|
+| `src/fin_assist/agents/base.py` | Add `AgentCardMeta`, extend `BaseAgent` |
+| `src/fin_assist/agents/shell.py` | Create (one-shot command agent) |
+| `src/fin_assist/hub/__init__.py` | Create |
+| `src/fin_assist/hub/app.py` | Create (parent Starlette app) |
+| `src/fin_assist/hub/factory.py` | Create (BaseAgent → A2A sub-app) |
+| `src/fin_assist/hub/storage.py` | Create (SQLite fasta2a Storage) |
+| `src/fin_assist/hub/discovery.py` | Create (GET /agents endpoint) |
+| `src/fin_assist/__main__.py` | Modify (add `serve` command) |
+| `tests/test_hub/` | Create (hub tests) |
+| `tests/test_agents/test_shell.py` | Create (ShellAgent tests) |
 
 ### Process Notes
-- **Phase 6 TDD lapse**: Implemented code before tests. Tests served as verification rather than specification. Going forward, must write failing tests BEFORE implementation per AGENTS.md SSD→TDD workflow.
-- **Test quality**: Refactored tests to use public API instead of private state, test behavior not implementation details.
+
+- Follow SDD → TDD strictly: write failing tests first
+- Investigate `to_a2a()` args early — if it doesn't accept custom skills/name, we may need to use `FastA2A` directly
+- Start with `InMemoryStorage` + `InMemoryBroker` to validate the mounting pattern, then swap storage to SQLite
 
 ---
 
@@ -375,14 +428,17 @@ Before TUI work, refactor `DefaultAgent` to be the chain-of-thought base:
 | 4 | Credential Management (UI) | ✅ Complete |
 | 5 | Context Module | ✅ Complete |
 | 6 | Agent Protocol & Registry | ✅ Complete |
-| 7 | TUI Implementation | ⬜ Not Started |
-| 8 | Multiplexer Integration | ⬜ Not Started |
-| 9 | Fish Plugin | ⬜ Not Started |
-| 10 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
-| 11 | CI for Evals | ⬜ Not Started |
-| 12 | SDD/TDD Agents | ⬜ Not Started |
+| 7 | **Agent Hub Server** | ⬜ Not Started |
+| 8 | CLI Client | ⬜ Not Started |
+| 8b | CLI REPL Mode | ⬜ Not Started |
+| 9 | Multiplexer Integration | ⬜ Not Started |
+| 10 | Fish Plugin | ⬜ Not Started |
+| 11 | TUI Client (A2A) | ⬜ Not Started |
+| 12 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
 | 13 | Skills + MCP Integration | ⬜ Not Started |
-| 14 | Documentation | ⬜ Not Started |
+| 14 | Additional Agents | ⬜ Not Started |
+| 15 | Multi-Agent Workflows | ⬜ Not Started |
+| 16 | Documentation | ⬜ Not Started |
 
 ---
 
@@ -412,7 +468,10 @@ To quickly get context in a new session:
 - Target fish 3.2+ for shell integration
 - Config stored in `~/.config/fin/config.toml`
 - Credentials stored in `~/.local/share/fin/credentials.json` (0600 permissions)
-- System prompt optimized for fish shell syntax
 - Server binds to `127.0.0.1` only (local-only)
 - A2A protocol via fasta2a for multi-client support
-- Server lifecycle: on-demand via TUI, or standalone via `fin-assist serve`
+- Multi-path routing: N agents at `/agents/{name}/`, each with own agent card
+- Conversation threading via A2A `context_id`
+- SQLite for task + context storage (shared across agents)
+- Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI deferred
+- Existing TUI widgets set aside — will become A2A client in Phase 11

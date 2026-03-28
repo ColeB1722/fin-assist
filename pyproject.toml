@@ -1,7 +1,7 @@
 [project]
 name = "fin-assist"
 version = "0.1.0"
-description = "Terminal inline assistant for fish shell"
+description = "Expandable personal AI agent platform for terminal workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
