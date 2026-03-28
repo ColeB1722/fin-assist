@@ -103,7 +103,11 @@ class DefaultAgent(BaseAgent[str]):
 
         model = self._build_model()
         thinking_effort = self._config.general.thinking_effort
-        capabilities = [Thinking(effort=thinking_effort)] if thinking_effort else None  # ty: ignore[invalid-argument-type]  # validated by config schema
+        capabilities = (
+            [Thinking(effort=thinking_effort)]
+            if thinking_effort and thinking_effort != "off"
+            else None
+        )
         agent = Agent(
             model,
             output_type=str,

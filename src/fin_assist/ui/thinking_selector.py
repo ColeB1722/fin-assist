@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from textual.widgets import SelectionList
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from fin_assist.config.schema import ThinkingEffort
 
 
 class ThinkingSelector(SelectionList):
@@ -16,11 +18,8 @@ class ThinkingSelector(SelectionList):
         ("High", "high"),
     ]
 
-    def __init__(self, on_change: Callable[[str | None], None] | None = None) -> None:
-        super().__init__(
-            *[(label, value) for label, value in self.OPTIONS],
-            id="thinking-selector",
-        )
+    def __init__(self, on_change: Callable[[ThinkingEffort], None] | None = None) -> None:
+        super().__init__(*self.OPTIONS, id="thinking-selector")
         self._on_change = on_change
         self.select("medium")
 
@@ -42,6 +41,6 @@ class ThinkingSelector(SelectionList):
     def on_selection_changed(self, event: SelectionList.SelectedChanged) -> None:
         selection = event.control.selected
         if selection and self._on_change:
-            value = str(selection[0]) if selection else "medium"
-            effort = None if value == "off" else value
+            value = str(selection[0])
+            effort = cast("ThinkingEffort", None if value == "off" else value)
             self._on_change(effort)

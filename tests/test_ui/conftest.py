@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -16,6 +17,6 @@ def mock_credentials_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
 
 
 @pytest.fixture
-def credential_store(mock_credentials_file: Path) -> CredentialStore:
+def credential_store(mock_credentials_file: Path) -> Generator[CredentialStore, None, None]:
     with patch.dict("os.environ", {}, clear=True):
-        return CredentialStore()
+        yield CredentialStore()

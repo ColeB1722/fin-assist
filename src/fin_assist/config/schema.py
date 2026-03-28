@@ -1,6 +1,10 @@
 """Configuration schema definitions using pydantic-settings."""
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 
 class GeneralSettings(BaseSettings):
@@ -10,7 +14,7 @@ class GeneralSettings(BaseSettings):
 
     default_provider: str = "anthropic"
     default_model: str = "claude-sonnet-4-6"
-    thinking_effort: str | None = "medium"
+    thinking_effort: ThinkingEffort = "medium"
     keybinding: str = "ctrl-enter"
 
 

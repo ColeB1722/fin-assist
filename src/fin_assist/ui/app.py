@@ -16,7 +16,7 @@ from fin_assist.ui.thinking_selector import ThinkingSelector
 
 if TYPE_CHECKING:
     from fin_assist.agents.base import BaseAgent
-    from fin_assist.config.schema import Config
+    from fin_assist.config.schema import Config, ThinkingEffort
     from fin_assist.credentials.store import CredentialStore
 
 
@@ -96,7 +96,7 @@ class FinAssistApp(App):
     def _on_model_changed(self, provider: str, model: str) -> None:
         self.notify(f"Provider changed to: {provider}")
 
-    def _on_thinking_changed(self, effort: str | None) -> None:
+    def _on_thinking_changed(self, effort: ThinkingEffort) -> None:
         self._config.general.thinking_effort = effort
         if isinstance(self._current_agent, DefaultAgent):
             self._current_agent._agent = None

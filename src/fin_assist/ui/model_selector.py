@@ -43,7 +43,7 @@ class ModelSelector(SelectionList):
     def on_selection_changed(self, event: SelectionList.SelectedChanged) -> None:
         selection = event.control.selected
         if selection:
-            provider = str(selection[0] if selection else "")
+            provider = str(selection[0])
             self._selected_provider = provider
             if self._on_change:
                 self._on_change(provider, self._selected_model or "")

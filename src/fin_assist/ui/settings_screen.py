@@ -7,6 +7,8 @@ from textual.screen import ModalScreen
 from fin_assist.ui.connect import ConnectDialog
 
 if TYPE_CHECKING:
+    from textual.app import ComposeResult
+
     from fin_assist.credentials.store import CredentialStore
 
 
@@ -15,5 +17,5 @@ class SettingsScreen(ModalScreen):
         super().__init__()
         self._credential_store = credential_store
 
-    def compose(self):
+    def compose(self) -> ComposeResult:
         yield ConnectDialog(credential_store=self._credential_store)
