@@ -263,6 +263,33 @@ Total: 158 tests, all passing (was 117 before Phase 6, removed 13 redundant LLMA
 
 ---
 
+## Previous Session: Pre-Pivot TUI Cleanup
+
+**Date**: 2026-03-28
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+Removed the pre-pivot TUI code that was wired as the only client, clearing the path for Phase 7 CLI/hub development:
+
+1. **Deleted `src/fin_assist/ui/`** — 9 files (Textual widgets, app, connect dialog)
+2. **Deleted `tests/test_ui/`** — 29 tests for removed UI components
+3. **Removed from dependencies**:
+   - `textual>=3.0` (will be re-added in Phase 11)
+   - `pytest-textual-snapshot>=1.0` (dev)
+4. **Rewrote `__main__.py`** — stub placeholder for Phase 7 CLI dispatcher
+
+### Rationale
+
+The TUI was built pre-pivot as a direct-call Textual app (instantiating `DefaultAgent` directly, no hub). Post-pivot architecture defines it as a Phase 11 A2A client. Keeping it would:
+- Block `__main__.py` rewrite for CLI commands
+- Create coupling to old patterns during agent/hub evolution
+- Add maintenance burden for dead code
+
+Widget patterns are documented in `docs/architecture.md` under "UI Metadata Flow" and "AgentCardMeta" sections — easy to recreate when needed.
+
+---
+
 ## Previous Session: Architecture Pivot — Agent Hub Design
 
 **Date**: 2026-03-27

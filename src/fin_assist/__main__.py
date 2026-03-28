@@ -1,16 +1,16 @@
-"""Entry point for fin-assist CLI."""
+"""Entry point for fin-assist CLI.
 
-from fin_assist.config.loader import load_config
-from fin_assist.credentials.store import CredentialStore
-from fin_assist.ui.app import FinAssistApp
+Phase 7 TODO: Implement CLI dispatcher for:
+  - fin-assist serve   → start agent hub server
+  - fin-assist agents  → list available agents
+  - fin-assist ask     → one-shot query
+  - fin-assist chat    → multi-turn session
+"""
 
 
 def main() -> None:
     """Main entry point for the application."""
-    config = load_config()
-    credentials = CredentialStore()
-    app = FinAssistApp(config=config, credentials=credentials)
-    app.run()
+    print("fin-assist: not yet implemented. See Phase 7.")
 
 
 if __name__ == "__main__":

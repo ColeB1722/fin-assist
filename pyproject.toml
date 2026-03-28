@@ -5,7 +5,6 @@ description = "Expandable personal AI agent platform for terminal workflows"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "textual>=3.0",
     "pydantic-ai>=1.0",
     "pydantic-settings>=2.0",
     "fasta2a>=0.6",
@@ -17,7 +16,6 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
-    "pytest-textual-snapshot>=1.0",
     "ruff>=0.9",
     "ty>=0.0.1a1",
 ]
