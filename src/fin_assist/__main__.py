@@ -1,16 +1,22 @@
-"""Entry point for fin-assist CLI.
+from __future__ import annotations
 
-Phase 7 TODO: Implement CLI dispatcher for:
-  - fin-assist serve   → start agent hub server
-  - fin-assist agents  → list available agents
-  - fin-assist ask     → one-shot query
-  - fin-assist chat    → multi-turn session
-"""
+import argparse
+
+from fin_assist.hub import create_hub_app
 
 
 def main() -> None:
-    """Main entry point for the application."""
-    print("fin-assist: not yet implemented. See Phase 7.")
+    parser = argparse.ArgumentParser(prog="fin-assist")
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.add_parser("serve")
+    args = parser.parse_args()
+
+    if args.command == "serve":
+        create_hub_app()
+        print("fin-assist hub ready")
+        return
+
+    parser.print_help()
 
 
 if __name__ == "__main__":

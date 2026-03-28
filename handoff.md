@@ -378,6 +378,20 @@ After reviewing the long-term vision (AI-Directed-Dev-Pipeline), we realigned on
 
 ## Next Session: Phase 7 — Agent Hub Server
 
+### Phase 7 Progress
+
+- Added `AgentCardMeta` to `BaseAgent` with default UI capability metadata.
+- Added `ShellAgent` as a one-shot shell command agent with `insert_command` metadata.
+- Created initial `hub/` package scaffolding for app, factory, discovery, and storage.
+- Added placeholder hub tests and verified the full suite still passes.
+
+### Next Implementation Steps
+
+1. Replace hub placeholders with real Starlette + fasta2a wiring.
+2. Implement SQLite-backed storage and agent card discovery payloads.
+3. Wire `fin-assist serve` to run the hub for real instead of a placeholder.
+4. Expand tests to cover mounted sub-apps, discovery response shape, and storage CRUD.
+
 ### Goals
 
 Build the core "turnstile" of agents: a Starlette server that mounts N specialized agents as A2A sub-apps.

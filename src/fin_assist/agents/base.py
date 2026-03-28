@@ -16,6 +16,16 @@ class AgentResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class AgentCardMeta:
+    multi_turn: bool = True
+    supports_thinking: bool = True
+    supports_model_selection: bool = True
+    supported_providers: list[str] | None = None
+    color_scheme: str | None = None
+    tags: list[str] = field(default_factory=list)
+
+
 class BaseAgent[T](ABC):
     @property
     @abstractmethod
@@ -80,3 +90,12 @@ class BaseAgent[T](ABC):
         If False, the thinking selector should be hidden in the UI.
         """
         return True
+
+    @property
+    def agent_card_metadata(self) -> AgentCardMeta:
+        return AgentCardMeta(
+            multi_turn=self.supports_thinking,
+            supports_thinking=self.supports_thinking,
+            supports_model_selection=self.supports_model_selection,
+            supported_providers=self.supported_providers,
+        )
