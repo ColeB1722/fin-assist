@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, get_args
+from typing import TYPE_CHECKING, get_args
 
 from fin_assist.agents.base import AgentResult, BaseAgent
-from fin_assist.agents.results import CommandResult
 from fin_assist.context.base import ContextType
 
 if TYPE_CHECKING:
@@ -16,13 +15,13 @@ if TYPE_CHECKING:
     from fin_assist.context.base import ContextItem
     from fin_assist.credentials.store import CredentialStore
 
-    type ShellAgent = Agent[None, CommandResult]
+    type GeneralAgent = Agent[None, str]
 
 
 SUPPORTED_CONTEXT_TYPES = frozenset(get_args(ContextType))
 
 
-class DefaultAgent(BaseAgent[CommandResult]):
+class DefaultAgent(BaseAgent[str]):
     def __init__(
         self,
         config: Config,
@@ -31,28 +30,28 @@ class DefaultAgent(BaseAgent[CommandResult]):
         self._config = config
         self._credentials = credentials
         self._registry = None
-        self._agent: ShellAgent | None = None
+        self._agent: GeneralAgent | None = None
 
     @property
     def name(self) -> str:
-        return "shell"
+        return "default"
 
     @property
     def description(self) -> str:
         return (
-            "Shell command generation agent. "
-            "Converts natural language requests into fish shell commands."
+            "General-purpose assistant. "
+            "Helps with questions, shell commands, brainstorming, and more."
         )
 
     @property
     def system_prompt(self) -> str:
-        from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS
+        from fin_assist.llm.prompts import CHAIN_OF_THOUGHT_INSTRUCTIONS
 
-        return SYSTEM_INSTRUCTIONS
+        return CHAIN_OF_THOUGHT_INSTRUCTIONS
 
     @property
-    def output_type(self) -> type[CommandResult]:
-        return CommandResult
+    def output_type(self) -> type[str]:
+        return str
 
     def supports_context(self, context_type: str) -> bool:
         return context_type in SUPPORTED_CONTEXT_TYPES
@@ -63,11 +62,11 @@ class DefaultAgent(BaseAgent[CommandResult]):
         context: list[ContextItem],
     ) -> AgentResult:
         try:
-            command_result = await self.generate(prompt, context)
+            response = await self.generate(prompt, context)
             return AgentResult(
                 success=True,
-                output=command_result.command,
-                warnings=command_result.warnings or [],
+                output=response,
+                warnings=[],
                 metadata={},
             )
         except Exception as e:
@@ -82,7 +81,7 @@ class DefaultAgent(BaseAgent[CommandResult]):
         self,
         prompt: str,
         context: Sequence[ContextItem] | None = None,
-    ) -> CommandResult:
+    ) -> str:
         from fin_assist.llm.prompts import build_user_message
 
         agent = await self._get_agent()
@@ -91,19 +90,31 @@ class DefaultAgent(BaseAgent[CommandResult]):
         result = await agent.run(user_message)
         return result.output
 
-    async def _get_agent(self) -> ShellAgent:
+    async def _get_agent(self) -> GeneralAgent:
         if self._agent is None:
             self._agent = await self._build_agent()
         return self._agent
 
-    async def _build_agent(self) -> ShellAgent:
+    async def _build_agent(self) -> GeneralAgent:
         from pydantic_ai import Agent
+        from pydantic_ai.capabilities import Thinking
 
-        from fin_assist.llm.prompts import SYSTEM_INSTRUCTIONS
+        from fin_assist.llm.prompts import CHAIN_OF_THOUGHT_INSTRUCTIONS
 
         model = self._build_model()
-        agent = Agent(model, output_type=CommandResult, instructions=SYSTEM_INSTRUCTIONS)
-        return cast("ShellAgent", agent)
+        thinking_effort = self._config.general.thinking_effort
+        capabilities = (
+            [Thinking(effort=thinking_effort)]
+            if thinking_effort and thinking_effort != "off"
+            else None
+        )
+        agent = Agent(
+            model,
+            output_type=str,
+            instructions=CHAIN_OF_THOUGHT_INSTRUCTIONS,
+            capabilities=capabilities,
+        )
+        return agent
 
     def _get_registry(self):
         if self._registry is None:

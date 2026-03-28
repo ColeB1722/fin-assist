@@ -6,7 +6,6 @@ import pytest
 
 from fin_assist.agents.base import AgentResult
 from fin_assist.agents.default import DefaultAgent
-from fin_assist.agents.results import CommandResult
 from fin_assist.context.base import ContextItem
 
 
@@ -17,9 +16,9 @@ class TestDefaultAgentInit:
 
 
 class TestDefaultAgentProperties:
-    def test_name_is_shell(self, mock_config, mock_credentials) -> None:
+    def test_name_is_default(self, mock_config, mock_credentials) -> None:
         agent = DefaultAgent(mock_config, mock_credentials)
-        assert agent.name == "shell"
+        assert agent.name == "default"
 
     def test_description_is_non_empty_string(self, mock_config, mock_credentials) -> None:
         agent = DefaultAgent(mock_config, mock_credentials)
@@ -31,11 +30,9 @@ class TestDefaultAgentProperties:
         assert isinstance(agent.system_prompt, str)
         assert len(agent.system_prompt) > 0
 
-    def test_output_type_returns_a_type(self, mock_config, mock_credentials) -> None:
+    def test_output_type_is_str(self, mock_config, mock_credentials) -> None:
         agent = DefaultAgent(mock_config, mock_credentials)
-        output_type = agent.output_type
-        assert isinstance(output_type, type)
-        assert output_type is not None
+        assert agent.output_type is str
 
     def test_supports_context_returns_bool(self, mock_config, mock_credentials) -> None:
         agent = DefaultAgent(mock_config, mock_credentials)
@@ -54,19 +51,19 @@ class TestDefaultAgentProperties:
 
 class TestDefaultAgentRun:
     @pytest.mark.asyncio
-    async def test_run_returns_agent_result(self, mock_config, mock_credentials) -> None:
+    async def test_run_returns_successful_result(self, mock_config, mock_credentials) -> None:
         mock_agent = MagicMock()
         mock_result = MagicMock()
-        mock_result.output = CommandResult(command="ls -la")
+        mock_result.output = "Here is a helpful explanation."
         mock_agent.run = AsyncMock(return_value=mock_result)
 
         with patch.object(DefaultAgent, "_get_agent", return_value=mock_agent):
             agent = DefaultAgent(mock_config, mock_credentials)
-            result = await agent.run("list files", [])
+            result = await agent.run("explain how pipes work", [])
 
             assert isinstance(result, AgentResult)
             assert result.success is True
-            assert result.output == "ls -la"
+            assert result.output == "Here is a helpful explanation."
             assert result.warnings == []
 
     @pytest.mark.asyncio
@@ -74,30 +71,56 @@ class TestDefaultAgentRun:
         context = [ContextItem(id="1", type="file", content="test.py content", metadata={})]
         mock_agent = MagicMock()
         mock_result = MagicMock()
-        mock_result.output = CommandResult(command="grep test test.py")
+        mock_result.output = "The file contains unit tests."
         mock_agent.run = AsyncMock(return_value=mock_result)
 
         with patch.object(DefaultAgent, "_get_agent", return_value=mock_agent):
             agent = DefaultAgent(mock_config, mock_credentials)
-            await agent.run("find in file", context=context)
+            await agent.run("summarize this file", context=context)
             mock_agent.run.assert_called_once()
             call_args = mock_agent.run.call_args
             assert call_args is not None
 
     @pytest.mark.asyncio
-    async def test_run_returns_warnings_from_result(self, mock_config, mock_credentials) -> None:
-        mock_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(command="rm -rf /", warnings=["Destructive operation"])
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(DefaultAgent, "_get_agent", return_value=mock_agent):
+    async def test_run_returns_failure_on_exception(self, mock_config, mock_credentials) -> None:
+        with patch.object(
+            DefaultAgent, "_get_agent", side_effect=RuntimeError("model unavailable")
+        ):
             agent = DefaultAgent(mock_config, mock_credentials)
-            result = await agent.run("delete everything", [])
+            result = await agent.run("explain something", [])
 
-            assert result.success is True
-            assert result.output == "rm -rf /"
-            assert "Destructive operation" in result.warnings
+            assert result.success is False
+            assert result.output == ""
+            assert "model unavailable" in result.warnings[0]
+
+
+class TestDefaultAgentBuildAgent:
+    @pytest.mark.asyncio
+    async def test_build_agent_with_thinking_effort(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.capabilities import Thinking
+        from pydantic_ai.models.test import TestModel
+
+        mock_config.general.thinking_effort = "high"
+
+        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
+            agent = DefaultAgent(mock_config, mock_credentials)
+            built = await agent._build_agent()
+
+            caps = built._root_capability.capabilities
+            assert len(caps) == 1
+            assert isinstance(caps[0], Thinking)
+
+    @pytest.mark.asyncio
+    async def test_build_agent_without_thinking_effort(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.models.test import TestModel
+
+        mock_config.general.thinking_effort = None
+
+        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
+            agent = DefaultAgent(mock_config, mock_credentials)
+            built = await agent._build_agent()
+
+            assert not built._root_capability.capabilities
 
 
 class TestDefaultAgentBuildModel:

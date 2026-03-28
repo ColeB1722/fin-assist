@@ -261,6 +261,92 @@ Total: 158 tests, all passing (was 117 before Phase 6, removed 13 redundant LLMA
 
 ---
 
+## Previous Session: Vision Realignment — MVP Focus
+
+**Date**: 2026-03-27
+**Status**: ✅ Complete
+
+### Context
+
+After reviewing the long-term vision (AI-Directed-Dev-Pipeline), we realigned on getting fin-assist to a **usable MVP state** rather than continuing with SDD/TDD agent implementation.
+
+### Key Design Decisions
+
+1. **DefaultAgent = Chain-of-Thought Base**
+   - Agent = input → chain-of-thought → output (like OpenCode "thinking" before responding)
+   - Multi-turn capable via message history (even if not always used)
+   - NOT shell-specific initially — more general-purpose natural language interaction
+   - Skills (e.g., brainstorming) and MCP tools can be added as add-ons
+
+2. **Shell Completion = Specialized Agent**
+   - A specialized agent that slots into the framework
+   - Uses command-centric output elements
+   - Can be selected via TUI or config
+
+3. **Per-Agent UI Constraints**
+   - Some agents only work with certain models
+   - TUI should hide irrelevant selectors based on agent capabilities
+
+4. **Skills + MCP Integration** (future phase)
+   - Skills: configurable behaviors (brainstorming, etc.)
+   - MCP: natural language interface to configurable tool selection
+
+5. **Testing Focus**
+   - Deep evals framework (pytest-compatible, LLM-as-judge by default)
+   - Must/must-not/should criteria per agent
+   - CI: GitHub Action post-merge runs evals, posts regressions as issues
+
+### Revised Phase Priority
+
+| Phase | Focus | Status |
+|-------|-------|--------|
+| 7 | TUI Implementation — wire up foundation, agent cycling, per-agent UI | ⬜ Not Started |
+| 8 | Multiplexer Integration — tmux, zellij, fallback | ⬜ Not Started |
+| 9 | Fish Plugin — keybinding, command insertion, server auto-start | ⬜ Not Started |
+| 10 | Testing Infrastructure — deep evals framework | ⬜ Not Started |
+| 11 | CI for Evals — GitHub Action, regression issues | ⬜ Not Started |
+| 12+ | SDD/TDD Agents — deferred for detailed discussion | ⬜ Not Started |
+
+### SDD/TDD Deferred
+
+- These represent the full AI-Directed-Dev-Pipeline vision
+- Want much more detailed design discussion before implementing
+- The framework we're building now will enable that later
+
+---
+
+## Next Session: Phase 7 — TUI Implementation
+
+### Goals
+
+1. **Wire up the existing foundation** — DefaultAgent → Textual TUI
+2. **Agent cycling** — AgentSelector component, switch between agents
+3. **Per-agent UI constraints** — Hide/show selectors based on agent capabilities
+4. **Config-driven agent selection** — Global + per-project TOML
+
+### DefaultAgent Refactor (First)
+
+Before TUI work, refactor `DefaultAgent` to be the chain-of-thought base:
+- Remove shell-specific `SYSTEM_INSTRUCTIONS`
+- Add generic chain-of-thought system prompt
+- Multi-turn via `message_history` (pydantic-ai's `ModelMessagesTypeAdapter`)
+
+### TUI Components (MVP)
+
+- `PromptInput` — text area for natural language input
+- `AgentOutput` — display agent response (chain-of-thought visible)
+- `AgentSelector` — switch between available agents
+- `ModelSelector` — dropdown for provider/model selection
+- `ConnectDialog` — existing `/connect` flow
+
+### Not in MVP (Deferred)
+
+- ContextPreview (add later)
+- ChatHistory (multi-turn for specialized agents)
+- Skills/MCP configuration UI
+
+---
+
 ## Next Session: Phase 7 - Specialization — SDDAgent
 
 ### Goals
@@ -289,13 +375,14 @@ Total: 158 tests, all passing (was 117 before Phase 6, removed 13 redundant LLMA
 | 4 | Credential Management (UI) | ✅ Complete |
 | 5 | Context Module | ✅ Complete |
 | 6 | Agent Protocol & Registry | ✅ Complete |
-| 7 | Specialization — SDDAgent | ⬜ Not Started |
-| 8 | Specialization — TDDAgent | ⬜ Not Started |
-| 9 | fasta2a Server Integration | ⬜ Not Started |
-| 10 | TUI Client → A2A Client | ⬜ Not Started |
-| 11 | Fish Plugin (Server-Aware) | ⬜ Not Started |
-| 12 | Multiplexer Integration | ⬜ Not Started |
-| 13 | Testing & Documentation | ⬜ Not Started |
+| 7 | TUI Implementation | ⬜ Not Started |
+| 8 | Multiplexer Integration | ⬜ Not Started |
+| 9 | Fish Plugin | ⬜ Not Started |
+| 10 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
+| 11 | CI for Evals | ⬜ Not Started |
+| 12 | SDD/TDD Agents | ⬜ Not Started |
+| 13 | Skills + MCP Integration | ⬜ Not Started |
+| 14 | Documentation | ⬜ Not Started |
 
 ---
 
