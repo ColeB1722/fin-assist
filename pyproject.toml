@@ -12,7 +12,7 @@ dependencies = [
     "keyring>=25.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",

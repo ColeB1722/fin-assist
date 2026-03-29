@@ -21,7 +21,3 @@ PROVIDER_META: dict[str, ProviderMeta] = {
 
 def get_provider_ids() -> list[str]:
     return list(PROVIDER_META.keys())
-
-
-def get_providers_requiring_api_key() -> set[str]:
-    return {pid for pid, meta in PROVIDER_META.items() if meta.requires_api_key}
