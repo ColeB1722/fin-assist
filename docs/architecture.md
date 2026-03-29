@@ -164,9 +164,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  │  │  • supports_context(context_type) -> bool                      │  │   │
 │  │  │  • run(prompt, context) -> AgentResult[T]                       │  │   │
 │  │  └────────────────────────────────────────────────────────────────┘  │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  AgentRegistry — registers and looks up agents                  │  │   │
-│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  │  Agent instances passed directly to create_hub_app()                │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -205,8 +203,7 @@ fin-assist/
 │       │   ├── __init__.py
 │       │   ├── app.py               # Parent Starlette app, mounts agent sub-apps
 │       │   ├── factory.py           # BaseAgent → pydantic-ai Agent → .to_a2a()
-│       │   ├── storage.py           # SQLite-backed fasta2a Storage implementation
-│       │   └── discovery.py         # GET /agents endpoint
+│       │   └── storage.py           # SQLite-backed fasta2a Storage implementation
 │       │
 │       ├── cli/                     # CLI client (primary client)
 │       │   ├── __init__.py
@@ -218,7 +215,6 @@ fin-assist/
 │       ├── agents/
 │       │   ├── __init__.py
 │       │   ├── base.py             # BaseAgent ABC, AgentResult, AgentCardMeta
-│       │   ├── registry.py         # AgentRegistry
 │       │   ├── results.py          # CommandResult and other result models
 │       │   ├── default.py          # DefaultAgent (multi-turn chain-of-thought)
 │       │   ├── shell.py            # ShellAgent (one-shot command generation)
@@ -389,25 +385,6 @@ class BaseAgent(ABC, Generic[T]):
         Override in subclasses to customize client UI behavior.
         """
         return AgentCardMeta()  # sensible defaults
-```
-
-### Agent Registry
-
-```python
-class AgentRegistry:
-    """Registers and looks up agent instances."""
-
-    def register(self, agent: BaseAgent) -> None:
-        """Register an initialized agent instance."""
-        ...
-
-    def get(self, name: str) -> BaseAgent | None:
-        """Get agent by name."""
-        ...
-
-    def list_agents(self) -> list[tuple[str, str]]:
-        """List all registered agents as (name, description) pairs."""
-        ...
 ```
 
 ### Specialized Agents
@@ -711,7 +688,7 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 
 ### Phase 6: Agent Protocol & Registry ✅
 - [x] Define `BaseAgent` ABC with `AgentResult`
-- [x] Create `AgentRegistry` with decorator-based registration
+- [x] ~~Create `AgentRegistry`~~ (removed — superseded by hub's explicit agent list)
 - [x] Implement `DefaultAgent` (chain-of-thought base)
 - [x] TUI foundation (Textual widgets — set aside, usable as future client)
 
@@ -720,8 +697,7 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
 - [ ] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
 - [ ] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
-- [ ] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`
-- [ ] Implement `hub/discovery.py` — `GET /agents` returns agent card list with metadata
+- [ ] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
 - [ ] Wire entry point — `fin-assist serve` starts the hub via uvicorn
 - [ ] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD
 
@@ -857,7 +833,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
 | Conversation storage | SQLite via fasta2a Storage ABC | A2A-native `context_id` for threading, shared across all agents |
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
-| Agent registry | Instance-based (not decorator) | Agents need config/credentials at init; register initialized instances |
+| Agent registration | Explicit list to `create_hub_app()` | Agents need config/credentials at init; no global registry |
 | DefaultAgent | Chain-of-thought base, multi-turn | General-purpose agent; specialized agents slot in as peers |
 | ShellAgent | Specialized one-shot | `multi_turn=False`, returns `CommandResult`, dynamic `accept_action` hint |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |

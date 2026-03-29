@@ -64,15 +64,3 @@ def get_keyring_key(provider: str) -> str | None:
     with suppress(Exception):
         return keyring.get_password("fin-assist", provider)
     return None
-
-
-def set_keyring_key(provider: str, api_key: str) -> None:
-    with suppress(Exception):
-        keyring.set_password("fin-assist", provider, api_key)
-
-
-def keyring_available() -> bool:
-    with suppress(Exception):
-        keyring.get_password("fin-assist", "__test__")
-        return True
-    return False
