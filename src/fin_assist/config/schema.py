@@ -35,9 +35,18 @@ class ProviderConfig(BaseSettings):
     default_model: str | None = None
 
 
+class ServerSettings(BaseSettings):
+    """Agent Hub server settings."""
+
+    host: str = "127.0.0.1"
+    port: int = 4096
+    db_path: str = "~/.local/share/fin/hub.db"
+
+
 class Config(BaseSettings):
     """Root configuration model."""
 
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()
+    server: ServerSettings = ServerSettings()
     providers: dict[str, ProviderConfig] = {}

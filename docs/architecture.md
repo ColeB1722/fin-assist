@@ -2,30 +2,33 @@
 
 ## Overview
 
-fin-assist is a **personal AI agent platform** for terminal workflows, inspired by Zed's inline assistant and OpenCode's server/client architecture. It provides a TUI for natural language interaction with specialized agents, multi-provider LLM support, and a seamless accept/run workflow — all built on a **fasta2a (A2A protocol)** backend that enables multiple frontend clients.
+fin-assist is an **expandable personal AI agent platform** for terminal workflows. It provides an **Agent Hub** — a server that hosts N specialized agents over the A2A protocol — and multiple client interfaces (CLI, TUI, future web) that dynamically adapt their UI based on each agent's declared capabilities.
 
 ### Core Vision
 
-**Agent = Chain-of-Thought** — Like OpenCode's "thinking" before responding, agents take natural language input and produce thoughtful output through reasoning. The DefaultAgent is the base agent (multi-turn capable), while specialized agents (shell completion, SDD, TDD) slot into the framework naturally.
+**Agent Hub** — A "turnstile" of specialized agents exposed via A2A protocol (fasta2a). Each agent is independently discoverable, has its own agent card, and can be swapped in/out of the server. The hub handles routing, conversation persistence, and agent lifecycle.
 
-**Skills + MCP** — Agents can be extended with configurable skills (behaviors) and MCP tools, exposed as natural language interfaces.
+**Dynamic UI via Agent Metadata** — Clients adapt their interface based on agent capabilities. Static metadata (multi-turn, thinking support, model selection) is declared in the A2A agent card. Dynamic metadata (accept actions, rendering hints) is returned per-response in task artifacts. Clients don't need to know about specific agents — they read metadata and adapt.
 
-**Per-Agent UI** — The TUI adapts to each agent's capabilities, hiding irrelevant selectors (e.g., model selector when agent only works with one model).
+**Protocol-Native** — Built on A2A (Agent-to-Agent) protocol via fasta2a. Any A2A-compatible client can communicate with the hub. This enables future agent-to-agent workflows (e.g., SDD agent handing off to TDD agent).
+
+**CLI-First, TUI-Later** — Start with a simple CLI client for fast iteration and testing, then layer on a TUI and other clients. The server is the stable core; clients are interchangeable.
 
 ## Design Principles
 
 1. **Agents as code** — Custom specialized agents, not declarative configurations. The fun is in the implementation.
-2. **Protocol-native** — Built on the A2A (Agent-to-Agent) protocol via fasta2a for standardized agent communication and multi-client support.
+2. **Protocol-native** — Built on A2A via fasta2a for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **pydantic-ai foundation** — Unified interface for all LLM providers with structured output validation.
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
-5. **Fish-shell native** — Primary integration target, but the backend is shell-agnostic.
+5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
+6. **Metadata-driven clients** — Clients read agent capabilities from agent cards and adapt dynamically. No client-side agent-specific code.
 
 ## Non-Goals
 
-- Shell-agnostic implementation (fish-first, generalize later)
+- Network-accessible deployment (personal use only, local-first)
 - Real-time command suggestions (on-demand only)
 - IDE/editor integration (beyond future MCP)
-- Network-accessible deployment (personal use only)
+- Declarative agent configuration (agents are code, not YAML/TOML)
 
 ---
 
@@ -37,35 +40,41 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Client Layer (Frontends)                             │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
-│  │  TUI Client     │  │  Web Client     │  │  Future Clients │             │
-│  │  (Textual)      │  │  (HTML/JS)      │  │  (GUI, CLI...)  │             │
+│  │  CLI Client     │  │  TUI Client     │  │  Future Clients │             │
+│  │  (primary)      │  │  (Textual)      │  │  (web, GUI...)  │             │
 │  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘             │
 └───────────┼────────────────────┼────────────────────┼───────────────────────┘
             │                    │                    │
-            │  A2A Protocol (HTTP + SSE + JSON-RPC)  │
+            │  A2A Protocol (HTTP + JSON-RPC)         │
+            │  Agent discovery via agent cards        │
+            │  Dynamic UI via agent card metadata     │
             └────────────────────┴────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    fin-assist Server (fasta2a / ASGI)                        │
+│                    Agent Hub (Starlette / ASGI)                               │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  Agent Router — dispatches incoming requests to the appropriate agent │    │
-│  └──────────────────────────────────────────────────────────────────────┘    │
-│                                    │                                         │
-│  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │                    Specialized Agents (pydantic-ai)                    │    │
-│  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐      │    │
-│  │  │ Default    │  │ Shell      │  │ SDD        │  │ TDD        │      │    │
-│  │  │ Agent      │  │ Agent      │  │ Agent      │  │ Agent      │      │    │
-│  │  │ (chain-of- │  │ (special-  │  │ (future)   │  │ (future)   │      │    │
-│  │  │  thought)  │  │  ized)     │  │            │  │            │      │    │
-│  │  └────────────┘  └────────────┘  └────────────┘  └────────────┘      │    │
+│  │  GET /agents — discovery endpoint (lists all agent card URLs)        │    │
+│  │  GET /health — health check                                          │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  Storage — Conversation/task persistence                           │    │
-│  │  (see Open Questions: JSON vs SQLite)                               │    │
+│  │  Multi-Path Agent Routing (each agent = separate A2A sub-app)        │    │
+│  │                                                                       │    │
+│  │  /agents/default/                    /agents/shell/                   │    │
+│  │  ├── /.well-known/agent-card.json    ├── /.well-known/agent-card.json│    │
+│  │  └── / (JSON-RPC endpoint)           └── / (JSON-RPC endpoint)      │    │
+│  │                                                                       │    │
+│  │  /agents/sdd/ (future)               /agents/{name}/ (future)       │    │
+│  │  ├── /.well-known/agent-card.json    ├── /.well-known/agent-card.json│    │
+│  │  └── / (JSON-RPC endpoint)           └── / (JSON-RPC endpoint)      │    │
+│  └──────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐    │
+│  │  Shared Storage (SQLite, fasta2a Storage ABC)                        │    │
+│  │  • Task storage — A2A tasks, status, artifacts, messages             │    │
+│  │  • Context storage — conversation history per context_id             │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
@@ -74,17 +83,15 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 │  │  • ConfigLoader (TOML)                                                │    │
 │  │  • ContextProviders (files, git, history, env)                      │    │
 │  │  • ProviderRegistry (LLM providers)                                    │    │
-│  │  • Skills (configurable behaviors)                                     │    │
-│  │  • MCP Client (tool integration)                                       │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Shell Integration (Fish)                             │
+│                     Shell Integration (Fish) — future                        │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  fin_assist.fish — keybinding launches TUI, receives output           │    │
-│  │  fin_assist serve — starts background server (optional)               │    │
+│  │  fin_assist.fish — keybinding launches CLI/TUI, receives output       │    │
+│  │  Command insertion — accept shell agent output into commandline       │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -93,95 +100,92 @@ fin-assist is a **personal AI agent platform** for terminal workflows, inspired 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          fish shell                                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  fin-assist plugin (conf.d/functions)                                 │   │
-│  │  - Keybinding: ctrl-enter (configurable)                              │   │
-│  │  - Captures: commandline buffer, pwd, env context                     │   │
-│  │  - Launches fin-assist server (if not running) + TUI client           │   │
-│  │  - Receives output, inserts into commandline                          │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
+│                    CLI Client (primary, built first)                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Simple Commands                                                      │   │
+│  │  • fin-assist serve          — start agent hub server                 │   │
+│  │  • fin-assist agents         — list available agents                  │   │
+│  │  • fin-assist ask <agent> .. — one-shot query                         │   │
+│  │  • fin-assist chat <agent>   — multi-turn session (uses context_id)  │   │
+│  ├──────────────────────────────────────────────────────────────────────┤   │
+│  │  REPL Mode (second layer)                                             │   │
+│  │  • fin-assist (no args)      — enter interactive REPL                 │   │
+│  │  • /switch <agent>           — switch active agent                   │   │
+│  │  • Dynamic prompts from agent card metadata                          │   │
+│  ├──────────────────────────────────────────────────────────────────────┤   │
+│  │  A2A Client (httpx)                                                   │   │
+│  │  • Discovers agent cards, sends message/send, parses artifacts       │   │
+│  │  • Reads AgentCardMeta to adapt display (one-shot vs multi-turn)    │   │
+│  │  • Rich-based output formatting                                      │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │  A2A Protocol (HTTP + JSON-RPC)
+                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    fin-assist (Python 3.12 / Textual + fasta2a)              │
+│                    Agent Hub (Starlette parent ASGI app)                      │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Client Layer (Textual TUI — the primary, default client)             │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  PromptInput      - textarea with @ mention trigger              │  │   │
-│  │  │  ModelSelector    - dropdown for provider/model                 │  │   │
-│  │  │  AgentSelector    - tabs/dropdown for agent selection          │  │   │
-│  │  │  ContextPreview   - shows added context items                  │  │   │
-│  │  │  ActionButtons    - [Accept] [Run]                             │  │   │
-│  │  │  ConnectDialog    - /connect provider setup UI                  │  │   │
-│  │  │  ChatHistory      - conversation history for multi-turn agents │  │   │
-│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  │  Hub App (hub/app.py)                                                 │   │
+│  │  • Mounts N agent sub-apps at /agents/{name}/                        │   │
+│  │  • GET /agents — discovery (lists all agent card URLs + metadata)    │   │
+│  │  • GET /health — health check                                        │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Server Layer (fasta2a / ASGI)                                        │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  FastA2A App — wraps agents as A2A server                       │  │   │
-│  │  │  • TaskManager — coordinates task lifecycle                     │  │   │
-│  │  │  • Storage — persists tasks and conversation context            │  │   │
-│  │  │  • Broker — schedules async task execution                     │  │   │
-│  │  └────────────────────────────────────────────────────────────────┘  │   │
+│  │  Agent Factory (hub/factory.py)                                       │   │
+│  │  • BaseAgent → pydantic-ai Agent → .to_a2a() sub-app                │   │
+│  │  • Maps AgentCardMeta → fasta2a Skill + agent card extensions       │   │
+│  │  • Injects shared storage + broker                                   │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  Mounted A2A Sub-Apps (one per agent)                                 │   │
+│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐       │   │
+│  │  │ /default/  │ │ /shell/    │ │ /sdd/      │ │ /future/   │       │   │
+│  │  │ multi-turn │ │ one-shot   │ │ multi-turn │ │ ...        │       │   │
+│  │  │ chain-of-  │ │ cmd gen    │ │ design     │ │            │       │   │
+│  │  │ thought    │ │            │ │ (future)   │ │            │       │   │
+│  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘       │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │  SQLite Storage (hub/storage.py — fasta2a Storage ABC)               │   │
+│  │  • Task storage: A2A tasks, status, artifacts, messages              │   │
+│  │  • Context storage: conversation history per context_id              │   │
+│  │  • Shared across all agents (context_id scoped per agent path)      │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Agent System                                                         │   │
 │  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  Agent Protocol (BaseAgent ABC)                                 │  │   │
+│  │  │  BaseAgent ABC + AgentCardMeta                                  │  │   │
 │  │  │  • name, description, system_prompt, output_type               │  │   │
+│  │  │  • agent_card_metadata → AgentCardMeta (static UI hints)       │  │   │
 │  │  │  • supports_context(context_type) -> bool                      │  │   │
 │  │  │  • run(prompt, context) -> AgentResult[T]                       │  │   │
 │  │  └────────────────────────────────────────────────────────────────┘  │   │
 │  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  AgentRegistry — registers and dispatches agents                │  │   │
+│  │  │  AgentRegistry — registers and looks up agents                  │  │   │
 │  │  └────────────────────────────────────────────────────────────────┘  │   │
-│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐       │   │
-│  │  │ Default    │ │ SDD        │ │ TDD        │ │ Future     │       │   │
-│  │  │ Agent     │ │ Agent      │ │ Agent      │ │ Agents     │       │   │
-│  │  │ (shell)   │ │ (design)   │ │ (impl)     │ │            │       │   │
-│  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘       │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Context Module                                                       │   │
-│  │  - FileFinder: find for file discovery (fd optional)                  │   │
-│  │  - GitContext: git diff/log/status for recent changes               │   │
-│  │  - ShellHistory: parse fish history for context                      │   │
-│  │  - Environment: cwd, relevant env vars                               │   │
-│  │  - Agent-specific filtering (SDD→docs only, TDD→code only)          │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  LLM Module (pydantic-ai)                                            │   │
-│  │  - Agent: Unified interface for all providers                         │   │
-│  │  - FallbackModel: Automatic failover between models                   │   │
-│  │  - ProviderRegistry: Anthropic, OpenRouter, Ollama, etc.            │   │
-│  │  - PromptBuilder: Constructs system/user prompts                     │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Credential Module                                                    │   │
-│  │  - CredentialStore: Secure storage in ~/.local/share/fin/            │   │
-│  │  - KeyringBackend: Optional OS keyring integration                    │   │
-│  │  - ConnectCommand: TUI flow for adding providers                     │   │
+│  │  Shared Services                                                      │   │
+│  │  • CredentialStore — env var → file → keyring fallback              │   │
+│  │  • ConfigLoader — TOML config (~/.config/fin/config.toml)           │   │
+│  │  • ContextProviders — files, git, history, environment              │   │
+│  │  • ProviderRegistry — LLM provider/model creation                   │   │
+│  │  • PromptBuilder — system/user prompt construction                  │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                  Multiplexer Integration                                     │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  tmux — FloatingPane via display-popup                                │  │
-│  │  zellij — FloatingPane via plugin --floating                         │  │
-│  │  ghostty (future) — Pending upstream popup support                   │  │
-│  │  Fallback — Alternate screen buffer                                   │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
+│                  Future Clients                                               │
+│  ┌──────────────┐  ┌──────────────────┐  ┌────────────────────────────┐   │
+│  │ TUI Client   │  │ Multiplexer      │  │ Fish Plugin                │   │
+│  │ (Textual)    │  │ (tmux/zellij)    │  │ (keybinding + insertion)   │   │
+│  └──────────────┘  └──────────────────┘  └────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -194,67 +198,93 @@ fin-assist/
 ├── src/
 │   └── fin_assist/
 │       ├── __init__.py
-│       ├── __main__.py              # CLI entry: `fin-assist [serve|tui|...]`
-│       ├── server/                  # Future: fasta2a server
+│       ├── __main__.py              # CLI entry: `fin-assist [serve|agents|ask|chat]`
+│       ├── providers.py             # ProviderMeta definitions
+│       │
+│       ├── hub/                     # Agent Hub server
 │       │   ├── __init__.py
-│       │   ├── app.py               # FastA2A ASGI app setup
-│       │   ├── router.py           # Agent routing logic
-│       │   └── lifespan.py         # Server lifespan (start/stop hooks)
+│       │   ├── app.py               # Parent Starlette app, mounts agent sub-apps
+│       │   ├── factory.py           # BaseAgent → pydantic-ai Agent → .to_a2a()
+│       │   ├── storage.py           # SQLite-backed fasta2a Storage implementation
+│       │   └── discovery.py         # GET /agents endpoint
+│       │
+│       ├── cli/                     # CLI client (primary client)
+│       │   ├── __init__.py
+│       │   ├── main.py              # Command dispatch (serve, agents, ask, chat)
+│       │   ├── client.py            # A2A client wrapper (httpx)
+│       │   ├── display.py           # Rich-based output formatting
+│       │   └── repl.py              # Interactive REPL mode (prompt-toolkit)
+│       │
 │       ├── agents/
 │       │   ├── __init__.py
-│       │   ├── base.py             # BaseAgent ABC, AgentResult model
-│       │   ├── registry.py         # AgentRegistry (decorator-based registration)
-│       │   ├── default.py          # DefaultAgent (chain-of-thought base)
-│       │   ├── shell.py            # Future: ShellAgent (shell command generation)
+│       │   ├── base.py             # BaseAgent ABC, AgentResult, AgentCardMeta
+│       │   ├── registry.py         # AgentRegistry
+│       │   ├── results.py          # CommandResult and other result models
+│       │   ├── default.py          # DefaultAgent (multi-turn chain-of-thought)
+│       │   ├── shell.py            # ShellAgent (one-shot command generation)
 │       │   ├── sdd.py              # Future: SDDAgent (design)
 │       │   └── tdd.py              # Future: TDDAgent (test-driven)
-│       ├── skills/                  # Future: Skills framework
-│       │   └── __init__.py
-│       ├── mcp/                    # Future: MCP client integration
-│       │   └── __init__.py
+│       │
 │       ├── llm/
 │       │   ├── __init__.py
-│       │   ├── agent.py            # pydantic-ai Agent wrapper (per agent)
 │       │   ├── model_registry.py   # Provider registry
 │       │   └── prompts.py          # System prompts (per agent)
+│       │
 │       ├── context/
 │       │   ├── __init__.py
 │       │   ├── base.py             # ContextProvider ABC, ContextItem
 │       │   ├── files.py            # FileFinder
-│       │   ├── git.py             # GitContext
+│       │   ├── git.py              # GitContext
 │       │   ├── history.py          # ShellHistory
-│       │   └── environment.py
+│       │   └── environment.py      # Environment context
+│       │
 │       ├── credentials/
 │       │   ├── __init__.py
 │       │   └── store.py            # Credential storage + keyring
-│       ├── multiplexer/            # Future: tmux/zellij integration
-│       │   ├── __init__.py
-│       │   ├── base.py             # Multiplexer ABC
-│       │   ├── tmux.py
-│       │   ├── zellij.py
-│       │   └── fallback.py
+│       │
 │       ├── config/
 │       │   ├── __init__.py
 │       │   ├── loader.py           # Load config.toml
 │       │   └── schema.py           # Config dataclasses
-│       └── ui/                     # TUI Client (Textual)
-│           ├── __init__.py
-│           ├── app.py              # Textual App (Phase 7)
-│           ├── prompt_input.py     # Text area for input (Phase 7)
-│           ├── agent_output.py     # Output display (Phase 7)
-│           ├── agent_selector.py   # Agent switcher (Phase 7)
-│           ├── model_selector.py   # Provider/model dropdown (Phase 7)
-│           ├── context_preview.py  # Future: context items display
-│           ├── chat_history.py    # Future: multi-turn history
-│           └── connect.py          # /connect dialog (done)
-├── fish/                           # Fish shell plugin
+│       │
+│       ├── ui/                     # TUI Client (Textual) — future
+│       │   ├── __init__.py
+│       │   ├── app.py              # Textual App
+│       │   ├── prompt_input.py     # Text area for input
+│       │   ├── agent_output.py     # Output display
+│       │   ├── agent_selector.py   # Agent switcher
+│       │   ├── model_selector.py   # Provider/model dropdown
+│       │   ├── thinking_selector.py # Thinking effort selector
+│       │   ├── settings_screen.py  # Settings modal
+│       │   └── connect.py          # /connect dialog
+│       │
+│       ├── multiplexer/            # Future: tmux/zellij integration
+│       │   └── ...
+│       │
+│       ├── skills/                  # Future: Skills framework
+│       │   └── ...
+│       │
+│       └── mcp/                    # Future: MCP client integration
+│           └── ...
+│
+├── tests/
+│   ├── conftest.py
+│   ├── test_package.py
+│   ├── test_config.py
+│   ├── test_agents/
+│   ├── test_context/
+│   ├── test_credentials/
+│   ├── test_llm/
+│   ├── test_ui/
+│   ├── test_hub/                   # Agent Hub tests
+│   └── test_cli/                   # CLI client tests
+│
+├── fish/                           # Fish shell plugin (future)
 │   ├── conf.d/
-│   │   └── fin_assist.fish        # Keybinding, TUI launch
+│   │   └── fin_assist.fish
 │   └── functions/
 │       └── fin_assist.fish
-├── tests/
-│   ├── unit/
-│   └── integration/
+│
 ├── pyproject.toml
 ├── justfile
 ├── devenv.nix
@@ -271,12 +301,35 @@ fin-assist/
 
 ## Key Interfaces
 
+### Agent Card Metadata (UI Hints)
+
+Static metadata declared by each agent and published in the A2A agent card as an extension. Clients read this to adapt their UI without knowing about specific agent types.
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class AgentCardMeta:
+    """Static UI/capability metadata published in the agent card.
+
+    Clients read these fields to determine which UI elements to show/hide.
+    """
+    multi_turn: bool = True              # Show chat history? Use context_id?
+    supports_thinking: bool = True       # Show thinking effort selector?
+    supports_model_selection: bool = True # Show model/provider selector?
+    supported_providers: list[str] | None = None  # None = all providers
+    color_scheme: str | None = None      # Optional theming hint for client
+    tags: list[str] = field(default_factory=list)  # Categorization tags
+```
+
+> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `BaseAgent.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
+
 ### Agent Protocol
 
 ```python
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar('T')
 
@@ -286,7 +339,7 @@ class AgentResult:
     success: bool
     output: str
     warnings: list[str]
-    metadata: dict[str, Any]
+    metadata: dict[str, Any]  # Dynamic per-response hints (e.g. accept_action)
 
 class BaseAgent(ABC, Generic[T]):
     """Protocol that all specialized agents must implement."""
@@ -294,13 +347,13 @@ class BaseAgent(ABC, Generic[T]):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Agent identifier (used for routing, e.g. 'shell', 'sdd', 'tdd')."""
+        """Agent identifier (used for routing path: /agents/{name}/)."""
         ...
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Human-readable description for agent selection UI."""
+        """Human-readable description for agent discovery."""
         ...
 
     @property
@@ -325,30 +378,35 @@ class BaseAgent(ABC, Generic[T]):
         self,
         prompt: str,
         context: list[ContextItem],
-    ) -> AgentResult[T]:
+    ) -> AgentResult:
         """Execute the agent."""
         ...
+
+    @property
+    def agent_card_metadata(self) -> AgentCardMeta:
+        """Static UI/capability metadata published in the agent card.
+
+        Override in subclasses to customize client UI behavior.
+        """
+        return AgentCardMeta()  # sensible defaults
 ```
 
 ### Agent Registry
 
 ```python
 class AgentRegistry:
-    _agents: dict[str, BaseAgent]
+    """Registers and looks up agent instances."""
 
-    @classmethod
-    def register(cls, agent_cls: type[BaseAgent]) -> type[BaseAgent]:
-        """Decorator to register an agent class."""
+    def register(self, agent: BaseAgent) -> None:
+        """Register an initialized agent instance."""
         ...
 
-    @classmethod
-    def get(cls, name: str) -> BaseAgent | None:
+    def get(self, name: str) -> BaseAgent | None:
         """Get agent by name."""
         ...
 
-    @classmethod
-    def list_agents(cls) -> list[tuple[str, str]]:
-        """List all registered agents (name, description)."""
+    def list_agents(self) -> list[tuple[str, str]]:
+        """List all registered agents as (name, description) pairs."""
         ...
 ```
 
@@ -357,62 +415,113 @@ class AgentRegistry:
 #### DefaultAgent (chain-of-thought base)
 
 - **Purpose**: General-purpose natural language interaction with chain-of-thought reasoning
-- **Mode**: Multi-turn capable (uses message history via pydantic-ai)
-- **Context**: Files, git, history, environment (configurable per agent)
-- **Output**: Text response (structured output for specialized agents)
-- **Tools**: None by default; extensible via skills/MCP
-- **Note**: This is the base agent that specialized agents extend
+- **Mode**: Multi-turn capable (uses message history via pydantic-ai + A2A context_id)
+- **Context**: Files, git, history, environment (all context types)
+- **Output**: `str` (free-form text response)
+- **Tools**: None by default; extensible via skills/MCP (future)
+- **Card Metadata**: `multi_turn=True, supports_thinking=True, supports_model_selection=True`
 
-#### ShellAgent (specialized)
+#### ShellAgent (one-shot command generation)
 
 - **Purpose**: Shell command generation from natural language
-- **Mode**: One-shot (inherits multi-turn capability but typically single-turn)
+- **Mode**: One-shot (`multi_turn=False`)
 - **Context**: Files, git, history, environment
 - **Output**: `CommandResult(command: str, warnings: list[str])`
-- **Tools**: None (stateless prompt → command)
-- **Prefix**: `/shell` or implicit when shell agent selected
+- **Tools**: None (stateless prompt -> command)
+- **Card Metadata**: `multi_turn=False, supports_thinking=False`
+- **Dynamic Metadata**: `{"accept_action": "insert_command"}` in AgentResult.metadata
 
-#### SDDAgent (sketch-driven design)
+#### SDDAgent (future — sketch-driven design)
 
 - **Purpose**: Architectural brainstorming and design
 - **Mode**: Multi-turn conversation
 - **Context**: Docs only (`docs/`)
 - **Output**: `SketchResult(diagram: str, decisions: list[Decision], next_steps: list[str])`
-- **Tools**:
-  - `read_file(path: str)` — read docs
-  - `write_file(path: str, content: str)` — update sketches
-  - `list_docs()` — enumerate available documentation
-- **Prefix**: `/sdd`
+- **Tools**: `read_file`, `write_file`, `list_docs`
 
-#### TDDAgent (test-driven development)
+#### TDDAgent (future — test-driven development)
 
 - **Purpose**: Directed implementation with test generation
-- **Mode**: Multi-turn (test → impl → verify)
+- **Mode**: Multi-turn (test -> impl -> verify)
 - **Context**: Code files, test files, project structure
 - **Output**: `TDDResult(impl_code: str, test_code: str, verified: bool)`
-- **Tools**:
-  - `read_file(path: str)` — read code
-  - `write_file(path: str, content: str)` — write code/tests
-  - `run_command(cmd: str)` — run tests with verification
-  - `list_files(pattern: str)` — find relevant files
-- **Prefix**: `/tdd`
+- **Tools**: `read_file`, `write_file`, `run_command`, `list_files`
 
-### A2A Server (fasta2a)
+### Agent Hub
 
 ```python
-from fasta2a import FastA2A
-from fasta2a.broker import InMemoryBroker
-from fasta2a.storage import InMemoryStorage
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
 
-from fin_assist.agents import AgentRegistry
+class AgentHub:
+    """The 'turnstile' — hosts N agents as A2A sub-apps on one server."""
 
-app = FastA2A(
-    storage=InMemoryStorage(),
-    broker=InMemoryBroker(),
-)
+    def __init__(self, config: Config, credentials: CredentialStore):
+        self.config = config
+        self.credentials = credentials
+        self.storage = SQLiteStorage(...)  # shared across all agents
 
-# Agent exposure via pydantic-ai's to_a2a()
-# Each agent wraps a pydantic-ai Agent and exposes as A2A service
+    def build_app(self) -> Starlette:
+        """Build the parent ASGI app with all agent sub-apps mounted."""
+        routes = [
+            Route("/agents", self._discovery_endpoint),
+            Route("/health", self._health_endpoint),
+        ]
+        for agent in self._create_agents():
+            a2a_app = self._agent_to_a2a(agent)
+            routes.append(Mount(f"/agents/{agent.name}", app=a2a_app))
+        return Starlette(routes=routes)
+
+    def _agent_to_a2a(self, agent: BaseAgent) -> FastA2A:
+        """Convert a BaseAgent to a fasta2a ASGI sub-app.
+
+        Maps AgentCardMeta -> fasta2a Skills + agent card extensions.
+        Uses shared SQLite storage and InMemoryBroker.
+        """
+        ...
+```
+
+### Agent Factory
+
+```python
+class AgentFactory:
+    """Translates BaseAgent into pydantic-ai Agent and then into A2A sub-app."""
+
+    def create_a2a_app(
+        self,
+        agent: BaseAgent,
+        storage: Storage,
+        broker: Broker,
+    ) -> FastA2A:
+        """Build a fasta2a sub-app for a single agent.
+
+        1. Create pydantic-ai Agent with agent's system_prompt, output_type, model
+        2. Call pydantic_agent.to_a2a() with shared storage/broker
+        3. Inject AgentCardMeta as agent card skills/extensions
+        """
+        ...
+```
+
+### UI Metadata Flow
+
+```
+Static (discovery time):                    Dynamic (per-response):
+┌──────────────────────┐                    ┌──────────────────────────┐
+│ Agent Card            │                    │ Task Artifact             │
+│ (/.well-known/        │                    │ (returned with each      │
+│  agent-card.json)     │                    │  task completion)        │
+│                       │                    │                          │
+│ • name, description  │                    │ • result data            │
+│ • skills[]           │                    │ • metadata: {            │
+│ • extensions: {      │                    │     accept_action: ...,  │
+│     fin_assist: {    │                    │     suggested_next: ..., │
+│       multi_turn,    │                    │   }                      │
+│       thinking,      │                    │                          │
+│       model_select,  │                    └──────────────────────────┘
+│       color_scheme   │
+│     }                │
+│   }                  │
+└──────────────────────┘
 ```
 
 ### Context Provider Interface
@@ -440,7 +549,7 @@ class ContextProvider(ABC):
     def get_all(self) -> list[ContextItem]: ...
 ```
 
-### Multiplexer Interface
+### Multiplexer Interface (future)
 
 ```python
 class Multiplexer(ABC):
@@ -465,31 +574,50 @@ class Multiplexer(ABC):
 
 Key benefits for fin-assist:
 - **Standardized interface** — any A2A-compatible client can talk to the server
-- **Agent discovery** — Agent Cards at `/.well-known/agent.json`
+- **Agent discovery** — Agent Cards at `/.well-known/agent-card.json` per agent
 - **Task lifecycle** — built-in task state management (pending, working, completed, failed)
 - **Conversation context** — `context_id` links multi-turn conversations across tasks
-- **Streaming** — SSE support for real-time token streaming
+- **Structured artifacts** — pydantic models become `DataPart` artifacts with JSON schema metadata
+
+### Multi-Path Routing
+
+The A2A protocol maps 1:1 between a server and an agent card. To host N agents on one server, we use **multi-path routing**: a parent Starlette app mounts each agent's A2A sub-app at a unique path.
+
+```
+Parent Starlette App (127.0.0.1:4096)
+├── GET  /agents                                    → discovery (list all agents)
+├── GET  /health                                    → health check
+├── Mount /agents/default/                          → DefaultAgent A2A sub-app
+│   ├── GET  /.well-known/agent-card.json           → agent card
+│   └── POST /                                      → JSON-RPC (message/send, tasks/get)
+├── Mount /agents/shell/                            → ShellAgent A2A sub-app
+│   ├── GET  /.well-known/agent-card.json           → agent card
+│   └── POST /                                      → JSON-RPC
+└── Mount /agents/{future}/                         → future agents
+```
+
+Each agent maintains its own context and conversation state. Context IDs are naturally scoped per-agent because tasks are sent to different A2A endpoints.
 
 ### fasta2a Components
 
-- **Storage** — persists tasks and conversation context (default: `InMemoryStorage`; file-backed for production)
-- **Broker** — schedules async task execution (default: `InMemoryBroker`)
-- **Worker** — executes agent logic (pydantic-ai provides this via `Agent.to_a2a()`)
+- **Storage** — persists tasks and conversation context. We implement the `Storage` ABC with SQLite, shared across all agents.
+- **Broker** — schedules async task execution. `InMemoryBroker` for local use (single-process).
+- **Worker** — executes agent logic. pydantic-ai provides this via `Agent.to_a2a()`.
 
-### OpenCode-Inspired Server Pattern
-
-Following OpenCode's architecture:
+### CLI Entry Points
 
 ```
-fin-assist          → starts server (if not running) + TUI client
-fin-assist serve    → starts standalone server on 127.0.0.1:4096
-fin-assist tui      → starts TUI client only (connects to existing server)
+fin-assist serve                        → start agent hub on 127.0.0.1:4096
+fin-assist agents                       → list available agents (GET /agents)
+fin-assist ask <agent> "prompt"         → one-shot query to an agent
+fin-assist chat <agent>                 → multi-turn session (uses context_id)
+fin-assist chat <agent> --resume <id>   → resume a conversation
+fin-assist                              → enter interactive REPL (future)
 ```
 
 Server lifecycle:
-- **On-demand**: TUI starts server as subprocess if not already running
-- **Background**: `fin-assist serve` starts server that persists after TUI closes
-- **Auth**: Optional HTTP Basic Auth via `FIN_SERVER_PASSWORD` env var
+- **Standalone**: `fin-assist serve` starts the hub server
+- **Auto-start**: `fin-assist ask/chat` auto-starts server if not running (future)
 
 ### Local-Only Security
 
@@ -505,11 +633,11 @@ The server binds to `127.0.0.1` by default, ensuring only local processes can co
 [general]
 default_provider = "anthropic"
 default_model = "claude-sonnet-4-6"
-keybinding = "ctrl-enter"
 
 [server]
 host = "127.0.0.1"
 port = 4096
+db_path = "~/.local/share/fin/hub.db"  # SQLite storage
 
 [context]
 max_file_size = 100000
@@ -517,22 +645,23 @@ max_history_items = 50
 include_git_status = true
 include_env_vars = ["PATH", "HOME", "USER", "PWD"]
 
+[agents.default]
+enabled = true
+
 [agents.shell]
 enabled = true
 
 [agents.sdd]
-enabled = true
-docs_only = true
+enabled = false  # future
 
 [agents.tdd]
-enabled = true
-code_only = true
+enabled = false  # future
 
 [providers.anthropic]
-# API key stored separately via /connect
+# API key stored separately in credentials
 
 [providers.openrouter]
-# API key stored separately via /connect
+# API key stored separately in credentials
 
 [providers.ollama]
 base_url = "http://localhost:11434"
@@ -540,19 +669,13 @@ base_url = "http://localhost:11434"
 
 ### Credential Storage (~/.local/share/fin/credentials.json)
 
-Credentials stored separately from config (same as before).
-
----
-
-## /connect Command Pattern
-
-Unchanged from original design — still the provider setup flow within the TUI.
+Credentials stored separately from config (0600 permissions). Supports env var -> file -> keyring fallback chain.
 
 ---
 
 ## Implementation Phases
 
-### Phase 1: Repo Setup
+### Phase 1: Repo Setup ✅
 - [x] Initialize devenv (devenv.nix, devenv.yaml)
 - [x] Create pyproject.toml with dependencies
 - [x] Set up justfile with common tasks
@@ -561,93 +684,106 @@ Unchanged from original design — still the provider setup flow within the TUI.
 - [x] Create secretspec.toml for dev secrets
 - [x] Enable branch protections (PR requirement + no force push)
 
-### Phase 2: Core Package Structure
+### Phase 2: Core Package Structure ✅
 - [x] Create src/fin_assist/ package layout
 - [x] Add GitHub Actions CI workflow (using nix shell approach)
 - [x] Re-enable required status checks in branch protections
 - [x] Implement config loading (config/schema.py, config/loader.py)
 - [x] Set up pydantic settings
 
-### Phase 3: LLM Module
+### Phase 3: LLM Module ✅
 - [x] Integrate pydantic-ai for provider abstraction
 - [x] Implement Agent wrapper (llm/agent.py)
 - [x] Create provider registry (llm/providers.py)
 - [x] Write system prompts (llm/prompts.py)
 
-### Phase 4: Credential Management
+### Phase 4: Credential Management ✅
 - [x] Implement /connect command UI (ui/connect.py)
 - [x] Create credential store (credentials/store.py)
 - [x] Add optional OS keyring backend (credentials/keyring.py)
 
-### Phase 5: Context Module
+### Phase 5: Context Module ✅
 - [x] Implement ContextProvider ABC (context/base.py)
 - [x] File finder with find (context/files.py)
 - [x] Git context gatherer (context/git.py)
 - [x] Fish history parser (context/history.py)
 - [x] Environment context (context/environment.py)
 
-### Phase 6: Agent Protocol & Registry
+### Phase 6: Agent Protocol & Registry ✅
 - [x] Define `BaseAgent` ABC with `AgentResult`
 - [x] Create `AgentRegistry` with decorator-based registration
-- [x] Migrate current `LLMAgent` → `DefaultAgent` (chain-of-thought base)
-- [x] Add explicit routing via `/shell`, `/sdd`, `/tdd` prefixes
+- [x] Implement `DefaultAgent` (chain-of-thought base)
+- [x] TUI foundation (Textual widgets — set aside, usable as future client)
 
-### Phase 7: TUI Implementation
-- [ ] Refactor DefaultAgent to chain-of-thought base (multi-turn via message history)
-- [ ] Create Textual App (ui/app.py) with run loop
-- [ ] Implement PromptInput component
-- [ ] Implement AgentOutput display
-- [ ] Implement AgentSelector (tabs/dropdown)
-- [ ] Implement ModelSelector (provider/model dropdown)
-- [ ] Wire ConnectDialog into TUI
-- [ ] Add per-agent UI constraints (hide/show selectors based on capabilities)
-- [ ] Config-driven agent selection (global + per-project TOML)
+### Phase 7: Agent Hub Server ⬜ **NEXT**
+- [ ] Extend `BaseAgent` with `AgentCardMeta` dataclass
+- [ ] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
+- [ ] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
+- [ ] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
+- [ ] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`
+- [ ] Implement `hub/discovery.py` — `GET /agents` returns agent card list with metadata
+- [ ] Wire entry point — `fin-assist serve` starts the hub via uvicorn
+- [ ] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD
 
-### Phase 8: Multiplexer Integration
+### Phase 8: CLI Client ⬜
+- [ ] Implement `cli/client.py` — A2A client using httpx (discover agent card, send message, parse artifacts)
+- [ ] Implement `cli/display.py` — Rich-based output formatting (adapt based on agent card metadata)
+- [ ] Implement `cli/main.py` — `serve`, `agents`, `ask`, `chat` commands
+- [ ] Wire entry point — update `fin-assist` CLI to dispatch to hub or CLI commands
+- [ ] Tests — client sends/receives, display formatting, CLI integration
+
+### Phase 8b: CLI REPL Mode ⬜
+- [ ] Implement `cli/repl.py` — prompt-toolkit interactive REPL
+- [ ] Agent switching via `/switch <agent>`
+- [ ] Dynamic prompts from agent card metadata
+- [ ] History and tab completion
+
+### Phase 9: Multiplexer Integration ⬜
 - [ ] Multiplexer ABC (multiplexer/base.py)
 - [ ] tmux implementation (multiplexer/tmux.py)
 - [ ] zellij implementation (multiplexer/zellij.py)
 - [ ] Fallback (alternate screen) (multiplexer/fallback.py)
-- [ ] Launch TUI in floating pane
+- [ ] Launch CLI/TUI in floating pane
 
-### Phase 9: Fish Plugin
+### Phase 10: Fish Plugin ⬜
 - [ ] Create fish plugin (fish/conf.d/fin_assist.fish)
-- [ ] Keybinding for TUI launch
-- [ ] Command insertion (receive output, insert into command line)
+- [ ] Keybinding for CLI/TUI launch
+- [ ] Command insertion (receive shell agent output, insert into command line)
 - [ ] Server auto-start (launch server if not running)
-- [ ] Handle `/shell`, `/sdd`, `/tdd` command prefixes
 
-### Phase 10: Testing Infrastructure (Deep Evals)
+### Phase 11: TUI Client ⬜
+- [ ] Refactor existing Textual widgets as A2A client (reuse ui/ code)
+- [ ] Wire TUI to agent hub via A2A client (not direct agent calls)
+- [ ] Per-agent UI adaptation driven by agent card metadata
+
+### Phase 12: Testing Infrastructure (Deep Evals) ⬜
 - [ ] Set up deep evals framework (pytest-compatible)
 - [ ] Define must/must-not/should criteria per agent
 - [ ] Implement LLM-as-judge evaluator (default, configurable per agent)
-- [ ] Create eval suite for DefaultAgent (chain-of-thought quality)
-- [ ] Create eval suite for ShellAgent (command safety, correctness)
+- [ ] Create eval suite for DefaultAgent and ShellAgent
 - [ ] Per-agent eval configuration
 
-### Phase 11: CI for Evals
-- [ ] GitHub Action workflow
-- [ ] Trigger: post-merge to main
-- [ ] Run eval suite against main branch
-- [ ] Detect regressions vs previous run
-- [ ] Post regression issues to GitHub
+### Phase 13: Skills + MCP Integration ⬜
+- [ ] Skills framework (configurable behaviors per agent)
+- [ ] MCP client integration
+- [ ] CLI/TUI components for skill/MCP configuration
+- [ ] Per-project skill/MCP configuration
 
-### Phase 12: SDD/TDD Agents
+### Phase 14: Additional Agents ⬜
 - [ ] Create `agents/sdd.py` (design brainstorming)
 - [ ] Define `SketchResult` model
 - [ ] Implement tools: `read_file`, `write_file`, `list_docs`
 - [ ] Create `agents/tdd.py` (test-driven development)
 - [ ] Define `TDDResult` model
 - [ ] Implement tools: `read_file`, `write_file`, `run_command`, `list_files`
-- [ ] Multi-turn conversation storage
+- [ ] Code review agent, computer use agent, journaling agent, etc.
 
-### Phase 13: Skills + MCP Integration
-- [ ] Skills framework (configurable behaviors per agent)
-- [ ] MCP client integration
-- [ ] TUI components for skill/MCP configuration
-- [ ] Per-project skill/MCP configuration
+### Phase 15: Multi-Agent Workflows ⬜
+- [ ] Agent-to-agent communication via A2A (SDD → TDD handoff)
+- [ ] Orchestration patterns (sequential, parallel, DAG-based)
+- [ ] Hyper-agent exploration
 
-### Phase 14: Documentation
+### Phase 16: Documentation ⬜
 - [ ] User documentation
 - [ ] Installation guide
 - [ ] Update architecture.md if needed
@@ -656,33 +792,38 @@ Unchanged from original design — still the provider setup flow within the TUI.
 
 ## Open Questions
 
-These are decisions deferred until the relevant phase. They are noted here to avoid premature commitment.
+Decisions deferred until the relevant phase. Resolved decisions are noted.
 
-| Question | Phase | Options | Recommendation |
-|----------|-------|---------|----------------|
-| Conversation storage | Phase 9 | JSON files vs SQLite | SQLite preferred for multi-turn query capability |
-| Server lifecycle | Phase 9 | On-demand subprocess vs background daemon | Both supported; `fin-assist serve` for daemon mode |
-| ShellAgent vs DefaultAgent | Phase 7 | Separate classes or same with config | Separate ShellAgent (specialized) |
-| Deep evals criteria | Phase 10 | Must/must-not/should per agent | LLM-as-judge default, configurable |
-| Per-agent UI constraints | Phase 7 | Config-driven vs runtime detection | Config-driven (agent declares capabilities) |
+| Question | Phase | Status | Resolution |
+|----------|-------|--------|------------|
+| Conversation storage | Phase 7 | **Resolved** | SQLite via fasta2a `Storage` ABC, `context_id` for threading |
+| Server lifecycle | Phase 8 | **Resolved** | `fin-assist serve` standalone; auto-start from CLI deferred |
+| Multi-agent routing | Phase 7 | **Resolved** | Multi-path: one Starlette parent, N A2A sub-apps at `/agents/{name}/` |
+| UI metadata transport | Phase 7 | **Resolved** | Split: static in agent card extensions, dynamic in task artifact metadata |
+| Parent ASGI framework | Phase 7 | **Resolved** | Starlette (stays in pydantic/fasta2a ecosystem) |
+| Agent card extensions format | Phase 7 | Open | Exact JSON structure for `AgentCardMeta` in A2A extension field |
+| `to_a2a()` customization | Phase 7 | Open | Does `to_a2a()` accept skills/name/description, or do we need raw `FastA2A`? |
+| SQLite file location | Phase 7 | Open | `~/.local/share/fin/hub.db` or configurable via `[server]` config? |
+| Deep evals criteria | Phase 12 | Open | Must/must-not/should per agent, LLM-as-judge default |
 
 ---
 
 ## Future Considerations
 
-### Near-term (Phases 12-13)
+### Near-term (Phases 13-15)
 - **Skills framework** — Configurable behaviors (e.g., brainstorming mode, terse mode)
 - **MCP integration** — Natural language interface to configurable MCP tools/servers
-- **Per-project config** — Agent/skill/MCP configuration per project via TOML
+- **Additional agents** — SDD, TDD, code review, shell completion, computer use, journaling
+- **Multi-agent workflows** — Agent-to-agent via A2A, orchestration patterns
 
-### Long-term (AI-Directed-Dev-Pipeline)
+### Long-term
 - **Web client** — HTML/JS frontend as A2A client
-- **Agent-to-agent** — SDDAgent outputs decisions that TDDAgent consumes
-- **Agent-to-agent handoff** — SDD→TDD workflow automation
+- **Hyper-agents** — Meta-agents that orchestrate specialized agents
 - **Shell expansion** — bash, zsh support after fish is stable
 - **Ghostty support** — when popup feature lands (upstream issue #3197)
 - **Command history learning** — learn from accepted commands
 - **Custom prompts** — user-defined prompt templates
+- **Per-project config** — Agent/skill/MCP configuration per project via TOML
 
 ### Deferred (No Timeline)
 - **RabbitMQ dispatch** — Work queue with N concurrent TDD agents (from AI-Directed-Dev-Pipeline)
@@ -708,14 +849,15 @@ These are decisions deferred until the relevant phase. They are noted here to av
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| A2A over custom REST | fasta2a | Protocol-native multi-client, agent discovery, streaming built-in |
-| Agents as code | Custom classes | Learning vehicle; declarative loses the interesting parts |
+| A2A over custom REST | fasta2a | Protocol-native multi-client, agent discovery, task lifecycle built-in |
+| Multi-path routing | N agents, N agent cards, one server | True A2A compliance, enables agent-to-agent workflows |
+| Parent ASGI framework | Starlette | Lighter than FastAPI, stays in pydantic/fasta2a ecosystem |
+| Agents as code | Custom classes | Learning vehicle; the fun is in the implementation |
 | Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
-| Server pattern | OpenCode-inspired | TUI as client, server persists; multiple clients possible |
-| Conversation storage | TBD (Phase 9) | JSON for simplicity; SQLite if query/browse needed for multi-turn agents |
-| Agent registry | Decorator-based | Clean, type-safe, self-registering |
-| Explicit routing | Prefix commands | `/shell`, `/sdd`, `/tdd` — clear intent, no auto-detection complexity |
-| DefaultAgent | Chain-of-thought base | Multi-turn capable general-purpose agent; specialized agents slot in |
-| ShellAgent | Specialized | Shell command generation as one of many possible specialized agents |
-| Per-agent UI | Config-driven | Agent declares capabilities; TUI adapts (hide/show selectors) |
+| CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
+| Conversation storage | SQLite via fasta2a Storage ABC | A2A-native `context_id` for threading, shared across all agents |
+| UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
+| Agent registry | Instance-based (not decorator) | Agents need config/credentials at init; register initialized instances |
+| DefaultAgent | Chain-of-thought base, multi-turn | General-purpose agent; specialized agents slot in as peers |
+| ShellAgent | Specialized one-shot | `multi_turn=False`, returns `CommandResult`, dynamic `accept_action` hint |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |

@@ -3,7 +3,13 @@
 import tomllib
 from pathlib import Path
 
-from fin_assist.config.schema import Config, ContextSettings, GeneralSettings, ProviderConfig
+from fin_assist.config.schema import (
+    Config,
+    ContextSettings,
+    GeneralSettings,
+    ProviderConfig,
+    ServerSettings,
+)
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "fin" / "config.toml"
 
@@ -34,13 +40,15 @@ def _parse_config(data: dict) -> Config:
     """Parse TOML data into a Config object."""
     general_data = data.get("general", {})
     context_data = data.get("context", {})
+    server_data = data.get("server", {})
     providers_data = data.get("providers", {})
 
     general = GeneralSettings(**general_data)
     context = ContextSettings(**context_data)
+    server = ServerSettings(**server_data)
 
     providers = {
         name: ProviderConfig(**provider_data) for name, provider_data in providers_data.items()
     }
 
-    return Config(general=general, context=context, providers=providers)
+    return Config(general=general, context=context, server=server, providers=providers)

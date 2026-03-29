@@ -1,12 +1,12 @@
 # fin-assist
 
-Terminal inline assistant for fish shell. See `docs/architecture.md` for full architecture.
+Expandable personal AI agent platform for terminal workflows. See `docs/architecture.md` for full architecture.
 
 ## Development Workflow
 
-This project follows an **SSD → TDD** implementation pattern:
+This project follows an **SDD → TDD** implementation pattern:
 
-### 1. Sketch-Driven Design (SSD)
+### 1. Sketch-Driven Design (SDD)
 
 Before implementing any feature:
 1. Review `docs/architecture.md` for alignment
@@ -49,17 +49,19 @@ After design is sketched, write tests BEFORE writing implementation code:
 
 ```text
 src/fin_assist/       - Main package
-├── app.py            - Textual App entry
-├── ui/               - UI widgets
+├── hub/              - Agent Hub server (Starlette + fasta2a)
+├── cli/              - CLI client (primary client)
+├── agents/           - Agent protocol, registry, implementations
 ├── llm/              - pydantic-ai integration
 ├── context/          - Context gathering
 ├── credentials/      - API key management
-├── multiplexer/      - tmux/zellij support
-└── config/           - Config loading
+├── config/           - Config loading
+├── ui/               - TUI client (Textual, future)
+└── multiplexer/      - tmux/zellij support (future)
 
-fish/                 - Fish shell plugin
 tests/                - Test suite
 docs/                 - Architecture docs
+fish/                 - Fish shell plugin (future)
 ```
 
 ## Key Decisions
@@ -68,7 +70,9 @@ docs/                 - Architecture docs
 |----------|--------|-----------|
 | Python | 3.12+ (3.13 in nixpkgs) | Stable, production-ready, good ecosystem |
 | LLM | pydantic-ai | Unified interface for 20+ providers, FallbackModel |
-| TUI | Textual | Mature async TUI framework, good widget library |
+| Server | Starlette + fasta2a (A2A) | Protocol-native multi-agent hub, agent discovery |
+| Primary client | CLI (Rich + httpx) | Fast iteration; TUI and other clients come later |
+| TUI | Textual | Mature async TUI framework (future A2A client) |
 | Multiplexers | tmux + zellij | Most common; ghostty pending |
 | Credentials | Separate from config | Allows config sharing without secrets |
 | Provider setup | `/connect` command | Familiar pattern from opencode |

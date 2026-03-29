@@ -22,7 +22,10 @@
     enable = true;
     uv = {
       enable = true;
-      sync.enable = true;
+      sync = {
+        enable = true;
+        allGroups = true;
+      };
     };
   };
 
