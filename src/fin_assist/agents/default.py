@@ -74,7 +74,8 @@ class DefaultAgent(LLMBaseAgent[str]):
     async def _get_agent(self) -> GeneralAgent:
         if self._agent is None:
             self._agent = await self._build_agent()
-        return self._agent  # type: ignore[return-value]
+        assert self._agent is not None
+        return self._agent
 
     async def _build_agent(self) -> GeneralAgent:
         from pydantic_ai import Agent

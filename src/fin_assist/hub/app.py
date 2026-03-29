@@ -75,7 +75,10 @@ def create_hub_app(
         routes.append(Mount(mount_path, app=sub_app))
 
         meta_skill = next((s for s in sub_app.skills if s["id"] == "fin_assist:meta"), None)
-        card_meta = json.loads(meta_skill["description"]) if meta_skill else {}
+        try:
+            card_meta = json.loads(meta_skill["description"]) if meta_skill else {}
+        except json.JSONDecodeError:
+            card_meta = {}
 
         mounted_agents.append(
             {

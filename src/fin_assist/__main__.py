@@ -55,13 +55,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.print_help()
 
 
-def _cmd_serve(args, config) -> None:
+def _cmd_serve(args: argparse.Namespace, config) -> None:
     import os
 
-    # CLI flags take precedence; fall back to config values
-    host = args.host or config.server.host
-    port = args.port or config.server.port
-    db_path = os.path.expanduser(args.db or config.server.db_path)
+    host = args.host if args.host is not None else config.server.host
+    port = args.port if args.port is not None else config.server.port
+    db_path = os.path.expanduser(args.db if args.db is not None else config.server.db_path)
 
     base_url = f"http://{host}:{port}"
     app = create_hub_app(db_path=db_path, base_url=base_url)
