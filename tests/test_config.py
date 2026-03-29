@@ -13,6 +13,7 @@ from fin_assist.config.schema import (
     ContextSettings,
     GeneralSettings,
     ProviderConfig,
+    ServerSettings,
 )
 
 
@@ -74,6 +75,22 @@ class TestContextSettings:
         assert settings.include_env_vars == ["PATH", "HOME"]
 
 
+class TestServerSettings:
+    """Tests for ServerSettings."""
+
+    def test_server_settings_defaults(self) -> None:
+        settings = ServerSettings()
+        assert settings.host == "127.0.0.1"
+        assert settings.port == 4096
+        assert settings.db_path == "~/.local/share/fin/hub.db"
+
+    def test_server_settings_custom_values(self) -> None:
+        settings = ServerSettings(host="0.0.0.0", port=8080, db_path="/tmp/test.db")
+        assert settings.host == "0.0.0.0"
+        assert settings.port == 8080
+        assert settings.db_path == "/tmp/test.db"
+
+
 class TestProviderConfig:
     """Tests for ProviderConfig."""
 
@@ -100,10 +117,11 @@ class TestConfig:
     """Tests for Config."""
 
     def test_config_aggregates_subsettings(self) -> None:
-        """Test that Config contains GeneralSettings and ContextSettings."""
+        """Test that Config contains GeneralSettings, ContextSettings, and ServerSettings."""
         config = Config()
         assert isinstance(config.general, GeneralSettings)
         assert isinstance(config.context, ContextSettings)
+        assert isinstance(config.server, ServerSettings)
 
     def test_config_providers_empty_by_default(self) -> None:
         """Test that providers dict is empty by default."""
@@ -130,6 +148,11 @@ class TestConfig:
         config = Config()
         assert config.general.default_provider == "anthropic"
         assert config.general.default_model == "claude-sonnet-4-6"
+
+    def test_config_server_defaults(self) -> None:
+        config = Config()
+        assert config.server.host == "127.0.0.1"
+        assert config.server.port == 4096
 
 
 class TestLoadConfig:
@@ -203,6 +226,32 @@ enabled = false
         assert config.providers["ollama"].default_model == "llama3"
         assert "openrouter" in config.providers
         assert config.providers["openrouter"].enabled is False
+
+    def test_load_config_server_section(self, tmp_path: Path) -> None:
+        """Test parsing [server] section from TOML."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""
+[server]
+host = "0.0.0.0"
+port = 8080
+db_path = "/data/fin/hub.db"
+""")
+        config = load_config(config_file)
+        assert config.server.host == "0.0.0.0"
+        assert config.server.port == 8080
+        assert config.server.db_path == "/data/fin/hub.db"
+
+    def test_load_config_server_section_partial(self, tmp_path: Path) -> None:
+        """Test that partial [server] section gets defaults for missing fields."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""
+[server]
+port = 9000
+""")
+        config = load_config(config_file)
+        assert config.server.port == 9000
+        assert config.server.host == "127.0.0.1"
+        assert config.server.db_path == "~/.local/share/fin/hub.db"
 
     def test_load_config_path_default(self, tmp_path: Path) -> None:
         """Test that default path is ~/.config/fin/config.toml."""

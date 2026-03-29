@@ -322,6 +322,8 @@ class AgentCardMeta:
     tags: list[str] = field(default_factory=list)  # Categorization tags
 ```
 
+> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `BaseAgent.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
+
 ### Agent Protocol
 
 ```python

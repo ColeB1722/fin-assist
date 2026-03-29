@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-03-27)**: Phases 1-6 complete. Architecture pivoted to Agent Hub model. See [Architecture Pivot](#previous-session-architecture-pivot--agent-hub-design) for latest design decisions, [Next Session](#next-session-phase-7--agent-hub-server) for implementation plan, and [Implementation Progress](#implementation-progress) for phase tracker.
+**Current state (2026-03-28)**: Phases 1-7 complete. Agent Hub server implemented with Starlette + fasta2a, SQLite storage, ShellAgent, and `fin-assist serve` entry point. See [Phase 7 session](#previous-session-phase-7--agent-hub-server) for what was built, [Next Session](#next-session-phase-8--cli-client) for next steps, and [Implementation Progress](#implementation-progress) for phase tracker.
 
 ---
 
@@ -376,23 +376,109 @@ After reviewing the long-term vision (AI-Directed-Dev-Pipeline), we realigned on
 
 ---
 
-## Next Session: Phase 7 — Agent Hub Server
+## Previous Session: Phase 7 — Agent Hub Server
 
-### Phase 7 Progress
+**Date**: 2026-03-28
+**Branch**: `feature/phase-7`
+**Status**: ✅ Complete
 
-- Added `AgentCardMeta` to `BaseAgent` with default UI capability metadata.
-- Added `ShellAgent` as a one-shot shell command agent with `insert_command` metadata.
-- Created initial `hub/` package scaffolding for app, factory, discovery, and storage.
-- Added placeholder hub tests and verified the full suite still passes.
+### What Was Accomplished
 
-### Next Implementation Steps
+1. **`AgentCardMeta` consolidated into `BaseAgent`** (`agents/base.py`)
+   - Removed redundant scalar properties (`supports_thinking`, `supports_model_selection`, `supported_providers`)
+   - `agent_card_metadata` property returns `AgentCardMeta()` by default; subclasses override
 
-1. Replace hub placeholders with real Starlette + fasta2a wiring.
-2. Implement SQLite-backed storage and agent card discovery payloads.
-3. Wire `fin-assist serve` to run the hub for real instead of a placeholder.
-4. Expand tests to cover mounted sub-apps, discovery response shape, and storage CRUD.
+2. **`ShellAgent` implemented** (`agents/shell.py`)
+   - One-shot command generation, mirrors `DefaultAgent` pattern exactly
+   - `agent_card_metadata`: `multi_turn=False, supports_thinking=False, tags=["shell", "one-shot"]`
+   - `run()` returns `AgentResult` with `metadata={"accept_action": "insert_command"}`
+
+3. **`SQLiteStorage` implemented** (`hub/storage.py`)
+   - Implements fasta2a `Storage[Any]` ABC — all 5 methods
+   - Tables: `tasks` + `contexts`; configurable `db_path`
+
+4. **`AgentFactory` implemented** (`hub/factory.py`)
+   - `BaseAgent` → pydantic-ai `Agent` → `.to_a2a()` with shared storage/broker
+   - Injects `AgentCardMeta` as `Skill(id="fin_assist:meta")` (JSON-encoded)
+
+5. **Hub app implemented** (`hub/app.py`)
+   - Parent Starlette app mounting agents at `/agents/{name}/`
+   - `GET /health` and `GET /agents` discovery endpoint
+   - Parent lifespan cascades `TaskManager` init to sub-apps
+
+6. **`fin-assist serve` wired** (`__main__.py`)
+   - `fin-assist serve [--host] [--port] [--db]` starts hub via uvicorn
+   - Defaults: `127.0.0.1:4096`, `~/.local/share/fin/hub.db`
+
+### Test Summary
+
+```text
+tests/test_agents/test_base.py: 14 tests
+tests/test_agents/test_shell.py: 16 tests
+tests/test_hub/test_app.py: 11 tests
+tests/test_hub/test_factory.py: 9 tests
+tests/test_hub/test_serve.py: 4 tests
+tests/test_hub/test_storage.py: 16 tests
+Total: 195 tests, all passing (was 146 before Phase 7)
+```
+
+### Open Questions Resolved
+
+| Question | Resolution |
+|----------|------------|
+| `to_a2a()` customisation | Accepts `storage`, `broker`, `name`, `description`, `skills` |
+| Agent card extensions | See note below — deliberate workaround, not a library gap |
+| SQLite location | Configurable via `--db`; default `~/.local/share/fin/hub.db` |
+| Sub-app lifespan | Parent lifespan manually cascades `task_manager.__aenter__` |
+
+### Note: AgentCardMeta transport — `Skill` workaround
+
+`AgentCardMeta` is currently encoded as `Skill(id="fin_assist:meta")` with the metadata JSON-encoded in the `description` field. This is a deliberate workaround, not a library limitation or a mistake.
+
+**Why:** The A2A spec defines `AgentCapabilities.extensions: list[AgentExtension]` as the correct place for this. `AgentExtension` is already defined in `fasta2a.schema`, but `AgentCapabilities` does not yet expose the `extensions` field — because extensions support is bundled with streaming support and is being shipped in pydantic/fasta2a **PR #44** (opened 2026-03-07, still open as of 2026-03-28). The pydantic team intentionally held it back until both features were ready together.
+
+**Migration path** (once fasta2a ships PR #44):
+1. In `hub/factory.py`: replace the `meta_skill` block with an `AgentExtension` dict passed via `AgentCapabilities(extensions=[...])`
+2. In `cli/client.py` (Phase 8): read from `capabilities.extensions` instead of filtering `skills`
+3. Bump `fasta2a>=0.7` (or whatever version lands the feature) in `pyproject.toml`
+
+The `factory.py` module docstring documents this in full detail for the next session.
+
+---
+
+## Next Session: Phase 8 — CLI Client
 
 ### Goals
+
+Build the primary CLI client that communicates with the hub over A2A HTTP.
+
+### Implementation Steps (SDD → TDD)
+
+1. **`cli/client.py`** — A2A HTTP client (httpx)
+   - `discover_agents(base_url)` → list of agent info + card_meta
+   - `ask(base_url, agent, prompt)` → submit task, poll to completion, return artifact
+   - `chat(base_url, agent, prompt, context_id)` → multi-turn with context_id
+
+2. **`cli/display.py`** — Rich-based output
+   - Render `AgentResult` output: plain text or command block based on `card_meta`
+   - `accept_action: insert_command` → highlight command for shell insertion
+
+3. **`cli/main.py`** — Dispatch `agents`, `ask`, `chat` commands
+
+4. **Wire `__main__.py`** — Add `agents`, `ask`, `chat` subcommands
+
+5. **Tests** — Mock httpx, verify A2A JSON-RPC payloads, display formatting
+
+### Key Design Notes
+
+- CLI client reads `fin_assist:meta` skill from agent card to adapt display
+- `fin-assist ask shell "..."` prints just the command
+- `fin-assist ask default "..."` prints full response
+- `context_id` for `chat` generated client-side, stored in `~/.local/share/fin/sessions/`
+
+---
+
+## Previous Phase 7 Planning Notes
 
 Build the core "turnstile" of agents: a Starlette server that mounts N specialized agents as A2A sub-apps.
 
@@ -469,8 +555,8 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 4 | Credential Management (UI) | ✅ Complete |
 | 5 | Context Module | ✅ Complete |
 | 6 | Agent Protocol & Registry | ✅ Complete |
-| 7 | **Agent Hub Server** | ⬜ Not Started |
-| 8 | CLI Client | ⬜ Not Started |
+| 7 | **Agent Hub Server** | ✅ Complete |
+| 8 | **CLI Client** | ⬜ Not Started ← next |
 | 8b | CLI REPL Mode | ⬜ Not Started |
 | 9 | Multiplexer Integration | ⬜ Not Started |
 | 10 | Fish Plugin | ⬜ Not Started |

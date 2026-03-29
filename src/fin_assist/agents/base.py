@@ -18,25 +18,69 @@ class AgentResult:
 
 @dataclass
 class AgentCardMeta:
+    """Static UI/capability metadata published in the A2A agent card extension.
+
+    Clients read these fields to decide which UI elements to show or hide without
+    needing any agent-specific knowledge.
+    """
+
     multi_turn: bool = True
+    """True if the agent supports multi-turn conversation (context_id threading)."""
+
     supports_thinking: bool = True
+    """True if the agent benefits from chain-of-thought / thinking effort selector."""
+
     supports_model_selection: bool = True
+    """True if the agent can work with any configured provider/model."""
+
     supported_providers: list[str] | None = None
+    """Restrict to specific providers. None means all configured providers."""
+
     color_scheme: str | None = None
+    """Optional theming hint for clients."""
+
     tags: list[str] = field(default_factory=list)
+    """Categorisation tags (e.g. ['shell', 'one-shot'])."""
+
+    # Future (Phase 11 — TUI client):
+    #   Add ``supported_context_types: list[str] | None = None`` here so that
+    #   clients can show/hide context panels (git diff, shell history, etc.) based
+    #   on which agent is active without needing a round-trip call.
+    #
+    #   At that point ``BaseAgent.supports_context()`` and this field will be kept
+    #   in sync — either by having agents declare both explicitly, or by adding a
+    #   default ``agent_card_metadata`` implementation that derives the field from
+    #   ``ContextType.__args__`` filtered through ``self.supports_context()``.
+    #
+    #   Not added now because no client currently reads context-type hints from
+    #   the agent card — premature until Phase 11.
 
 
 class BaseAgent[T](ABC):
+    """Protocol that all specialised agents must implement.
+
+    Subclasses override ``agent_card_metadata`` to publish their capabilities.
+    """
+
+    @property
+    def agent_card_metadata(self) -> AgentCardMeta:
+        """Static UI/capability hints published in the A2A agent card.
+
+        The default is ``AgentCardMeta()`` (multi-turn, thinking, model selection all on).
+        Override to customise — e.g. one-shot shell agents set ``multi_turn=False``.
+        """
+        return AgentCardMeta()
+
     @property
     @abstractmethod
     def name(self) -> str:
-        """Agent identifier (used for routing, e.g. 'shell', 'sdd', 'tdd')."""
+        """Agent identifier used as the routing path segment: /agents/{name}/."""
         ...
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Human-readable description for agent selection UI."""
+        """Human-readable description for agent discovery."""
         ...
 
     @property
@@ -53,7 +97,7 @@ class BaseAgent[T](ABC):
 
     @abstractmethod
     def supports_context(self, context_type: str) -> bool:
-        """Check if agent can use a given context type."""
+        """Return True if this agent can use context items of the given type."""
         ...
 
     @abstractmethod
@@ -62,40 +106,5 @@ class BaseAgent[T](ABC):
         prompt: str,
         context: list[ContextItem],
     ) -> AgentResult:
-        """Execute the agent."""
+        """Execute the agent and return an AgentResult."""
         ...
-
-    @property
-    def supports_model_selection(self) -> bool:
-        """Whether this agent supports model/provider selection.
-
-        Some agents only work with specific models (e.g., vision models).
-        Return False to hide the model selector in the UI.
-        """
-        return True
-
-    @property
-    def supported_providers(self) -> list[str] | None:
-        """List of providers this agent supports, or None for all providers.
-
-        Some agents may only work with certain providers.
-        Return None to allow all configured providers.
-        """
-        return None
-
-    @property
-    def supports_thinking(self) -> bool:
-        """Whether this agent supports chain-of-thought thinking.
-
-        If False, the thinking selector should be hidden in the UI.
-        """
-        return True
-
-    @property
-    def agent_card_metadata(self) -> AgentCardMeta:
-        return AgentCardMeta(
-            multi_turn=self.supports_thinking,
-            supports_thinking=self.supports_thinking,
-            supports_model_selection=self.supports_model_selection,
-            supported_providers=self.supported_providers,
-        )
