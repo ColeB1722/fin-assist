@@ -581,20 +581,43 @@ Each agent maintains its own context and conversation state. Context IDs are nat
 - **Broker** — schedules async task execution. `InMemoryBroker` for local use (single-process).
 - **Worker** — executes agent logic. pydantic-ai provides this via `Agent.to_a2a()`.
 
+### Transport Layer
+
+The A2A protocol defines transport as pluggable. The official `a2a-python` SDK
+(Google) ships `JsonRpcTransport`, `GrpcTransport`, and `RestTransport` all
+behind a common `ClientTransport` ABC. fasta2a currently implements JSON-RPC
+only.
+
+**Current:** JSON-RPC over HTTP (blocking `message/send`).
+
+**Modality roadmap:**
+
+| Modality | Transport | Status | Notes |
+|---|---|---|---|
+| Blocking `message/send` | JSON-RPC | ✅ Implemented | Hub responds inline when agent finishes |
+| Streaming `message/stream` | JSON-RPC SSE | Phase 9 | Progressive output; fasta2a has `stream_message_response_ta` ready |
+| Non-blocking + polling | JSON-RPC | Later phase | `message/send` with `blocking: false`; `_poll_task` fallback exists |
+| gRPC | gRPC | Issue | Protocol-native; wait for fasta2a support or evaluate `a2a-python` |
+
+The non-blocking polling path is implemented in `cli/client.py` (`_poll_task`)
+as a correct protocol fallback, but is not exercised by the current fasta2a hub
+which defaults to blocking mode.
+
 ### CLI Entry Points
 
 ```
 fin-assist serve                        → start agent hub on 127.0.0.1:4096
 fin-assist agents                       → list available agents (GET /agents)
-fin-assist ask <agent> "prompt"         → one-shot query to an agent
-fin-assist chat <agent>                 → multi-turn session (uses context_id)
-fin-assist chat <agent> --resume <id>   → resume a conversation
+fin-assist do <agent> "prompt"          → one-shot query (auto-starts server)
+fin-assist talk <agent>                 → multi-turn session (uses context_id)
+fin-assist talk <agent> --resume <id>   → resume a saved session
+fin-assist talk <agent> --list          → list saved sessions for agent
 fin-assist                              → enter interactive REPL (future)
 ```
 
 Server lifecycle:
 - **Standalone**: `fin-assist serve` starts the hub server
-- **Auto-start**: `fin-assist ask/chat` auto-starts server if not running (future)
+- **Auto-start**: `fin-assist do/talk/agents` auto-start the server if not running
 
 ### Local-Only Security
 
@@ -701,12 +724,15 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Wire entry point — `fin-assist serve` starts the hub via uvicorn
 - [ ] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD
 
-### Phase 8: CLI Client ⬜
-- [ ] Implement `cli/client.py` — A2A client using httpx (discover agent card, send message, parse artifacts)
-- [ ] Implement `cli/display.py` — Rich-based output formatting (adapt based on agent card metadata)
-- [ ] Implement `cli/main.py` — `serve`, `agents`, `ask`, `chat` commands
-- [ ] Wire entry point — update `fin-assist` CLI to dispatch to hub or CLI commands
-- [ ] Tests — client sends/receives, display formatting, CLI integration
+### Phase 8: CLI Client ✅
+- [x] Implement `cli/client.py` — A2A client using httpx + fasta2a TypeAdapters
+- [x] Implement `cli/display.py` — Rich-based output formatting
+- [x] Implement `cli/server.py` — auto-start server with health polling + backoff
+- [x] Implement `cli/interaction/approve.py` — approval widget (`ApprovalAction`)
+- [x] Implement `cli/interaction/chat.py` — multi-turn chat loop
+- [x] Implement `cli/main.py` — `serve`, `agents`, `do`, `talk` commands with `_hub_client` context manager
+- [x] Session persistence — `~/.local/share/fin/sessions/{agent}/{slug}.json` with coolname slugs
+- [x] Tests — 113 tests across all CLI modules
 
 ### Phase 8b: CLI REPL Mode ⬜
 - [ ] Implement `cli/repl.py` — prompt-toolkit interactive REPL
@@ -714,38 +740,45 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Dynamic prompts from agent card metadata
 - [ ] History and tab completion
 
-### Phase 9: Multiplexer Integration ⬜
+### Phase 9: Streaming ⬜
+- [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
+- [ ] Update `cli/interaction/chat.py` to render streaming output progressively
+- [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
+- [ ] Wire to `talk` command — streaming as default if agent card supports it
+- [ ] Tests — streaming output, partial artifact rendering
+
+### Phase 11: Multiplexer Integration ⬜
 - [ ] Multiplexer ABC (multiplexer/base.py)
 - [ ] tmux implementation (multiplexer/tmux.py)
 - [ ] zellij implementation (multiplexer/zellij.py)
 - [ ] Fallback (alternate screen) (multiplexer/fallback.py)
 - [ ] Launch CLI/TUI in floating pane
 
-### Phase 10: Fish Plugin ⬜
+### Phase 12: Fish Plugin ⬜
 - [ ] Create fish plugin (fish/conf.d/fin_assist.fish)
 - [ ] Keybinding for CLI/TUI launch
 - [ ] Command insertion (receive shell agent output, insert into command line)
 - [ ] Server auto-start (launch server if not running)
 
-### Phase 11: TUI Client ⬜
+### Phase 13: TUI Client ⬜
 - [ ] Refactor existing Textual widgets as A2A client (reuse ui/ code)
 - [ ] Wire TUI to agent hub via A2A client (not direct agent calls)
 - [ ] Per-agent UI adaptation driven by agent card metadata
 
-### Phase 12: Testing Infrastructure (Deep Evals) ⬜
+### Phase 14: Testing Infrastructure (Deep Evals) ⬜
 - [ ] Set up deep evals framework (pytest-compatible)
 - [ ] Define must/must-not/should criteria per agent
 - [ ] Implement LLM-as-judge evaluator (default, configurable per agent)
 - [ ] Create eval suite for DefaultAgent and ShellAgent
 - [ ] Per-agent eval configuration
 
-### Phase 13: Skills + MCP Integration ⬜
+### Phase 15: Skills + MCP Integration ⬜
 - [ ] Skills framework (configurable behaviors per agent)
 - [ ] MCP client integration
 - [ ] CLI/TUI components for skill/MCP configuration
 - [ ] Per-project skill/MCP configuration
 
-### Phase 14: Additional Agents ⬜
+### Phase 16: Additional Agents ⬜
 - [ ] Create `agents/sdd.py` (design brainstorming)
 - [ ] Define `SketchResult` model
 - [ ] Implement tools: `read_file`, `write_file`, `list_docs`
@@ -754,12 +787,12 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Implement tools: `read_file`, `write_file`, `run_command`, `list_files`
 - [ ] Code review agent, computer use agent, journaling agent, etc.
 
-### Phase 15: Multi-Agent Workflows ⬜
+### Phase 17: Multi-Agent Workflows ⬜
 - [ ] Agent-to-agent communication via A2A (SDD → TDD handoff)
 - [ ] Orchestration patterns (sequential, parallel, DAG-based)
 - [ ] Hyper-agent exploration
 
-### Phase 16: Documentation ⬜
+### Phase 18: Documentation ⬜
 - [ ] User documentation
 - [ ] Installation guide
 - [ ] Update architecture.md if needed
@@ -773,14 +806,17 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | Question | Phase | Status | Resolution |
 |----------|-------|--------|------------|
 | Conversation storage | Phase 7 | **Resolved** | SQLite via fasta2a `Storage` ABC, `context_id` for threading |
-| Server lifecycle | Phase 8 | **Resolved** | `fin-assist serve` standalone; auto-start from CLI deferred |
+| Server lifecycle | Phase 8 | **Resolved** | `fin-assist serve` standalone; auto-start via `ensure_server_running` |
 | Multi-agent routing | Phase 7 | **Resolved** | Multi-path: one Starlette parent, N A2A sub-apps at `/agents/{name}/` |
-| UI metadata transport | Phase 7 | **Resolved** | Split: static in agent card extensions, dynamic in task artifact metadata |
+| UI metadata transport | Phase 7 | **Resolved** | Split: static in agent card, dynamic in task artifact metadata |
 | Parent ASGI framework | Phase 7 | **Resolved** | Starlette (stays in pydantic/fasta2a ecosystem) |
-| Agent card extensions format | Phase 7 | Open | Exact JSON structure for `AgentCardMeta` in A2A extension field |
-| `to_a2a()` customization | Phase 7 | Open | Does `to_a2a()` accept skills/name/description, or do we need raw `FastA2A`? |
-| SQLite file location | Phase 7 | Open | `~/.local/share/fin/hub.db` or configurable via `[server]` config? |
-| Deep evals criteria | Phase 12 | Open | Must/must-not/should per agent, LLM-as-judge default |
+| Agent card extensions format | Phase 7 | **Resolved** | `AgentCardMeta` encoded as `fin_assist:meta` Skill until fasta2a extensions land |
+| `to_a2a()` customization | Phase 7 | **Resolved** | `to_a2a()` accepts skills, name, description via `FastA2A` kwargs |
+| SQLite file location | Phase 7 | **Resolved** | Configurable via `[server] db_path`, defaults to `~/.local/share/fin/hub.db` |
+| gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
+| Non-blocking agents | Phase 10 | Open | `message/send` with `blocking: false`; `_poll_task` fallback already implemented |
+| Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
+| Hub server logging | Phase 9 | Open | Background hub writes to `~/.local/share/fin/hub.log` via `RotatingFileHandler` (1 MB, 1 backup). Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
 
 ---
 

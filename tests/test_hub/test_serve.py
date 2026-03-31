@@ -4,15 +4,15 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from fin_assist.__main__ import main
+from fin_assist.cli.main import main
 
 
 class TestServeCommand:
     def test_serve_builds_hub_app_and_runs_uvicorn(self) -> None:
         """fin-assist serve should create a hub app and call uvicorn.run."""
         with (
-            patch("fin_assist.__main__.create_hub_app") as mock_create,
-            patch("fin_assist.__main__.uvicorn") as mock_uvicorn,
+            patch("fin_assist.cli.main.create_hub_app") as mock_create,
+            patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             mock_app = MagicMock()
             mock_create.return_value = mock_app
@@ -28,8 +28,8 @@ class TestServeCommand:
     def test_serve_binds_to_localhost(self) -> None:
         """Server should always bind to 127.0.0.1."""
         with (
-            patch("fin_assist.__main__.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.__main__.uvicorn") as mock_uvicorn,
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             main(["serve"])
 
@@ -43,8 +43,8 @@ class TestServeCommand:
     def test_serve_uses_configured_port(self) -> None:
         """Default port should be 4096."""
         with (
-            patch("fin_assist.__main__.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.__main__.uvicorn") as mock_uvicorn,
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             main(["serve"])
 
@@ -53,13 +53,13 @@ class TestServeCommand:
             assert port == 4096
 
     def test_no_args_prints_help(self, capsys) -> None:
-        """Running with no args should print usage help without crashing."""
+        """Running with no args should print usage help and exit with error code."""
         import sys
 
         with patch.object(sys, "argv", ["fin-assist"]):
-            # argparse prints help and may raise SystemExit(0) — catch it
             try:
                 main([])
             except SystemExit as e:
-                assert e.code in (0, None)
-        # Should not raise an unhandled exception
+                assert e.code == 2
+        captured = capsys.readouterr()
+        assert "fin-assist" in captured.err
