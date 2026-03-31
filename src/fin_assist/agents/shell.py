@@ -57,6 +57,8 @@ class ShellAgent(LLMBaseAgent[CommandResult]):
             multi_turn=False,
             supports_thinking=False,
             tags=["shell", "one-shot"],
+            requires_approval=True,
+            supports_regenerate=True,
         )
 
     async def run(
@@ -70,7 +72,11 @@ class ShellAgent(LLMBaseAgent[CommandResult]):
                 success=True,
                 output=result.command,
                 warnings=list(result.warnings),
-                metadata={"accept_action": "insert_command"},
+                metadata={
+                    "accept_action": "insert_command",
+                    "regenerate_prompt": prompt,
+                    "original_output": result.command,
+                },
             )
         except Exception as e:
             return AgentResult(

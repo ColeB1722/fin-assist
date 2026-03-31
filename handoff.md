@@ -2,7 +2,41 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-03-28)**: Phases 1-7 complete. Agent Hub server implemented with Starlette + fasta2a, SQLite storage, ShellAgent, and `fin-assist serve` entry point. See [Phase 7 session](#previous-session-phase-7--agent-hub-server) for what was built, [Next Session](#next-session-phase-8--cli-client) for next steps, and [Implementation Progress](#implementation-progress) for phase tracker.
+**Current state (2026-03-31)**: Phases 1-8 complete. Code review from Phase 8 addressed (see [CodeRabbit Review Triage](#coderabbit-review-triage-2026-03-31)). Phase 8b (CLI REPL Mode) is next.
+
+---
+
+## CodeRabbit Review Triage (2026-03-31)
+
+**Branch**: `feature/phase-8`
+
+### Addressed (Implemented)
+
+| Finding | File | Description |
+|---------|------|-------------|
+| Weak assertion | `tests/test_cli/test_client.py:181` | Fixed `test_artifacts_take_precedence_over_history` to have a proper assertion. Note: the actual behavior is "history takes precedence" (reversed scan + first-match wins), so renamed test to `test_history_takes_precedence_over_artifacts`. |
+| Missing httpx.RequestError | `src/fin_assist/cli/server.py:37-40` | Added `httpx.RequestError` to `_check_health` exception handling (was only catching `ConnectError` and `TimeoutException`). |
+| Missing agent validation for `--list` | `src/fin_assist/cli/main.py:157` | Added guard: if `args.list_sessions` is True and `args.agent` is None, renders error and returns 1. |
+| Missing agent validation for `--resume` | `src/fin_assist/cli/main.py:170` | Added guard: if `args.resume` is True and `args.agent` is None, renders error and returns 1. |
+| Subprocess PIPE blocking | `src/fin_assist/cli/server.py:118-119` | Changed `stdout=PIPE, stderr=PIPE` to `DEVNULL` since logs go to hub.log. |
+| Missing type hint | `src/fin_assist/cli/interaction/chat.py:12` | Added `send_message_fn: Callable[[str, str, str \| None], Awaitable[AgentResult]]` with proper TYPE_CHECKING imports. |
+| stop_server wait optional | `src/fin_assist/cli/server.py:197-225` | Added optional `wait_timeout` parameter (default 0 for current behavior). When > 0, polls `_pid_is_running` after SIGTERM. |
+
+### Accepted as-is (Documented)
+
+| Finding | Reason |
+|---------|--------|
+| capture_console fixture | Nitpick - manual console capture is clear and isolated. Low value-add to extract. |
+| Testing private _extract_result | Intentional unit testing of internal helper - no public API to test same behavior without significant test infrastructure. |
+| Private constants in test_logging | Using `_DEFAULT_MAX_BYTES` and `_DEFAULT_BACKUP_COUNT` is appropriate here since they are module-internal defaults being tested for correct values. Making them public would expose implementation details. |
+| Redundant exception handling | `except (ServerStartupError, Exception)` documents intent even though `Exception` catches everything. Style preference, not a bug. |
+| LOG_FILE duplication | `hub/logging.py` owns the constant; `server.py` imports it via `from fin_assist.hub.logging import LOG_FILE`. Acceptable separation. |
+| Blocking Prompt.ask | Intentional for CLI TUI - blocking is appropriate for sequential user input. `asyncio.to_thread` would add complexity without benefit for this use case. |
+| Missing bash language spec | Nitpick - markdown renders fine without it. |
+
+---
+
+## Previous Session: Architecture Consolidation & Design Direction
 
 ---
 
@@ -326,13 +360,15 @@ Deep design session to realign the project with an evolved vision: fin-assist as
 
 4. **Phase plan reordered** — hub-first development:
    - Phase 7: Agent Hub Server (Starlette + fasta2a + SQLite storage)
-   - Phase 8: CLI Client (simple commands + Rich display)
+   - Phase 8: CLI Client (simple commands + Rich display) ✅
    - Phase 8b: CLI REPL Mode (prompt-toolkit)
-   - Phase 9-10: Multiplexer + Fish (deferred)
-   - Phase 11: TUI Client (reuse existing widgets as A2A client)
-   - Phase 13: Skills + MCP (moved up from later)
-   - Phase 14: Additional Agents (SDD, TDD, code review, etc.)
-   - Phase 15: Multi-agent workflows
+   - Phase 9: Streaming (`message/stream` + SSE)
+   - Phase 10: Non-blocking + polling agents
+   - Phase 11-12: Multiplexer + Fish (deferred)
+   - Phase 13: TUI Client (reuse existing widgets as A2A client)
+   - Phase 15: Skills + MCP
+   - Phase 16: Additional Agents (SDD, TDD, code review, etc.)
+   - Phase 17: Multi-agent workflows
 
 ### Research Conducted
 
@@ -435,7 +471,7 @@ Total: 195 tests, all passing (was 146 before Phase 7)
 
 `AgentCardMeta` is currently encoded as `Skill(id="fin_assist:meta")` with the metadata JSON-encoded in the `description` field. This is a deliberate workaround, not a library limitation or a mistake.
 
-**Why:** The A2A spec defines `AgentCapabilities.extensions: list[AgentExtension]` as the correct place for this. `AgentExtension` is already defined in `fasta2a.schema`, but `AgentCapabilities` does not yet expose the `extensions` field — because extensions support is bundled with streaming support and is being shipped in pydantic/fasta2a **PR #44** (opened 2026-03-07, still open as of 2026-03-28). The pydantic team intentionally held it back until both features were ready together.
+**Why:** The A2A spec defines `AgentCapabilities.extensions: list[AgentExtension]` as the correct place for this. `AgentExtension` is already defined in `fasta2a.schema`, but `AgentCapabilities` does not yet expose the `extensions` field — because extensions support is bundled with streaming support and is being shipped in pydantic/fasta2a **PR #44** (opened 2026-03-07, not merged as of fasta2a 0.6.0). The pydantic team intentionally held it back until both features were ready together.
 
 **Migration path** (once fasta2a ships PR #44):
 1. In `hub/factory.py`: replace the `meta_skill` block with an `AgentExtension` dict passed via `AgentCapabilities(extensions=[...])`
@@ -446,35 +482,160 @@ The `factory.py` module docstring documents this in full detail for the next ses
 
 ---
 
-## Next Session: Phase 8 — CLI Client
+## Previous Session: Phase 8 — CLI Client
+
+**Date**: 2026-03-29 / 2026-03-30
+**Branch**: `feature/phase-8`
+**Status**: ✅ Complete
+
+### What Was Accomplished
+
+1. **`AgentCardMeta` converted to Pydantic `BaseModel`** (`agents/base.py`)
+   - Was a `@dataclass`; now `BaseModel` — enables `model_validate(dict)` for hub responses
+   - Added `requires_approval: bool` and `supports_regenerate: bool` fields
+
+2. **`ShellAgent` updated** (`agents/shell.py`)
+   - Sets `requires_approval=True, supports_regenerate=True` in metadata
+   - Adds `regenerate_prompt` to result metadata
+
+3. **`cli/server.py`** — Auto-start server logic
+   - `_check_health()` — polls `/health` endpoint
+   - `_wait_for_health()` — exponential backoff polling (50ms → 1s, 10s timeout)
+   - `_spawn_serve()` — spawns `fin-assist serve` as background subprocess
+   - `ensure_server_running()` — checks health, spawns if needed, raises `ServerStartupError`
+
+4. **`cli/client.py`** — A2A HTTP client using fasta2a TypeAdapters directly
+   - No custom `models.py` — uses `fasta2a.schema` types (`Task`, `Part`, etc.) + `send_message_response_ta`, `get_task_response_ta`
+   - `A2AClient` with `discover_agents()`, `run_agent()`, `send_message()`
+   - `_extract_result()` using `match` on `kind` for part discrimination
+   - `_poll_task()` — fallback for non-blocking `message/send` (not currently exercised; hub defaults to blocking)
+   - `DiscoveredAgent`, `AgentResult` data classes
+
+5. **`cli/display.py`** — Rich rendering
+   - `render_command()`, `render_response()`, `render_warnings()`
+   - `render_error()`, `render_success()`, `render_info()`
+   - `render_agent_card()`, `render_agents_list()`
+
+6. **`cli/interaction/approve.py`** — Approval widget
+   - `ApprovalAction` StrEnum (`EXECUTE`, `EDIT`, `CANCEL`)
+   - `run_approve_widget()` — shows `[execute] [regenerate] [cancel]` prompt
+   - `execute_command()` — runs command via `subprocess.run(shell=True)`
+
+7. **`cli/interaction/chat.py`** — Multi-turn chat loop
+   - `run_chat_loop()` — async loop with `/exit`, `/quit`, `/q` to end
+   - Propagates `context_id` across turns; continues on error
+
+8. **`cli/main.py`** — CLI dispatch
+   - `_hub_client()` async context manager — owns server startup, client lifecycle, unified error rendering
+   - `_get_agent_or_error()` — discovers agents, validates name, renders error if not found
+   - `do <agent> <prompt>` — one-shot; reads `card_meta` from `discover_agents()` (not result metadata)
+   - `talk <agent>` — multi-turn; `--list` runs without server, `--resume <id>` restores context
+   - Session IDs are coolname slugs (`"swift-harbor"`) not truncated UUIDs; backend `context_id` stays UUID
+   - `match args.command` dispatch replacing `if/elif` chain
+   - `serve` — starts hub via uvicorn
+
+9. **`__main__.py`** simplified to thin shim delegating to `cli/main.py`
+
+10. **Tests added** (`tests/test_cli/`)
+    - `test_server.py` — 13 tests
+    - `test_client.py` — 20 tests
+    - `test_display.py` — 18 tests
+    - `interaction/test_approve.py` — 9 tests
+    - `interaction/test_chat.py` — 11 tests
+    - `test_main.py` — 28 tests (includes `TestHubClient`, `TestDoCommandApproval`)
+
+### Test Summary
+
+```text
+tests/test_cli/: 99 tests
+Total: 303 tests, all passing
+```
+
+### Key Implementation Notes
+
+- **No `cli/models.py`**: originally built as Pydantic wrappers for fasta2a TypedDicts. Deleted — fasta2a ships `TextPart`, `DataPart`, `Task`, etc. directly plus `TypeAdapter` instances (`send_message_response_ta`) for `validate_json`. Using those directly eliminates drift risk.
+- **`_poll_task` is intentional, not dead code**: The A2A protocol supports non-blocking `message/send` where the hub returns a `Message` acknowledgment and the client polls `tasks/get`. fasta2a currently defaults to blocking mode so this path isn't exercised, but it's correct protocol implementation for future non-blocking/background agent use cases.
+- **`card_meta` source**: `requires_approval`/`supports_regenerate` are read from `DiscoveredAgent.card_meta` (fetched via `discover_agents()`), not from `result.metadata`. Static capabilities belong on the agent card; dynamic per-response data belongs in result metadata.
+- **`asyncio.run()` in tests**: `main()` calls `asyncio.run()` for async commands. Tests patch it with `loop.run_until_complete()` to avoid "cannot be called from running event loop" error in pytest-asyncio.
+- **`_extract_result` scan order**: Items are `reversed([*artifacts, *history])` — history appears at the end of the list so comes first in reversed scan; first non-empty text wins.
+- **Transport modalities**: See `docs/architecture.md` Transport Layer section for the full roadmap (streaming Phase 9, gRPC as tracked issue).
+
+---
+
+## Next Session: Phase 8b — CLI REPL Mode
 
 ### Goals
 
-Build the primary CLI client that communicates with the hub over A2A HTTP.
+Replace `rich.prompt.Prompt.ask` in `chat.py` and `approve.py` with a reusable
+`prompt_toolkit`-backed input widget (`FinPrompt`) that provides:
+
+- **Fuzzy slash-command completion** — type `/` and get a fuzzy-filtered list of
+  available commands (`/exit`, `/quit`, `/switch <agent>`, etc.), matching the
+  OpenCode pattern
+- **Tab completion for agent names** — after `/switch `, complete against live
+  `discover_agents()` results
+- **Persistent input history** — stored at `~/.local/share/fin/history`, shared
+  across sessions
+- **Richer editing** — readline-style keybindings, multi-line input (future)
+
+### Design Sketch: `FinPrompt`
+
+```python
+# src/fin_assist/cli/interaction/prompt.py
+
+class FinPrompt:
+    """Reusable prompt_toolkit session with slash-command fuzzy completion."""
+
+    SLASH_COMMANDS = ["/exit", "/quit", "/q", "/switch", "/help"]
+
+    def __init__(
+        self,
+        agents: list[str] | None = None,
+        history_path: Path = HISTORY_PATH,
+    ) -> None: ...
+
+    async def ask(self, prompt_text: str) -> str:
+        """Async prompt with completion and history."""
+        ...
+```
+
+`FinPrompt` uses:
+- `FuzzyCompleter(WordCompleter(commands + agents))` — built-in to prompt_toolkit
+- `FileHistory(history_path)` — persistent across sessions
+- `KeyBindings` — `Tab` triggers completion, standard readline keys work
+
+### Wiring
+
+Both existing widgets replace `Prompt.ask` with `FinPrompt.ask`:
+
+- `chat.py` — `run_chat_loop` accepts an optional `FinPrompt` instance (or
+  creates one if not provided), uses it for the main input loop
+- `approve.py` — `run_approve_widget` uses `FinPrompt` for action choice, but
+  note: `Prompt.ask(choices=...)` currently enforces valid input for free.
+  With `FinPrompt` this becomes completion-only (no hard enforcement) — invalid
+  input falls through to `case _` in the match block and loops, which is fine
+
+### Open Design Question
+
+Should `FinPrompt` be instantiated once per command (in `main.py`) and passed
+down, or constructed inside each widget? Shared instance is better for history
+continuity across a session. Passing it down keeps widgets testable with mocks.
+**Recommendation**: construct in `main.py`, pass to widgets via parameter.
 
 ### Implementation Steps (SDD → TDD)
 
-1. **`cli/client.py`** — A2A HTTP client (httpx)
-   - `discover_agents(base_url)` → list of agent info + card_meta
-   - `ask(base_url, agent, prompt)` → submit task, poll to completion, return artifact
-   - `chat(base_url, agent, prompt, context_id)` → multi-turn with context_id
+1. Sketch `FinPrompt` interface + write failing tests
+2. Implement `FinPrompt` with `FuzzyCompleter` + `FileHistory`
+3. Update `chat.py` — accept `FinPrompt`, replace `Prompt.ask`
+4. Update `approve.py` — replace `Prompt.ask` with `FinPrompt.ask`
+5. Update `main.py` — construct `FinPrompt` with live agent names, pass down
+6. Update existing tests to mock `FinPrompt.ask` instead of `Prompt.ask`
+7. Run `just ci`
 
-2. **`cli/display.py`** — Rich-based output
-   - Render `AgentResult` output: plain text or command block based on `card_meta`
-   - `accept_action: insert_command` → highlight command for shell insertion
+### Dependencies
 
-3. **`cli/main.py`** — Dispatch `agents`, `ask`, `chat` commands
-
-4. **Wire `__main__.py`** — Add `agents`, `ask`, `chat` subcommands
-
-5. **Tests** — Mock httpx, verify A2A JSON-RPC payloads, display formatting
-
-### Key Design Notes
-
-- CLI client reads `fin_assist:meta` skill from agent card to adapt display
-- `fin-assist ask shell "..."` prints just the command
-- `fin-assist ask default "..."` prints full response
-- `context_id` for `chat` generated client-side, stored in `~/.local/share/fin/sessions/`
+Add `prompt_toolkit>=3.0` to `pyproject.toml` (already a transitive dep of
+several packages — worth pinning explicitly).
 
 ---
 
@@ -556,16 +717,19 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 5 | Context Module | ✅ Complete |
 | 6 | Agent Protocol & Registry | ✅ Complete |
 | 7 | **Agent Hub Server** | ✅ Complete |
-| 8 | **CLI Client** | ⬜ Not Started ← next |
-| 8b | CLI REPL Mode | ⬜ Not Started |
-| 9 | Multiplexer Integration | ⬜ Not Started |
-| 10 | Fish Plugin | ⬜ Not Started |
-| 11 | TUI Client (A2A) | ⬜ Not Started |
-| 12 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
-| 13 | Skills + MCP Integration | ⬜ Not Started |
-| 14 | Additional Agents | ⬜ Not Started |
-| 15 | Multi-Agent Workflows | ⬜ Not Started |
-| 16 | Documentation | ⬜ Not Started |
+| 8 | **CLI Client** | ✅ Complete |
+| 8b | CLI REPL Mode | ⬜ Not Started ← next |
+| 9 | Streaming (`message/stream` + SSE) | ⬜ Not Started |
+| 10 | Non-blocking + polling agents | ⬜ Not Started |
+| 11 | Multiplexer Integration | ⬜ Not Started |
+| 12 | Fish Plugin | ⬜ Not Started |
+| 13 | TUI Client (A2A) | ⬜ Not Started |
+| 14 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
+| 15 | Skills + MCP Integration | ⬜ Not Started |
+| 16 | Additional Agents | ⬜ Not Started |
+| 17 | Multi-Agent Workflows | ⬜ Not Started |
+| 18 | Documentation | ⬜ Not Started |
+| — | gRPC transport | Issue (track fasta2a roadmap) |
 
 ---
 
@@ -602,3 +766,97 @@ To quickly get context in a new session:
 - SQLite for task + context storage (shared across agents)
 - Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI deferred
 - Existing TUI widgets set aside — will become A2A client in Phase 11
+
+---
+
+## Design Sketch: Tracing Integration (Phoenix Arize)
+
+**Status**: Pre-design — no implementation started. To be addressed when tracing is added (likely alongside Phase 14: Deep Evals or Phase 16: Additional Agents).
+
+### What Phoenix Is
+
+[Arize Phoenix](https://phoenix.arize.com/) is an open-source LLM observability server. Key properties:
+
+- Pure Python — installed via `pip install arize-phoenix`, started with `phoenix serve`
+- Runs at `http://localhost:6006` by default
+- Exposes OTLP endpoints: gRPC `:4317`, HTTP `:4318`
+- SQLite-backed by default; data lives at `~/.phoenix/` (configurable)
+- Web UI for trace inspection, evals, prompt management, experiments
+- **Zero cost, zero data egress** — fully local, nothing sent to Arize
+
+### devenv Integration Plan
+
+Phoenix starts via `devenv up` using the native `processes` block with an HTTP ready probe:
+
+```nix
+# devenv.nix (to add when tracing is implemented)
+processes.phoenix = {
+  exec = "phoenix serve --port 6006";
+  ready = {
+    http.get = {
+      port = 6006;
+      path = "/healthz";  # verify exact path when implementing
+    };
+    initial_delay = 1;
+    period = 2;
+    failure_threshold = 15;  # give it ~30s to cold-start
+  };
+};
+```
+
+No Docker needed. Phoenix is a Python process — it lives alongside the existing uv-managed venv.
+
+The `arize-phoenix` package would go in `pyproject.toml` as a dev dependency (not shipped with the app):
+
+```toml
+[dependency-groups]
+dev = [
+  "arize-phoenix>=8.0",
+  # ...
+]
+```
+
+Optionally expose the Phoenix port and OTLP env vars via devenv's `env` block so the app picks them up automatically on `devenv up`:
+
+```nix
+env = {
+  PHOENIX_COLLECTOR_ENDPOINT = "http://localhost:6006";
+  OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318";
+};
+```
+
+### fin-assist Integration Points
+
+When tracing is added to the app itself:
+
+| Package | Role |
+|---------|------|
+| `arize-phoenix-otel` | Lightweight OTEL wrapper with Phoenix-aware defaults (runtime dep) |
+| `openinference-instrumentation-pydantic-ai` | Auto-instruments pydantic-ai `Agent` calls (runtime dep) |
+| `arize-phoenix` | The server itself (dev dep only — not needed at runtime) |
+
+Instrumentation wires in at hub startup:
+
+```python
+# hub/app.py or a new hub/telemetry.py
+from phoenix.otel import register
+from openinference.instrumentation.pydantic_ai import PydanticAIInstrumentor
+
+def configure_tracing(endpoint: str | None = None) -> None:
+    """Register Phoenix OTEL tracing. No-ops if endpoint not configured."""
+    if endpoint is None:
+        return
+    tracer_provider = register(endpoint=endpoint, project_name="fin-assist")
+    PydanticAIInstrumentor().instrument(tracer_provider=tracer_provider)
+```
+
+Called from hub lifespan with the endpoint read from config (opt-in — if not set, tracing is disabled).
+
+### Open Questions
+
+| Question | Notes |
+|----------|-------|
+| Exact `/healthz` path | Confirm when implementing — Phoenix docs show UI at `:6006` but health path needs verification |
+| Config key for endpoint | Suggest `[server] phoenix_endpoint = ""` — empty string = disabled |
+| Trace granularity | Per-agent-run spans at minimum; tool calls and context gathering as child spans later |
+| Eval integration | Phoenix ships eval primitives — could power Phase 14 Deep Evals work |

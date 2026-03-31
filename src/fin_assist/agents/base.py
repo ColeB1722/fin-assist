@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel, Field
+
 if TYPE_CHECKING:
     from fin_assist.context.base import ContextItem
 
@@ -16,8 +18,7 @@ class AgentResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class AgentCardMeta:
+class AgentCardMeta(BaseModel):
     """Static UI/capability metadata published in the A2A agent card extension.
 
     Clients read these fields to decide which UI elements to show or hide without
@@ -39,8 +40,14 @@ class AgentCardMeta:
     color_scheme: str | None = None
     """Optional theming hint for clients."""
 
-    tags: list[str] = field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     """Categorisation tags (e.g. ['shell', 'one-shot'])."""
+
+    requires_approval: bool = False
+    """If True, CLI shows approval widget before executing the suggested action."""
+
+    supports_regenerate: bool = False
+    """If True, CLI shows regenerate option after a response."""
 
     # Future (Phase 11 — TUI client):
     #   Add ``supported_context_types: list[str] | None = None`` here so that

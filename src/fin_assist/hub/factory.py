@@ -14,16 +14,15 @@ the correct place to publish structured per-agent metadata:
     AgentCapabilities(extensions=[
         AgentExtension(
             uri="https://fin-assist.local/ext/agent-meta/v1",
-            params=dataclasses.asdict(meta),
+            params=meta.model_dump(),
         )
     ])
 
 ``AgentExtension`` is already defined in ``fasta2a.schema``, but
 ``AgentCapabilities`` does not yet expose an ``extensions`` field, and
 ``FastA2A.__init__`` does not accept one.  Extensions support is implemented in
-pydantic/fasta2a PR #44 (opened 2026-03-07, open as of 2026-03-28) — it is
-deliberately not merged yet, shipped as part of a joint streaming + extensions
-feature.
+pydantic/fasta2a PR #44 (opened 2026-03-07, not merged as of fasta2a 0.6.0) —
+deliberately held back, bundled with the streaming feature.
 
 Until that PR lands and a new fasta2a release ships, we encode ``AgentCardMeta``
 inside a reserved ``Skill`` entry (id ``"fin_assist:meta"``).  Clients discover
@@ -39,7 +38,6 @@ Migration path once fasta2a >= 0.7 (or whatever ships extensions):
 
 from __future__ import annotations
 
-import dataclasses
 import json
 from typing import TYPE_CHECKING
 
@@ -87,7 +85,7 @@ class AgentFactory:
         meta_skill: Skill = {
             "id": "fin_assist:meta",
             "name": "fin_assist metadata",
-            "description": json.dumps(dataclasses.asdict(meta)),
+            "description": json.dumps(meta.model_dump()),
             "tags": list(meta.tags),
             "input_modes": ["application/json"],
             "output_modes": ["application/json"],
