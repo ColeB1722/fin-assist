@@ -155,6 +155,9 @@ async def _do_command(args: argparse.Namespace, config) -> int:
 async def _talk_command(args: argparse.Namespace, config) -> int:
     """Handle `fin-assist talk <agent>`."""
     if args.list_sessions:
+        if not args.agent:
+            render_error("Agent name required for --list")
+            return 1
         sessions_dir = SESSIONS_DIR / args.agent
         if sessions_dir.exists():
             for session_file in sessions_dir.glob("*.json"):
@@ -168,6 +171,9 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
 
     context_id: str | None = None
     if args.resume:
+        if not args.agent:
+            render_error("Agent name required for --resume")
+            return 1
         session = _load_session(args.agent, args.resume)
         if session is None:
             render_error(f"Session {args.resume} not found")

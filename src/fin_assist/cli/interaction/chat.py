@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from rich.console import Console
 from rich.prompt import Prompt
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from fin_assist.cli.client import AgentResult
 
 console = Console()
 
 
 async def run_chat_loop(
-    send_message_fn,
+    send_message_fn: Callable[[str, str, str | None], Awaitable[AgentResult]],
     agent_name: str,
     context_id: str | None = None,
 ) -> str | None:

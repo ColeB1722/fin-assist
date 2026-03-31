@@ -2,7 +2,41 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-03-30)**: Phases 1-8 complete. Phase 8b (CLI REPL Mode) is next. See [Phase 8 session](#previous-session-phase-8--cli-client) for what was built and [Implementation Progress](#implementation-progress) for phase tracker.
+**Current state (2026-03-31)**: Phases 1-8 complete. Code review from Phase 8 addressed (see [CodeRabbit Review Triage](#coderabbit-review-triage-2026-03-31)). Phase 8b (CLI REPL Mode) is next.
+
+---
+
+## CodeRabbit Review Triage (2026-03-31)
+
+**Branch**: `feature/phase-8`
+
+### Addressed (Implemented)
+
+| Finding | File | Description |
+|---------|------|-------------|
+| Weak assertion | `tests/test_cli/test_client.py:181` | Fixed `test_artifacts_take_precedence_over_history` to have a proper assertion. Note: the actual behavior is "history takes precedence" (reversed scan + first-match wins), so renamed test to `test_history_takes_precedence_over_artifacts`. |
+| Missing httpx.RequestError | `src/fin_assist/cli/server.py:37-40` | Added `httpx.RequestError` to `_check_health` exception handling (was only catching `ConnectError` and `TimeoutException`). |
+| Missing agent validation for `--list` | `src/fin_assist/cli/main.py:157` | Added guard: if `args.list_sessions` is True and `args.agent` is None, renders error and returns 1. |
+| Missing agent validation for `--resume` | `src/fin_assist/cli/main.py:170` | Added guard: if `args.resume` is True and `args.agent` is None, renders error and returns 1. |
+| Subprocess PIPE blocking | `src/fin_assist/cli/server.py:118-119` | Changed `stdout=PIPE, stderr=PIPE` to `DEVNULL` since logs go to hub.log. |
+| Missing type hint | `src/fin_assist/cli/interaction/chat.py:12` | Added `send_message_fn: Callable[[str, str, str \| None], Awaitable[AgentResult]]` with proper TYPE_CHECKING imports. |
+| stop_server wait optional | `src/fin_assist/cli/server.py:197-225` | Added optional `wait_timeout` parameter (default 0 for current behavior). When > 0, polls `_pid_is_running` after SIGTERM. |
+
+### Accepted as-is (Documented)
+
+| Finding | Reason |
+|---------|--------|
+| capture_console fixture | Nitpick - manual console capture is clear and isolated. Low value-add to extract. |
+| Testing private _extract_result | Intentional unit testing of internal helper - no public API to test same behavior without significant test infrastructure. |
+| Private constants in test_logging | Using `_DEFAULT_MAX_BYTES` and `_DEFAULT_BACKUP_COUNT` is appropriate here since they are module-internal defaults being tested for correct values. Making them public would expose implementation details. |
+| Redundant exception handling | `except (ServerStartupError, Exception)` documents intent even though `Exception` catches everything. Style preference, not a bug. |
+| LOG_FILE duplication | `hub/logging.py` owns the constant; `server.py` imports it via `from fin_assist.hub.logging import LOG_FILE`. Acceptable separation. |
+| Blocking Prompt.ask | Intentional for CLI TUI - blocking is appropriate for sequential user input. `asyncio.to_thread` would add complexity without benefit for this use case. |
+| Missing bash language spec | Nitpick - markdown renders fine without it. |
+
+---
+
+## Previous Session: Architecture Consolidation & Design Direction
 
 ---
 

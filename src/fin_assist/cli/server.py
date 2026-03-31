@@ -34,9 +34,7 @@ async def _check_health(base_url: str) -> bool:
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.get(f"{base_url}/health")
             return response.status_code == 200
-    except httpx.ConnectError:
-        return False
-    except httpx.TimeoutException:
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
         return False
 
 
@@ -115,8 +113,8 @@ async def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> asyncio.sub
 
     proc = await asyncio.create_subprocess_exec(
         *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
 
@@ -194,8 +192,13 @@ async def ensure_server_running(
         ) from e
 
 
-def stop_server(pid_file: Path = PID_FILE) -> bool:
+def stop_server(pid_file: Path = PID_FILE, wait_timeout: float = 0) -> bool:
     """Stop the hub server by sending SIGTERM to the recorded PID.
+
+    Args:
+        pid_file: Path to the PID file.
+        wait_timeout: Seconds to wait for process to exit after SIGTERM.
+            Default 0 means don't wait (immediate PID file removal).
 
     Returns True if the server was stopped, False if no PID file was found
     or the process was not running.
@@ -210,8 +213,22 @@ def stop_server(pid_file: Path = PID_FILE) -> bool:
 
     try:
         os.kill(pid, signal.SIGTERM)
-        _remove_pid(pid_file)
-        return True
     except (ProcessLookupError, PermissionError):
         _remove_pid(pid_file)
         return False
+
+    if wait_timeout > 0:
+        import time
+
+        elapsed = 0.0
+        interval = 0.05
+        while elapsed < wait_timeout:
+            time.sleep(interval)
+            if not _pid_is_running(pid):
+                _remove_pid(pid_file)
+                return True
+            elapsed += interval
+            interval = min(interval * 2, 0.5)
+
+    _remove_pid(pid_file)
+    return True

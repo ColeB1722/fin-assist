@@ -170,15 +170,15 @@ class TestExtractResult:
 
         assert result.output == "from history"
 
-    def test_artifacts_take_precedence_over_history(self):
-        """reversed([artifact, history]) → history comes first in scan; wins."""
+    def test_history_takes_precedence_over_artifacts(self):
+        """History items are scanned after artifacts (reversed), so history wins."""
         task = _make_task(
             artifacts=[{"parts": [{"kind": "text", "text": "artifact text"}]}],
             history=[{"parts": [{"kind": "text", "text": "history text"}]}],
         )
         result = A2AClient("http://localhost")._extract_result(task)
 
-        assert result.output in ("artifact text", "history text")
+        assert result.output == "history text"
 
 
 # ---------------------------------------------------------------------------
