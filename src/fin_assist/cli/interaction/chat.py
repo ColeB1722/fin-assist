@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rich.console import Console
-from rich.prompt import Prompt
+
+from fin_assist.cli.interaction.prompt import FinPrompt
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -19,6 +20,7 @@ async def run_chat_loop(
     send_message_fn: Callable[[str, str, str | None], Awaitable[AgentResult]],
     agent_name: str,
     context_id: str | None = None,
+    prompt: FinPrompt | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -27,6 +29,7 @@ async def run_chat_loop(
                         and returns an AgentResult.
         agent_name: Name of the agent to chat with.
         context_id: Optional context ID for resuming a conversation.
+        prompt: Optional FinPrompt instance for input (created if not provided).
 
     Returns:
         The final context_id if the conversation had one.
@@ -36,9 +39,11 @@ async def run_chat_loop(
     console.print(f"[bold green]Starting chat with {agent_name}[/bold green]")
     console.print("[dim]Type /exit to end the conversation[/dim]\n")
 
+    fp = prompt or FinPrompt()
+
     while True:
         try:
-            user_input = Prompt.ask("[bold]>[/bold] ").strip()
+            user_input = (await fp.ask("[bold]>[/bold] ")).strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Exiting chat[/dim]")
             break
