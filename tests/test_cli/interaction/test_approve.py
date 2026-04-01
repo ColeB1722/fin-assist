@@ -26,29 +26,29 @@ class TestApprovalAction:
 
 
 class TestRunApproveWidget:
-    def test_execute_returns_execute_action(self):
+    async def test_execute_returns_execute_action(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="execute")
 
-        action, edited = run_approve_widget("ls -la", prompt=mock_fp)
+        action, edited = await run_approve_widget("ls -la", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
         assert edited is None
 
-    def test_cancel_returns_cancel_action(self):
+    async def test_cancel_returns_cancel_action(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="cancel")
 
-        action, edited = run_approve_widget("ls -la", prompt=mock_fp)
+        action, edited = await run_approve_widget("ls -la", prompt=mock_fp)
 
         assert action == ApprovalAction.CANCEL
         assert edited is None
 
-    def test_regenerate_returns_edit_with_original_prompt(self):
+    async def test_regenerate_returns_edit_with_original_prompt(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="regenerate")
 
-        action, edited = run_approve_widget(
+        action, edited = await run_approve_widget(
             "rm -rf /",
             supports_regenerate=True,
             regenerate_prompt="delete everything",
@@ -58,11 +58,11 @@ class TestRunApproveWidget:
         assert action == ApprovalAction.EDIT
         assert edited == "delete everything"
 
-    def test_regenerate_loops_when_no_prompt(self):
+    async def test_regenerate_loops_when_no_prompt(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["regenerate", "execute"])
 
-        action, edited = run_approve_widget(
+        action, edited = await run_approve_widget(
             "ls",
             supports_regenerate=True,
             regenerate_prompt=None,
@@ -72,52 +72,52 @@ class TestRunApproveWidget:
         assert action == ApprovalAction.EXECUTE
         assert mock_fp.ask.call_count == 2
 
-    def test_regenerate_not_in_options_when_disabled(self):
+    async def test_regenerate_not_in_options_when_disabled(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="execute")
 
-        run_approve_widget("ls", supports_regenerate=False, prompt=mock_fp)
+        await run_approve_widget("ls", supports_regenerate=False, prompt=mock_fp)
 
         call_args = mock_fp.ask.call_args[0][0]
         assert "regenerate" not in call_args
         assert "execute" in call_args
         assert "cancel" in call_args
 
-    def test_regenerate_in_options_when_enabled(self):
+    async def test_regenerate_in_options_when_enabled(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="execute")
 
-        run_approve_widget("ls", supports_regenerate=True, prompt=mock_fp)
+        await run_approve_widget("ls", supports_regenerate=True, prompt=mock_fp)
 
         call_args = mock_fp.ask.call_args[0][0]
         assert "regenerate" in call_args
 
-    def test_unknown_input_loops(self):
+    async def test_unknown_input_loops(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["unknown", "execute"])
 
-        action, edited = run_approve_widget("ls", prompt=mock_fp)
+        action, edited = await run_approve_widget("ls", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
         assert mock_fp.ask.call_count == 2
 
-    def test_empty_input_loops(self):
+    async def test_empty_input_loops(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["", "execute"])
 
-        action, edited = run_approve_widget("ls", prompt=mock_fp)
+        action, edited = await run_approve_widget("ls", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
         assert mock_fp.ask.call_count == 2
 
-    def test_creates_finprompt_if_not_provided(self):
+    async def test_creates_finprompt_if_not_provided(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="execute")
 
         with patch(
             "fin_assist.cli.interaction.approve.FinPrompt", return_value=mock_fp
         ) as mock_init:
-            action, edited = run_approve_widget("ls")
+            action, edited = await run_approve_widget("ls")
             mock_init.assert_called_once()
 
         assert action == ApprovalAction.EXECUTE

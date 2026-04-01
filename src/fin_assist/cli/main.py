@@ -100,17 +100,19 @@ async def _hub_client(config) -> AsyncIterator[A2AClient]:
 # ---------------------------------------------------------------------------
 
 
-async def _get_agent_or_error(client: A2AClient, agent_name: str) -> DiscoveredAgent | None:
-    """Look up an agent by name. Renders an error and returns None if not found."""
+async def _get_agent_or_error(
+    client: A2AClient, agent_name: str
+) -> tuple[DiscoveredAgent | None, list[DiscoveredAgent]]:
+    """Look up an agent by name. Returns (agent, all_agents). Agent is None if not found."""
     agents = await client.discover_agents()
 
     for agent in agents:
         if agent.name == agent_name:
-            return agent
+            return agent, agents
 
     known = ", ".join(a.name for a in agents) or "none"
     render_error(f"Unknown agent '{agent_name}'. Available: {known}")
-    return None
+    return None, agents
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +124,10 @@ async def _do_command(args: argparse.Namespace, config) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
     try:
         async with _hub_client(config) as client:
-            discovered = await _get_agent_or_error(client, args.agent)
+            discovered, agents = await _get_agent_or_error(client, args.agent)
             if discovered is None:
                 return 1
 
-            agents = await client.discover_agents()
             fp = FinPrompt(agents=[a.name for a in agents])
 
             prompt = args.prompt
@@ -137,7 +138,7 @@ async def _do_command(args: argparse.Namespace, config) -> int:
                     render_command(result.output, result.warnings, result.metadata)
                     return 0
 
-                action, edited = run_approve_widget(
+                action, edited = await run_approve_widget(
                     command=result.output,
                     warnings=result.warnings,
                     supports_regenerate=discovered.card_meta.supports_regenerate,
@@ -185,6 +186,10 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
             return 1
         context_id = session.get("context_id")
         render_info(f"Resuming session {args.resume}")
+
+    if not args.agent:
+        render_error("Agent name required for talk command")
+        return 1
 
     try:
         async with _hub_client(config) as client:

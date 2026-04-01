@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from enum import StrEnum
 
@@ -21,7 +20,7 @@ class ApprovalAction(StrEnum):
     CANCEL = "cancel"
 
 
-def run_approve_widget(
+async def run_approve_widget(
     command: str,
     warnings: list[str] | None = None,
     supports_regenerate: bool = True,
@@ -53,7 +52,7 @@ def run_approve_widget(
 
     while True:
         console.print()
-        choice = asyncio.run(fp.ask(f"[bold]Action:[/bold] {prompt_text} ")).strip()
+        choice = (await fp.ask(f"[bold]Action:[/bold] {prompt_text} ")).strip()
 
         match choice:
             case "execute":
