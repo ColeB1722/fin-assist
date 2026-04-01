@@ -714,6 +714,7 @@ dependencies = [
     { name = "fasta2a" },
     { name = "httpx" },
     { name = "keyring" },
+    { name = "prompt-toolkit" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
 ]
@@ -732,6 +733,7 @@ requires-dist = [
     { name = "fasta2a", specifier = ">=0.6" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "keyring", specifier = ">=25.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "pydantic-ai", specifier = ">=1.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
 ]

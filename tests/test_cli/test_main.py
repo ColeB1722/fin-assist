@@ -289,7 +289,7 @@ class TestDoCommandNoApproval:
             result = _run_main("do", "shell", "list files")
 
         assert result == 0
-        mock_client.discover_agents.assert_called_once()
+        assert mock_client.discover_agents.call_count >= 1
         mock_client.run_agent.assert_called_once_with("shell", "list files")
 
     def test_returns_1_for_unknown_agent(self):

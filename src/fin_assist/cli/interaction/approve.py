@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from enum import StrEnum
 
 from rich.console import Console
-from rich.prompt import Prompt
+
+from fin_assist.cli.interaction.prompt import FinPrompt
 
 console = Console()
 
@@ -24,6 +26,7 @@ def run_approve_widget(
     warnings: list[str] | None = None,
     supports_regenerate: bool = True,
     regenerate_prompt: str | None = None,
+    prompt: FinPrompt | None = None,
 ) -> tuple[ApprovalAction, str | None]:
     """Show the approval widget and return the user's choice.
 
@@ -32,6 +35,7 @@ def run_approve_widget(
         warnings: Any warnings associated with the command.
         supports_regenerate: Whether to show the regenerate option.
         regenerate_prompt: The original prompt for regeneration.
+        prompt: Optional FinPrompt instance for input.
 
     Returns:
         A tuple of (action, edited_command_or_prompt).
@@ -45,13 +49,11 @@ def run_approve_widget(
 
     prompt_text = " ".join(f"[{opt}]" for opt in options)
 
+    fp = prompt or FinPrompt()
+
     while True:
         console.print()
-        choice = Prompt.ask(
-            f"[bold]Action:[/bold] {prompt_text}",
-            choices=options,
-            default="execute",
-        )
+        choice = asyncio.run(fp.ask(f"[bold]Action:[/bold] {prompt_text} ")).strip()
 
         match choice:
             case "execute":
@@ -62,6 +64,10 @@ def run_approve_widget(
                 if regenerate_prompt:
                     return (ApprovalAction.EDIT, regenerate_prompt)
                 console.print("[yellow]Regenerate not available (no original prompt)[/yellow]")
+            case _:
+                if choice:
+                    console.print(f"[yellow]Unknown choice: {choice}[/yellow]")
+                console.print(f"Valid options: {' '.join(options)}")
 
 
 def execute_command(command: str) -> int:

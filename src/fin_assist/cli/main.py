@@ -28,6 +28,7 @@ from fin_assist.cli.display import (
 )
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 from fin_assist.cli.interaction.chat import run_chat_loop
+from fin_assist.cli.interaction.prompt import FinPrompt
 from fin_assist.cli.server import ServerStartupError, ensure_server_running, stop_server
 from fin_assist.config.loader import load_config
 from fin_assist.hub.app import create_hub_app
@@ -125,6 +126,9 @@ async def _do_command(args: argparse.Namespace, config) -> int:
             if discovered is None:
                 return 1
 
+            agents = await client.discover_agents()
+            fp = FinPrompt(agents=[a.name for a in agents])
+
             prompt = args.prompt
             while True:
                 result = await client.run_agent(args.agent, prompt)
@@ -138,6 +142,7 @@ async def _do_command(args: argparse.Namespace, config) -> int:
                     warnings=result.warnings,
                     supports_regenerate=discovered.card_meta.supports_regenerate,
                     regenerate_prompt=result.metadata.get("regenerate_prompt"),
+                    prompt=fp,
                 )
 
                 if action == ApprovalAction.EXECUTE:
@@ -183,7 +188,9 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
 
     try:
         async with _hub_client(config) as client:
-            final_context_id = await run_chat_loop(client.send_message, args.agent, context_id)
+            agents = await client.discover_agents()
+            fp = FinPrompt(agents=[a.name for a in agents])
+            final_context_id = await run_chat_loop(client.send_message, args.agent, context_id, fp)
     except (ServerStartupError, Exception):
         return 1
 
