@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -146,8 +146,6 @@ class TestBuildModelCredentialCheck:
         # We mock the registry to avoid the actual provider call
         mock_registry = MagicMock()
         mock_registry.create_model.return_value = MagicMock()
-
-        from unittest.mock import patch
 
         with patch.object(agent, "_get_registry", return_value=mock_registry):
             model = agent._build_model()

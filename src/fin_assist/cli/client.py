@@ -211,8 +211,10 @@ class HubClient:
                 for part in item.get("parts", []):
                     match part:
                         case {"kind": "text", "text": text}:
-                            if not output:
-                                output = text
+                            output = text
+                            break
+                if output:
+                    break
 
         return AgentResult(
             success=success,

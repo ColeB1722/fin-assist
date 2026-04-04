@@ -72,17 +72,6 @@ class TestDefaultAgentBuildPydanticAgent:
             assert len(caps) == 1
             assert isinstance(caps[0], Thinking)
 
-    def test_without_thinking_effort(self, mock_config, mock_credentials) -> None:
-        from pydantic_ai.models.test import TestModel
-
-        mock_config.general.thinking_effort = None
-
-        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
-
-            assert not built._root_capability.capabilities
-
     @pytest.mark.parametrize("effort", ["off", None])
     def test_thinking_off_means_no_capabilities(
         self, mock_config, mock_credentials, effort

@@ -324,3 +324,7 @@ default_provider = "cwd_provider"
                 # Explicit path wins over env var
                 config = load_config(explicit_path)
                 assert config.general.default_provider == "explicit"
+
+                # Env var wins over cwd when no explicit path
+                config = load_config()
+                assert config.general.default_provider == "env"

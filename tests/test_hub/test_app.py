@@ -141,7 +141,7 @@ class TestMessageSendEndToEnd:
             data = resp.json()
             task = data.get("result", {})
             state = task.get("status", {}).get("state")
-            if state in ("completed", "failed", "canceled", "rejected"):
+            if state in ("completed", "failed", "canceled", "rejected", "auth-required"):
                 return data
             time.sleep(0.05)
         raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
