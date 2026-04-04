@@ -792,7 +792,7 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 7 | **Agent Hub Server** | ✅ Complete |
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | CLI REPL Mode | ⬜ Not Started ← next |
-| 9 | Streaming (`message/stream` + SSE) | ⬜ Not Started |
+| 9 | Streaming + Integration Tests | ⬜ Not Started |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |

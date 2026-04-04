@@ -756,12 +756,16 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Dynamic prompts from agent card metadata
 - [ ] History and tab completion
 
-### Phase 9: Streaming ⬜
+### Phase 9: Streaming + Integration Tests ⬜
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
 - [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
 - [ ] Wire to `talk` command — streaming as default if agent card supports it
 - [ ] Tests — streaming output, partial artifact rendering
+- [ ] Integration test harness — real uvicorn server, real HTTP (httpx), subprocess lifecycle
+- [ ] Integration tests for CLI commands (`do`, `talk`, `agents`, `stop`) against live hub
+- [ ] Integration tests for streaming SSE connection lifecycle and progressive rendering
+- [ ] Integration tests for server auto-start/stop and PID management
 
 ### Phase 11: Multiplexer Integration ⬜
 - [ ] Multiplexer ABC (multiplexer/base.py)
