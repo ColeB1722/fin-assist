@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 from fasta2a.applications import FastA2A
-from fasta2a.broker import InMemoryBroker
 
 from fin_assist.hub.factory import AgentFactory
 from fin_assist.hub.storage import SQLiteStorage
@@ -13,8 +12,7 @@ from fin_assist.hub.storage import SQLiteStorage
 
 def _make_factory() -> AgentFactory:
     storage = SQLiteStorage(db_path=":memory:")
-    broker = InMemoryBroker()
-    return AgentFactory(storage=storage, broker=broker)
+    return AgentFactory(storage=storage)
 
 
 class TestAgentFactoryCreation:

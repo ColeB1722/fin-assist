@@ -20,10 +20,9 @@ single parent lifespan.
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING
 
-from fasta2a.broker import InMemoryBroker
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -32,7 +31,7 @@ from fin_assist.hub.factory import AgentFactory
 from fin_assist.hub.storage import SQLiteStorage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
     from fasta2a.applications import FastA2A
     from starlette.requests import Request
@@ -41,7 +40,7 @@ if TYPE_CHECKING:
 
 
 def create_hub_app(
-    agents: list[BaseAgent] | None = None,
+    agents: Sequence[BaseAgent] | None = None,
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
 ) -> Starlette:
@@ -57,8 +56,7 @@ def create_hub_app(
     """
     agents = agents or []
     storage = SQLiteStorage(db_path=db_path)
-    broker = InMemoryBroker()
-    factory = AgentFactory(storage=storage, broker=broker)
+    factory = AgentFactory(storage=storage)
 
     # Build per-agent sub-apps and collect metadata for discovery
     sub_apps: list[FastA2A] = []
@@ -91,31 +89,16 @@ def create_hub_app(
 
     @asynccontextmanager
     async def _lifespan(app: Starlette) -> AsyncIterator[None]:
-        # Manually start each sub-app's TaskManager so fasta2a is ready to serve
-        async with _all_task_managers(sub_apps):
+        # Enter each sub-app's full lifespan — this starts the broker, the
+        # pydantic-ai agent context, AND the AgentWorker background loop.
+        # Previously we only entered task_manager (broker) which left the
+        # worker unstarted and caused message/send to hang indefinitely.
+        async with AsyncExitStack() as stack:
+            for sub_app in sub_apps:
+                await stack.enter_async_context(sub_app.router.lifespan_context(sub_app))
             yield
 
     return Starlette(routes=routes, lifespan=_lifespan)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-@asynccontextmanager
-async def _all_task_managers(sub_apps: list[FastA2A]) -> AsyncIterator[None]:
-    """Enter all sub-app task managers in sequence."""
-    if not sub_apps:
-        yield
-        return
-
-    async with sub_apps[0].task_manager:
-        if len(sub_apps) > 1:
-            async with _all_task_managers(sub_apps[1:]):
-                yield
-        else:
-            yield
 
 
 # ---------------------------------------------------------------------------

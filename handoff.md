@@ -2,7 +2,80 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-03-31)**: Phases 1-8 complete. Code review from Phase 8 addressed (see [CodeRabbit Review Triage](#coderabbit-review-triage-2026-03-31)). Phase 8b (CLI REPL Mode) is next.
+**Current state (2026-04-03)**: Phases 1-8 complete. `auth-required` credential pre-check implemented (see [Auth-Required Credential Pre-Check](#auth-required-credential-pre-check-2026-04-03)). Phase 8b (CLI REPL Mode) is next.
+
+---
+
+## Auth-Required Credential Pre-Check (2026-04-03)
+
+**Status**: Complete
+
+### Problem
+
+When API keys were missing, `BaseAgent._build_model()` passed `api_key=None` to the pydantic-ai provider constructor, which silently accepted it. The first actual LLM call then exploded with a cryptic provider-specific 401 error. The task was set to `"failed"` with no indication of *which* provider was misconfigured or how to fix it.
+
+### What Was Implemented
+
+Graceful early detection of missing credentials using the A2A `auth-required` task state, providing clear remediation guidance instead of cryptic provider errors.
+
+**6 layers, bottom-up:**
+
+1. **`MissingCredentialsError`** (`agents/base.py`) — Exception carrying the list of providers missing keys. Message includes env var hints (e.g. `ANTHROPIC_API_KEY`).
+
+2. **`BaseAgent.check_credentials() -> list[str]`** (`agents/base.py`) — Iterates enabled providers, checks `PROVIDER_META.requires_api_key`, calls `credentials.get_api_key()`. Returns names of providers missing keys. Called as a guard at the top of `_build_model()`.
+
+3. **`FinAssistWorker(AgentWorker)`** (`hub/worker.py`) — Custom fasta2a worker subclass. Overrides `run_task()` to catch `MissingCredentialsError` and set task state to `"auth-required"` with an agent message explaining what's missing. Other exceptions still produce `"failed"`.
+
+4. **`AgentFactory` updated** (`hub/factory.py`) — Passes a custom `lifespan` to `to_a2a()` that starts `FinAssistWorker` instead of fasta2a's default `AgentWorker`.
+
+5. **`HubClient._extract_result`** (`cli/client.py`) — When state is `"auth-required"`, sets `metadata["auth_required"] = True` and extracts the agent message from history as output.
+
+6. **`render_auth_required`** (`cli/display.py`) — Yellow panel with provider name, env var hints, and credentials file path. Visually distinct from generic `Error:` rendering.
+
+7. **CLI wiring** (`cli/main.py`, `cli/interaction/chat.py`) — `_do_command` checks `result.metadata.get("auth_required")` and returns 1 with the auth panel. Chat loop breaks with the auth panel and a "fix credentials" message.
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Pre-check location | `_build_model()` guard | Catches before any LLM call attempt; pydantic-ai agent's `run()` triggers `_build_model` lazily |
+| Task state | `auth-required` (A2A spec) | Semantically correct; distinct from `failed` (bug) vs `auth-required` (config issue) |
+| `auth-required` remains terminal | Stays in `_TERMINAL_STATES` | Interactive recovery (Phase 10) deferred; user fixes credentials out-of-band |
+| Worker override | Full `run_task()` override | Can't use `super()` because parent catches `Exception` and sets `failed` before we can intercept |
+| Message transport | `new_messages` parameter on `update_task` | Uses existing A2A history mechanism; no storage changes needed |
+| Unknown providers | Assumed to not require key | Defensive; avoids false positives for custom/self-hosted providers |
+
+### Test Summary
+
+```text
+tests/test_agents/test_credentials_check.py: 12 tests (new)
+tests/test_hub/test_worker.py: 5 tests (new)
+tests/test_cli/test_client.py: 3 new tests (25 total)
+tests/test_cli/test_display.py: 4 new tests (22 total)
+Total: 368 tests, all passing (was 344 before)
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/base.py` | Added `MissingCredentialsError`, `check_credentials()`, guard in `_build_model()` |
+| `src/fin_assist/agents/__init__.py` | Export `MissingCredentialsError` |
+| `src/fin_assist/hub/worker.py` | **New** — `FinAssistWorker` subclass |
+| `src/fin_assist/hub/factory.py` | Custom lifespan using `FinAssistWorker` |
+| `src/fin_assist/hub/__init__.py` | Export `FinAssistWorker` |
+| `src/fin_assist/cli/client.py` | `_extract_result` handles `auth-required` state |
+| `src/fin_assist/cli/display.py` | Added `render_auth_required()` |
+| `src/fin_assist/cli/main.py` | `_do_command` checks `auth_required` metadata |
+| `src/fin_assist/cli/interaction/chat.py` | Chat loop breaks on `auth_required` |
+| `tests/test_agents/test_credentials_check.py` | **New** — 12 tests |
+| `tests/test_hub/test_worker.py` | **New** — 5 tests |
+| `tests/test_cli/test_client.py` | 3 new `auth-required` extraction tests |
+| `tests/test_cli/test_display.py` | 4 new `render_auth_required` tests |
+
+### Future: Interactive Recovery (Phase 10)
+
+The current implementation treats `auth-required` as terminal — the user fixes credentials out-of-band. The Phase 10 design sketch for `InputRequiredError` / `AuthRequiredError` (below) describes the interactive recovery pattern: move `auth-required` to a `_PAUSE_STATES` set, catch it in the client, prompt for credentials inline, write via `CredentialStore`, and resend on the same `context_id`. This builds naturally on top of the current implementation.
 
 ---
 
@@ -720,7 +793,7 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | CLI REPL Mode | ⬜ Not Started ← next |
 | 9 | Streaming (`message/stream` + SSE) | ⬜ Not Started |
-| 10 | Non-blocking + polling agents | ⬜ Not Started |
+| 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
@@ -730,6 +803,102 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
 | — | gRPC transport | Issue (track fasta2a roadmap) |
+
+---
+
+## Design Sketch: Interactive Task State Machine (Phase 10)
+
+**Status**: Pre-design — no implementation. Depends on Chunks B-D (manual testing) and Phase 9 (streaming) being complete first. Sketched here so the intent is captured.
+
+### Problem
+
+The current `_poll_task` / `_resolve_task` logic in `HubClient` treats the A2A task lifecycle as binary: poll until terminal, then extract the result. This works for agents that run to completion without further input, but the A2A spec supports `input-required` — an agent pausing mid-task to ask the client for more information (e.g., disambiguation, confirmation, missing parameters).
+
+Today, if an agent returned `input-required`, our poll loop would spin forever until timeout because that state isn't in `_TERMINAL_STATES` and we have no mechanism to surface the agent's question to the user.
+
+### A2A Task State Machine
+
+```
+submitted → working → completed
+                    → failed
+                    → canceled
+                    → rejected
+                    → input-required → (client sends message) → working → ...
+                    → auth-required  → (client authenticates) → working → ...
+```
+
+`input-required` and `auth-required` are **pause states** — the task is alive but blocked on the client. The client must respond with a new `message/send` using the same `context_id` to resume.
+
+### Where This Hooks In
+
+The changes are concentrated in three places:
+
+**1. `HubClient._resolve_task` (client.py)**
+
+Replace the current poll-or-return logic with a state machine dispatch:
+
+```python
+async def _resolve_task(self, agent_name: str, result: Any) -> Task:
+    match result:
+        case {"kind": "task"} if result["status"]["state"] in _TERMINAL_STATES:
+            return result
+        case {"kind": "task"} if result["status"]["state"] == "input-required":
+            raise InputRequiredError(task=result)
+        case {"kind": "task"}:
+            return await self._poll_task(agent_name, result["id"])
+        case _:
+            raise RuntimeError(...)
+```
+
+`_poll_task` also needs to raise `InputRequiredError` instead of spinning when it encounters that state. `InputRequiredError` carries the task (including the agent's message asking for input) so the caller can extract what the agent needs.
+
+**2. `run_chat_loop` (chat.py)**
+
+The chat loop already has the interactive prompt. It would catch `InputRequiredError`, display the agent's question (from `task.status.message`), prompt the user, and send the response via `send_message` with the existing `context_id`:
+
+```python
+try:
+    result = await send_message_fn(agent_name, user_input, ctx_id)
+except InputRequiredError as e:
+    # Display what the agent is asking
+    agent_question = extract_agent_question(e.task)
+    console.print(f"[yellow]{agent_question}[/yellow]")
+    # Get user's response and retry with same context
+    response = await fp.ask("[bold]>[/bold] ")
+    result = await send_message_fn(agent_name, response, ctx_id)
+```
+
+This may need to loop (agent could ask multiple follow-up questions), so in practice it becomes a nested state machine within the chat loop.
+
+**3. `_do_command` (main.py)**
+
+One-shot `do` commands don't have a chat loop to fall back on. Options:
+- Promote to an interactive prompt on `input-required` (breaks the "one-shot" contract)
+- Fail with a clear message: "Agent needs more input — use `talk` for interactive sessions"
+- The second option is cleaner and keeps `do` truly one-shot
+
+### New Types
+
+```python
+@dataclass
+class InputRequiredError(Exception):
+    """Raised when an agent returns input-required state."""
+    task: Task  # Carries the full task so caller can extract the agent's question
+
+def extract_agent_question(task: Task) -> str:
+    """Pull the agent's question from task.status.message or last history entry."""
+    ...
+```
+
+### What Needs to Exist First
+
+- **An agent that uses `input-required`** — without a server-side agent that actually returns this state, the client code can't be tested end-to-end. This likely comes from Phase 16 (additional agents) or Phase 15 (MCP integration where a tool needs user confirmation).
+- **Streaming (Phase 9)** — `input-required` is more natural with streaming, where the agent can progressively show its reasoning before pausing for input. Without streaming, the pause is abrupt.
+- **Chunks B-D passing** — the existing chat loop and approval flow need to be solid before adding a new interaction pattern on top.
+
+### `auth-required` (deferred)
+
+Same pattern as `input-required` but the client response is authentication rather than a text message. Deferred until there's a concrete need (e.g., an agent that calls an external API requiring OAuth). Would follow the same `AuthRequiredError` pattern.
 
 ---
 

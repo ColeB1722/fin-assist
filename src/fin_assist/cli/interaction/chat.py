@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
+from fin_assist.cli.display import render_auth_required
 from fin_assist.cli.interaction.prompt import FinPrompt
 
 if TYPE_CHECKING:
@@ -67,6 +68,11 @@ async def run_chat_loop(
             continue
 
         ctx_id = result.context_id or ctx_id
+
+        if result.metadata.get("auth_required"):
+            render_auth_required(result.output)
+            console.print("[dim]Fix credentials and try again.[/dim]")
+            break
 
         if result.success:
             console.print()

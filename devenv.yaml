@@ -6,3 +6,8 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+
+secretspec:
+  enable: true
+  provider: onepassword://Development
+  profile: default

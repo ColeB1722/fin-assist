@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -92,8 +93,17 @@ def _pid_is_running(pid: int) -> bool:
         return False
 
 
-async def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> asyncio.subprocess.Process:
-    """Spawn `fin-assist serve` as a background process and write its PID."""
+def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[bytes]:
+    """Spawn `fin-assist serve` as a detached background process and write its PID.
+
+    Uses ``subprocess.Popen`` (not ``asyncio.create_subprocess_exec``) so the
+    child process is not tracked by any asyncio transport.  When
+    ``asyncio.run()`` tears down the event loop it garbage-collects subprocess
+    transports and their ``BaseSubprocessTransport.close()`` method kills any
+    child that is still running — even with ``start_new_session=True``.
+    ``Popen`` has no such lifecycle coupling: the child lives independently
+    after ``Popen`` returns.
+    """
     db_path = os.path.expanduser(config.server.db_path)
     host = config.server.host
     port = config.server.port
@@ -111,27 +121,28 @@ async def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> asyncio.sub
         db_path,
     ]
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
+    proc = subprocess.Popen(
+        args,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        start_new_session=True,
     )
 
     _write_pid(proc.pid, pid_file)
     return proc
 
 
-async def _kill_and_cleanup(
-    proc: asyncio.subprocess.Process,
+def _kill_and_cleanup(
+    proc: subprocess.Popen[bytes],
     pid_file: Path,
     graceful_timeout: float = 2.0,
 ) -> None:
     """Terminate a subprocess and remove its PID file."""
     proc.terminate()
     try:
-        await asyncio.wait_for(proc.wait(), timeout=graceful_timeout)
-    except TimeoutError:
+        proc.wait(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired:
         proc.kill()
     _remove_pid(pid_file)
 
@@ -179,14 +190,14 @@ async def ensure_server_running(
 
     console.print(f"[dim]Starting fin-assist hub at {base_url}...[/dim]")
 
-    proc = await _spawn_serve(config, pid_file)
+    proc = _spawn_serve(config, pid_file)
 
     try:
         await _wait_for_health(base_url, timeout=timeout)
         console.print("[dim]Hub started.[/dim]")
         return base_url
     except TimeoutError as e:
-        await _kill_and_cleanup(proc, pid_file)
+        _kill_and_cleanup(proc, pid_file)
         raise ServerStartupError(
             f"Server failed to start within {timeout}s. Check {LOG_FILE} for details."
         ) from e

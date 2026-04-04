@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.base import AgentResult
 from fin_assist.agents.default import DefaultAgent
-from fin_assist.context.base import ContextItem
 
 
 class TestDefaultAgentInit:
@@ -49,54 +47,18 @@ class TestDefaultAgentProperties:
         assert agent.supports_context("unknown") is False
 
 
-class TestDefaultAgentRun:
-    @pytest.mark.asyncio
-    async def test_run_returns_successful_result(self, mock_config, mock_credentials) -> None:
-        mock_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = "Here is a helpful explanation."
-        mock_agent.run = AsyncMock(return_value=mock_result)
+class TestDefaultAgentBuildPydanticAgent:
+    def test_returns_pydantic_agent(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai import Agent
+        from pydantic_ai.models.test import TestModel
 
-        with patch.object(DefaultAgent, "_get_agent", return_value=mock_agent):
+        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
             agent = DefaultAgent(mock_config, mock_credentials)
-            result = await agent.run("explain how pipes work", [])
+            built = agent.build_pydantic_agent()
 
-            assert isinstance(result, AgentResult)
-            assert result.success is True
-            assert result.output == "Here is a helpful explanation."
-            assert result.warnings == []
+        assert isinstance(built, Agent)
 
-    @pytest.mark.asyncio
-    async def test_run_passes_context_to_agent(self, mock_config, mock_credentials) -> None:
-        context = [ContextItem(id="1", type="file", content="test.py content", metadata={})]
-        mock_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = "The file contains unit tests."
-        mock_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(DefaultAgent, "_get_agent", return_value=mock_agent):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            await agent.run("summarize this file", context=context)
-            mock_agent.run.assert_called_once()
-            call_args = mock_agent.run.call_args
-            assert call_args is not None
-
-    @pytest.mark.asyncio
-    async def test_run_returns_failure_on_exception(self, mock_config, mock_credentials) -> None:
-        with patch.object(
-            DefaultAgent, "_get_agent", side_effect=RuntimeError("model unavailable")
-        ):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            result = await agent.run("explain something", [])
-
-            assert result.success is False
-            assert result.output == ""
-            assert "model unavailable" in result.warnings[0]
-
-
-class TestDefaultAgentBuildAgent:
-    @pytest.mark.asyncio
-    async def test_build_agent_with_thinking_effort(self, mock_config, mock_credentials) -> None:
+    def test_with_thinking_effort(self, mock_config, mock_credentials) -> None:
         from pydantic_ai.capabilities import Thinking
         from pydantic_ai.models.test import TestModel
 
@@ -104,21 +66,34 @@ class TestDefaultAgentBuildAgent:
 
         with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
             agent = DefaultAgent(mock_config, mock_credentials)
-            built = await agent._build_agent()
+            built = agent.build_pydantic_agent()
 
             caps = built._root_capability.capabilities
             assert len(caps) == 1
             assert isinstance(caps[0], Thinking)
 
-    @pytest.mark.asyncio
-    async def test_build_agent_without_thinking_effort(self, mock_config, mock_credentials) -> None:
+    def test_without_thinking_effort(self, mock_config, mock_credentials) -> None:
         from pydantic_ai.models.test import TestModel
 
         mock_config.general.thinking_effort = None
 
         with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
             agent = DefaultAgent(mock_config, mock_credentials)
-            built = await agent._build_agent()
+            built = agent.build_pydantic_agent()
+
+            assert not built._root_capability.capabilities
+
+    @pytest.mark.parametrize("effort", ["off", None])
+    def test_thinking_off_means_no_capabilities(
+        self, mock_config, mock_credentials, effort
+    ) -> None:
+        from pydantic_ai.models.test import TestModel
+
+        mock_config.general.thinking_effort = effort
+
+        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
+            agent = DefaultAgent(mock_config, mock_credentials)
+            built = agent.build_pydantic_agent()
 
             assert not built._root_capability.capabilities
 

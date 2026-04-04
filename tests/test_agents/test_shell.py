@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
-import pytest
-
-from fin_assist.agents.base import AgentCardMeta, AgentResult
+from fin_assist.agents.base import AgentCardMeta
 from fin_assist.agents.results import CommandResult
 from fin_assist.agents.shell import ShellAgent
-from fin_assist.context.base import ContextItem
 
 
 class TestShellAgentProperties:
@@ -62,83 +59,23 @@ class TestShellAgentCardMetadata:
         assert isinstance(agent.agent_card_metadata, AgentCardMeta)
 
 
-class TestShellAgentRun:
-    @pytest.mark.asyncio
-    async def test_run_returns_successful_agent_result(self, mock_config, mock_credentials) -> None:
-        mock_pydantic_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(command="ls -la")
-        mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
+class TestShellAgentBuildPydanticAgent:
+    def test_returns_pydantic_agent(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai import Agent
+        from pydantic_ai.models.test import TestModel
 
-        with patch.object(ShellAgent, "_get_agent", return_value=mock_pydantic_agent):
+        with patch.object(ShellAgent, "_build_model", return_value=TestModel()):
             agent = ShellAgent(mock_config, mock_credentials)
-            result = await agent.run("list files", [])
+            built = agent.build_pydantic_agent()
 
-        assert isinstance(result, AgentResult)
-        assert result.success is True
+        assert isinstance(built, Agent)
 
-    @pytest.mark.asyncio
-    async def test_run_output_contains_command(self, mock_config, mock_credentials) -> None:
-        mock_pydantic_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(command="ls -la")
-        mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
+    def test_no_thinking_capabilities(self, mock_config, mock_credentials) -> None:
+        """ShellAgent uses the BaseAgent default — no thinking capabilities."""
+        from pydantic_ai.models.test import TestModel
 
-        with patch.object(ShellAgent, "_get_agent", return_value=mock_pydantic_agent):
+        with patch.object(ShellAgent, "_build_model", return_value=TestModel()):
             agent = ShellAgent(mock_config, mock_credentials)
-            result = await agent.run("list files", [])
+            built = agent.build_pydantic_agent()
 
-        assert "ls -la" in result.output
-
-    @pytest.mark.asyncio
-    async def test_run_metadata_has_insert_command_action(
-        self, mock_config, mock_credentials
-    ) -> None:
-        mock_pydantic_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(command="echo hi")
-        mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(ShellAgent, "_get_agent", return_value=mock_pydantic_agent):
-            agent = ShellAgent(mock_config, mock_credentials)
-            result = await agent.run("say hi", [])
-
-        assert result.metadata.get("accept_action") == "insert_command"
-
-    @pytest.mark.asyncio
-    async def test_run_passes_context_to_agent(self, mock_config, mock_credentials) -> None:
-        context = [ContextItem(id="1", type="file", content="README.md", metadata={})]
-        mock_pydantic_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(command="cat README.md")
-        mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(ShellAgent, "_get_agent", return_value=mock_pydantic_agent):
-            agent = ShellAgent(mock_config, mock_credentials)
-            await agent.run("show the readme", context)
-            mock_pydantic_agent.run.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_run_includes_warnings_from_result(self, mock_config, mock_credentials) -> None:
-        mock_pydantic_agent = MagicMock()
-        mock_result = MagicMock()
-        mock_result.output = CommandResult(
-            command="rm -rf /tmp/test", warnings=["Destructive operation"]
-        )
-        mock_pydantic_agent.run = AsyncMock(return_value=mock_result)
-
-        with patch.object(ShellAgent, "_get_agent", return_value=mock_pydantic_agent):
-            agent = ShellAgent(mock_config, mock_credentials)
-            result = await agent.run("delete the test temp dir", [])
-
-        assert "Destructive operation" in result.warnings
-
-    @pytest.mark.asyncio
-    async def test_run_returns_failure_on_exception(self, mock_config, mock_credentials) -> None:
-        with patch.object(ShellAgent, "_get_agent", side_effect=RuntimeError("model unavailable")):
-            agent = ShellAgent(mock_config, mock_credentials)
-            result = await agent.run("list files", [])
-
-        assert result.success is False
-        assert result.output == ""
-        assert "model unavailable" in result.warnings[0]
+            assert not built._root_capability.capabilities

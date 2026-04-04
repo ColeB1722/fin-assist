@@ -275,9 +275,7 @@ class TestEnsureServerRunning:
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ) as mock_spawn,
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc) as mock_spawn,
             patch("fin_assist.cli.server._wait_for_health", new_callable=AsyncMock),
         ):
             config = MagicMock()
@@ -297,9 +295,7 @@ class TestEnsureServerRunning:
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch("fin_assist.cli.server._wait_for_health", new_callable=AsyncMock),
         ):
             config = MagicMock()
@@ -312,15 +308,13 @@ class TestEnsureServerRunning:
     async def test_raises_server_startup_error_on_timeout(self):
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,
@@ -337,15 +331,13 @@ class TestEnsureServerRunning:
     async def test_startup_error_message_references_log_file(self):
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,
@@ -363,15 +355,13 @@ class TestEnsureServerRunning:
         pid_file = tmp_path / "hub.pid"
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,

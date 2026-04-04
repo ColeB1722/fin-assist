@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, config, ... }:
 
 {
   packages = with pkgs; [
@@ -16,6 +16,7 @@
     fd
     fzf
     git
+    secretspec
   ];
 
   languages.python = {
@@ -27,6 +28,11 @@
         allGroups = true;
       };
     };
+  };
+
+  env = {
+    OPENROUTER_API_KEY = config.secretspec.secrets.OPENROUTER_API_KEY or "";
+    ANTHROPIC_API_KEY = config.secretspec.secrets.ANTHROPIC_API_KEY or "";
   };
 
   git-hooks.hooks = {
@@ -55,5 +61,6 @@
     echo "  just lint     - Run linter"
     echo "  just test     - Run tests"
     echo "  just run      - Run the TUI"
+    echo ""
   '';
 }

@@ -11,20 +11,23 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import coolname
+from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 import uvicorn
 
-from fin_assist.cli.client import A2AClient, DiscoveredAgent
+from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
     console,
     render_agents_list,
+    render_auth_required,
     render_command,
     render_error,
     render_info,
+    render_response,
+    render_warnings,
 )
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 from fin_assist.cli.interaction.chat import run_chat_loop
@@ -70,7 +73,7 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
 
 
 @asynccontextmanager
-async def _hub_client(config) -> AsyncIterator[A2AClient]:
+async def _hub_client(config) -> AsyncIterator[HubClient]:
     """Start the hub if needed, yield a connected client, close it on exit.
 
     Handles two error categories so commands don't have to:
@@ -85,7 +88,7 @@ async def _hub_client(config) -> AsyncIterator[A2AClient]:
         render_error(str(e))
         raise
 
-    client = A2AClient(base_url)
+    client = HubClient(base_url)
     try:
         yield client
     except Exception as e:
@@ -101,7 +104,7 @@ async def _hub_client(config) -> AsyncIterator[A2AClient]:
 
 
 async def _get_agent_or_error(
-    client: A2AClient, agent_name: str
+    client: HubClient, agent_name: str
 ) -> tuple[DiscoveredAgent | None, list[DiscoveredAgent]]:
     """Look up an agent by name. Returns (agent, all_agents). Agent is None if not found."""
     agents = await client.discover_agents()
@@ -134,9 +137,17 @@ async def _do_command(args: argparse.Namespace, config) -> int:
             while True:
                 result = await client.run_agent(args.agent, prompt)
 
+                if result.metadata.get("auth_required"):
+                    render_auth_required(result.output)
+                    return 1
+
                 if not discovered.card_meta.requires_approval:
-                    render_command(result.output, result.warnings, result.metadata)
+                    render_response(result.output, agent_name=discovered.name)
+                    if result.warnings:
+                        render_warnings(result.warnings)
                     return 0
+
+                render_command(result.output, result.warnings, result.metadata)
 
                 action, edited = await run_approve_widget(
                     command=result.output,
@@ -200,7 +211,7 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
         return 1
 
     if final_context_id and not args.resume:
-        session_id = coolname.generate_slug(2)
+        session_id = generate_slug(2)
         _save_session(args.agent, session_id, final_context_id)
         render_info(f"Session saved: {session_id}")
 
@@ -298,10 +309,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
         case "serve":
+            from fin_assist.agents import DefaultAgent, ShellAgent
+            from fin_assist.credentials.store import CredentialStore
+
             host = args.host or config.server.host
             port = args.port or config.server.port
             db_path = os.path.expanduser(args.db or config.server.db_path)
-            app = create_hub_app(db_path=db_path, base_url=f"http://{host}:{port}")
+            credentials = CredentialStore()
+            # TODO: make agent list configurable via [agents.*] config
+            # (see docs/architecture.md). Hardcoded until Phase 16 adds
+            # optional agents that benefit from enable/disable.
+            agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
+            app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
             configure_logging()
             console.print(f"[dim]Logging to {LOG_FILE}[/dim]")
             uvicorn.run(app, host=host, port=port, log_config=None)

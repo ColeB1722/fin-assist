@@ -76,6 +76,30 @@ def render_warnings(warnings: list[str]) -> None:
     console.print(panel)
 
 
+def render_auth_required(provider_info: str) -> None:
+    """Render an authentication-required message with remediation hints.
+
+    Displayed when an agent returns ``auth-required`` because API keys
+    are missing.  Visually distinct from a generic error — uses a yellow
+    panel with specific env-var hints.
+    """
+    lines = [
+        f"[bold]Authentication required:[/bold] {provider_info}",
+        "",
+        "[dim]To fix, set the matching environment variable(s):[/dim]",
+    ]
+    for name in provider_info.replace(",", " ").split():
+        name = name.strip()
+        if name:
+            lines.append(f"  export {name.upper()}_API_KEY=<your-key>")
+    lines.append("")
+    lines.append("[dim]Or write credentials to ~/.local/share/fin/credentials.json[/dim]")
+
+    text = Text.from_markup("\n".join(lines))
+    panel = Panel(text, border_style="yellow", expand=False)
+    console.print(panel)
+
+
 def render_error(message: str) -> None:
     """Render an error message."""
     console.print(f"[bold red]Error:[/bold red] {message}")

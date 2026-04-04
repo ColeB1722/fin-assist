@@ -3,6 +3,12 @@
 Stores A2A tasks (state, artifacts, message history) and per-context conversation
 history in a local SQLite database.  Shared across all mounted agents on the hub,
 with context_id naturally scoping conversations per agent path.
+
+Context storage
+~~~~~~~~~~~~~~~
+The ``ContextT`` parameter for this storage is ``list[ModelMessage]`` (pydantic-ai
+message history).  These are pydantic dataclass objects, not plain dicts, so we
+use pydantic's ``TypeAdapter`` for JSON serialization instead of ``json.dumps``.
 """
 
 from __future__ import annotations
@@ -13,12 +19,16 @@ import uuid
 from typing import TYPE_CHECKING, Any, cast
 
 from fasta2a.storage import Storage
+from pydantic import TypeAdapter
+from pydantic_ai import ModelMessage
 
 if TYPE_CHECKING:
     from fasta2a.schema import Artifact, Message, Task, TaskState
 
+_context_ta = TypeAdapter(list[ModelMessage])
 
-class SQLiteStorage(Storage[Any]):
+
+class SQLiteStorage(Storage[list[ModelMessage]]):
     """Persistent storage backed by SQLite.
 
     Args:
@@ -129,22 +139,22 @@ class SQLiteStorage(Storage[Any]):
     # Storage ABC — context (conversation history)
     # ------------------------------------------------------------------
 
-    async def load_context(self, context_id: str) -> Any | None:
+    async def load_context(self, context_id: str) -> list[ModelMessage] | None:
         conn = self._get_conn()
         row = conn.execute(
             "SELECT data FROM contexts WHERE context_id = ?", (context_id,)
         ).fetchone()
         if row is None:
             return None
-        return json.loads(row["data"])
+        return _context_ta.validate_json(row["data"])
 
-    async def update_context(self, context_id: str, context: Any) -> None:
+    async def update_context(self, context_id: str, context: list[ModelMessage]) -> None:
         conn = self._get_conn()
         conn.execute(
             """
             INSERT INTO contexts (context_id, data) VALUES (?, ?)
             ON CONFLICT(context_id) DO UPDATE SET data = excluded.data
             """,
-            (context_id, json.dumps(context)),
+            (context_id, _context_ta.dump_json(context)),
         )
         conn.commit()

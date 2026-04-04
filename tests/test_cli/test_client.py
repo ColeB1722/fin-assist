@@ -1,4 +1,4 @@
-"""Tests for cli/client.py — A2A HTTP client."""
+"""Tests for cli/client.py — hub client wrapping fasta2a."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fasta2a.schema import Task
 
-from fin_assist.cli.client import A2AClient, AgentResult, DiscoveredAgent
-
+from fin_assist.cli.client import AgentResult, DiscoveredAgent, HubClient
 
 # ---------------------------------------------------------------------------
 # Fixtures — cast to Task so the type checker is satisfied;
@@ -24,7 +23,7 @@ def _make_task(
     context_id: str = "ctx-1",
 ) -> Task:
     return cast(
-        Task,
+        "Task",
         {
             "id": "task-1",
             "context_id": context_id,
@@ -34,13 +33,6 @@ def _make_task(
             "history": history or [],
         },
     )
-
-
-def _make_rpc_response(task: dict[str, Any]) -> bytes:
-    """Wrap a task dict in a SendMessageResponse envelope and return JSON bytes."""
-    # fasta2a uses camelCase on the wire; snake_case after TypeAdapter parsing.
-    # For tests that bypass the TypeAdapter we build the already-parsed shape.
-    return json.dumps({"jsonrpc": "2.0", "id": "req-1", "result": task}).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +67,7 @@ class TestAgentResult:
 
 
 # ---------------------------------------------------------------------------
-# A2AClient._extract_result
+# HubClient._extract_result  (static method — no client instance needed)
 # ---------------------------------------------------------------------------
 
 
@@ -84,7 +76,7 @@ class TestExtractResult:
         task = _make_task(
             artifacts=[{"parts": [{"kind": "data", "data": {"command": "ls -la", "warnings": []}}]}]
         )
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.success is True
         assert result.output == "ls -la"
@@ -92,7 +84,7 @@ class TestExtractResult:
 
     def test_extracts_text_part(self):
         task = _make_task(artifacts=[{"parts": [{"kind": "text", "text": "Hello world"}]}])
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.output == "Hello world"
 
@@ -112,7 +104,7 @@ class TestExtractResult:
                 }
             ]
         )
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert "Dangerous!" in result.warnings
 
@@ -132,32 +124,64 @@ class TestExtractResult:
                 }
             ]
         )
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.metadata == {"accept_action": "insert_command"}
 
     def test_success_false_when_task_failed(self):
         task = _make_task(state="failed")
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.success is False
 
     def test_success_false_for_all_terminal_failure_states(self):
-        """fasta2a has more terminal states than our old models covered."""
+        """Non-completed terminal states should all produce success=False."""
         for state in ("failed", "canceled", "rejected"):
             task = _make_task(state=state)
-            result = A2AClient("http://localhost")._extract_result(task)
+            result = HubClient._extract_result(task)
             assert result.success is False, f"expected failure for state={state}"
+
+    def test_auth_required_is_not_successful(self):
+        task = _make_task(state="auth-required")
+        result = HubClient._extract_result(task)
+        assert result.success is False
+
+    def test_auth_required_extracts_status_message_from_history(self):
+        """When state is auth-required, _extract_result should surface the
+        agent message from history as the output text."""
+        task = _make_task(
+            state="auth-required",
+            artifacts=[],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "Missing API key for anthropic. Set ANTHROPIC_API_KEY or use `fin connect anthropic`.",
+                        }
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert "anthropic" in result.output.lower()
+
+    def test_auth_required_sets_auth_required_flag_in_metadata(self):
+        """auth-required results should carry a metadata flag for display layer."""
+        task = _make_task(state="auth-required")
+        result = HubClient._extract_result(task)
+        assert result.metadata.get("auth_required") is True
 
     def test_propagates_context_id(self):
         task = _make_task(context_id="ctx-xyz")
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.context_id == "ctx-xyz"
 
     def test_empty_output_when_no_parts(self):
         task = _make_task(artifacts=[], history=[])
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.output == ""
 
@@ -166,23 +190,23 @@ class TestExtractResult:
             artifacts=[],
             history=[{"parts": [{"kind": "text", "text": "from history"}]}],
         )
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
         assert result.output == "from history"
 
-    def test_history_takes_precedence_over_artifacts(self):
-        """History items are scanned after artifacts (reversed), so history wins."""
+    def test_artifacts_take_precedence_over_history(self):
+        """Artifacts contain the agent's response and should take precedence over history."""
         task = _make_task(
             artifacts=[{"parts": [{"kind": "text", "text": "artifact text"}]}],
             history=[{"parts": [{"kind": "text", "text": "history text"}]}],
         )
-        result = A2AClient("http://localhost")._extract_result(task)
+        result = HubClient._extract_result(task)
 
-        assert result.output == "history text"
+        assert result.output == "artifact text"
 
 
 # ---------------------------------------------------------------------------
-# A2AClient.discover_agents
+# HubClient.discover_agents
 # ---------------------------------------------------------------------------
 
 
@@ -210,11 +234,11 @@ class TestDiscoverAgents:
         mock_response.json.return_value = response_data
         mock_response.raise_for_status = MagicMock()
 
-        mock_httpx_client = AsyncMock()
-        mock_httpx_client.get = AsyncMock(return_value=mock_response)
+        mock_httpx = AsyncMock()
+        mock_httpx.get = AsyncMock(return_value=mock_response)
 
-        client = A2AClient("http://localhost")
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        client._http = mock_httpx
 
         agents = await client.discover_agents()
 
@@ -228,11 +252,11 @@ class TestDiscoverAgents:
         mock_response.json.return_value = {"agents": []}
         mock_response.raise_for_status = MagicMock()
 
-        mock_httpx_client = AsyncMock()
-        mock_httpx_client.get = AsyncMock(return_value=mock_response)
+        mock_httpx = AsyncMock()
+        mock_httpx.get = AsyncMock(return_value=mock_response)
 
-        client = A2AClient("http://localhost")
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        client._http = mock_httpx
 
         agents = await client.discover_agents()
         assert agents == []
@@ -253,11 +277,11 @@ class TestDiscoverAgents:
         mock_response.json.return_value = response_data
         mock_response.raise_for_status = MagicMock()
 
-        mock_httpx_client = AsyncMock()
-        mock_httpx_client.get = AsyncMock(return_value=mock_response)
+        mock_httpx = AsyncMock()
+        mock_httpx.get = AsyncMock(return_value=mock_response)
 
-        client = A2AClient("http://localhost")
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        client._http = mock_httpx
 
         agents = await client.discover_agents()
 
@@ -266,13 +290,14 @@ class TestDiscoverAgents:
 
 
 # ---------------------------------------------------------------------------
-# A2AClient.run_agent — uses fasta2a TypeAdapter, so wire camelCase on the wire
+# HubClient.run_agent — delegates to fasta2a A2AClient under the hood
 # ---------------------------------------------------------------------------
 
 
 class TestRunAgent:
     async def test_returns_agent_result_from_inline_response(self):
-        # fasta2a TypeAdapter expects camelCase on the wire (contextId, artifactId)
+        """A completed task returned inline from message/send needs no polling."""
+        # fasta2a's TypeAdapter expects camelCase on the wire
         wire_payload = json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -293,12 +318,13 @@ class TestRunAgent:
         mock_response = MagicMock()
         mock_response.content = wire_payload
         mock_response.raise_for_status = MagicMock()
+        mock_response.status_code = 200
 
-        mock_httpx_client = AsyncMock()
-        mock_httpx_client.post = AsyncMock(return_value=mock_response)
+        mock_httpx = AsyncMock()
+        mock_httpx.post = AsyncMock(return_value=mock_response)
 
-        client = A2AClient("http://localhost")
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        client._http = mock_httpx
 
         result = await client.run_agent("shell", "list files")
 
@@ -307,6 +333,7 @@ class TestRunAgent:
         assert result.context_id == "ctx-1"
 
     async def test_sends_message_send_rpc(self):
+        """run_agent should delegate to fasta2a's send_message (message/send RPC)."""
         wire_payload = json.dumps(
             {
                 "jsonrpc": "2.0",
@@ -325,42 +352,54 @@ class TestRunAgent:
         mock_response = MagicMock()
         mock_response.content = wire_payload
         mock_response.raise_for_status = MagicMock()
+        mock_response.status_code = 200
 
-        mock_httpx_client = AsyncMock()
-        mock_httpx_client.post = AsyncMock(return_value=mock_response)
+        mock_httpx = AsyncMock()
+        mock_httpx.post = AsyncMock(return_value=mock_response)
 
-        client = A2AClient("http://localhost")
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        client._http = mock_httpx
 
         await client.run_agent("shell", "do something")
 
-        call_kwargs = mock_httpx_client.post.call_args
-        # Now sends bytes via content= not json=
+        call_kwargs = mock_httpx.post.call_args
         raw_body = call_kwargs.kwargs.get("content") or call_kwargs.args[1]
         payload = json.loads(raw_body)
         assert payload["method"] == "message/send"
 
 
 # ---------------------------------------------------------------------------
-# A2AClient lifecycle
+# HubClient lifecycle
 # ---------------------------------------------------------------------------
 
 
-class TestA2AClientLifecycle:
+class TestHubClientLifecycle:
     async def test_close_cleans_up_client(self):
-        client = A2AClient("http://localhost")
-        mock_httpx_client = AsyncMock()
-        client._client = mock_httpx_client
+        client = HubClient("http://localhost")
+        mock_httpx = AsyncMock()
+        client._http = mock_httpx
 
         await client.close()
 
-        mock_httpx_client.aclose.assert_called_once()
-        assert client._client is None
+        mock_httpx.aclose.assert_called_once()
+        assert client._http is None
 
     async def test_close_is_idempotent_when_no_client(self):
-        client = A2AClient("http://localhost")
+        client = HubClient("http://localhost")
         await client.close()  # should not raise
 
     def test_base_url_trailing_slash_stripped(self):
-        client = A2AClient("http://localhost:4096/")
+        client = HubClient("http://localhost:4096/")
         assert client.base_url == "http://localhost:4096"
+
+    async def test_close_clears_a2a_clients(self):
+        client = HubClient("http://localhost")
+        mock_httpx = AsyncMock()
+        client._http = mock_httpx
+        # Force creation of an a2a sub-client
+        _ = client._get_a2a("shell")
+        assert len(client._a2a_clients) == 1
+
+        await client.close()
+
+        assert client._a2a_clients == {}

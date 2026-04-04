@@ -17,7 +17,6 @@ from fin_assist.agents.base import AgentCardMeta
 from fin_assist.cli.client import AgentResult, DiscoveredAgent
 from fin_assist.cli.main import main
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -126,7 +125,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -144,7 +143,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -164,7 +163,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error"),
         ):
             mock_client = AsyncMock()
@@ -188,7 +187,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error", side_effect=rendered.append),
         ):
             mock_client = AsyncMock()
@@ -238,7 +237,7 @@ class TestAgentsCommand:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_agents_list"),
         ):
             result = _run_main("agents")
@@ -283,8 +282,8 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
-            patch("fin_assist.cli.main.render_command"),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.main.render_response"),
         ):
             result = _run_main("do", "shell", "list files")
 
@@ -302,7 +301,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "nonexistent", "do something")
@@ -337,7 +336,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "shell", "do something")
@@ -367,7 +366,7 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
                 return_value=(ApprovalAction.CANCEL, None),
@@ -394,7 +393,7 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
                 return_value=(ApprovalAction.EXECUTE, None),
@@ -429,7 +428,7 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
                 side_effect=approve_responses,
@@ -464,7 +463,7 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
                 return_value=(ApprovalAction.CANCEL, None),
@@ -545,7 +544,7 @@ class TestSessionIdFormat:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main._save_session", side_effect=capture_save),
             patch(
                 "fin_assist.cli.main.run_chat_loop",
