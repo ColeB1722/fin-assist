@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from fin_assist.config import loader
 from fin_assist.config.loader import load_config
 from fin_assist.config.schema import (
     Config,
@@ -272,3 +273,54 @@ default_provider = "custom"
 """)
         config = load_config(config_file)
         assert config.general.default_provider == "custom"
+
+    def test_load_config_env_path(self, tmp_path: Path) -> None:
+        """Test that FIN_CONFIG_PATH environment variable is respected."""
+        config_file = tmp_path / "env_config.toml"
+        config_file.write_text("""
+[general]
+default_provider = "env_provider"
+""")
+        with patch.dict(os.environ, {"FIN_CONFIG_PATH": str(config_file)}):
+            config = load_config()
+            assert config.general.default_provider == "env_provider"
+
+    def test_load_config_cwd_fallback(self, tmp_path: Path) -> None:
+        """Test that ./config.toml in cwd is used when no explicit path or env var."""
+        cwd_config = tmp_path / "config.toml"
+        cwd_config.write_text("""
+[general]
+default_provider = "cwd_provider"
+""")
+        with patch("fin_assist.config.loader.Path.cwd", return_value=tmp_path):
+            config = load_config()
+            assert config.general.default_provider == "cwd_provider"
+
+    def test_load_config_cwd_missing_falls_to_default(self, tmp_path: Path) -> None:
+        """Test that missing cwd config.toml falls through to default path."""
+        # tmp_path has no config.toml, so cwd lookup should miss
+        with patch("fin_assist.config.loader.Path.cwd", return_value=tmp_path):
+            with patch.object(
+                loader, "DEFAULT_CONFIG_PATH", tmp_path / ".config" / "fin" / "config.toml"
+            ):
+                config = load_config()
+                assert isinstance(config, Config)
+
+    def test_load_config_priority(self, tmp_path: Path) -> None:
+        """Test config loading priority: explicit path > env var > cwd > default."""
+        explicit_path = tmp_path / "explicit.toml"
+        explicit_path.write_text("[general]\ndefault_provider = 'explicit'")
+
+        env_path = tmp_path / "env.toml"
+        env_path.write_text("[general]\ndefault_provider = 'env'")
+
+        cwd_dir = tmp_path / "project"
+        cwd_dir.mkdir()
+        cwd_config = cwd_dir / "config.toml"
+        cwd_config.write_text("[general]\ndefault_provider = 'cwd'")
+
+        with patch.dict(os.environ, {"FIN_CONFIG_PATH": str(env_path)}):
+            with patch("fin_assist.config.loader.Path.cwd", return_value=cwd_dir):
+                # Explicit path wins over env var
+                config = load_config(explicit_path)
+                assert config.general.default_provider == "explicit"
