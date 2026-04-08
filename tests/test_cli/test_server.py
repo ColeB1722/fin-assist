@@ -18,7 +18,6 @@ from fin_assist.cli.server import (
     _write_pid,
     ensure_server_running,
     stop_server,
-    LOG_FILE,
 )
 
 
@@ -328,11 +327,13 @@ class TestEnsureServerRunning:
             with pytest.raises(ServerStartupError):
                 await ensure_server_running(config)
 
-    async def test_startup_error_message_references_log_file(self):
+    async def test_startup_error_message_references_log_file(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
         mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
+
+        log_path = tmp_path / "test.log"
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
@@ -347,8 +348,9 @@ class TestEnsureServerRunning:
             config = MagicMock()
             config.server.host = "127.0.0.1"
             config.server.port = 4096
+            config.server.log_path = str(log_path)
 
-            with pytest.raises(ServerStartupError, match=str(LOG_FILE)):
+            with pytest.raises(ServerStartupError, match=str(log_path)):
                 await ensure_server_running(config)
 
     async def test_removes_pid_file_on_startup_failure(self, tmp_path):

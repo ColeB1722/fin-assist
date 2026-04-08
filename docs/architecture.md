@@ -750,13 +750,16 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Session persistence — `~/.local/share/fin/sessions/{agent}/{slug}.json` with coolname slugs
 - [x] Tests — CLI client, display, server, interaction modules
 
-### Phase 8b: CLI REPL Mode ⬜ **NEXT**
-- [ ] Implement `cli/repl.py` — prompt-toolkit interactive REPL
-- [ ] Agent switching via `/switch <agent>`
-- [ ] Dynamic prompts from agent card metadata
-- [ ] History and tab completion
+### Phase 8b: CLI REPL Mode ✅
+- [x] Implement `cli/interaction/prompt.py` — `FinPrompt` with prompt-toolkit fuzzy completion
+- [x] Wire `FinPrompt` into `chat.py` and `approve.py` (replaces `rich.prompt.Prompt`)
+- [x] Agent name tab completion via `agents` parameter
+- [x] Persistent input history (`~/.local/share/fin/history`)
+- [x] Slash-command fuzzy completion (`/exit`, `/quit`, `/q`, `/switch`, `/help`)
+- [x] `prompt-toolkit>=3.0` added as explicit dependency
+- [x] Tests — 8 new tests for `FinPrompt`
 
-### Phase 9: Streaming + Integration Tests ⬜
+### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
 - [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
@@ -836,7 +839,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
 | Non-blocking agents | Phase 10 | Open | `message/send` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
-| Hub server logging | Phase 9 | Open | Background hub writes to `~/.local/share/fin/hub.log` via `RotatingFileHandler` (1 MB, 1 backup). Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
+| Hub server logging | Phase 9 | **Resolved** | Configurable via `[server] log_path` (default `~/.local/share/fin/hub.log`). Startup errors captured via subprocess stderr redirect. `configure_logging()` called before `create_hub_app()` to catch early import/initialization errors. Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
 
 ---
 

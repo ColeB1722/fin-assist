@@ -2,15 +2,14 @@
 
 from typing import Literal
 
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 
-class GeneralSettings(BaseSettings):
+class GeneralSettings(BaseModel):
     """General application settings."""
-
-    model_config = SettingsConfigDict(env_prefix="FIN_")
 
     default_provider: str = "anthropic"
     default_model: str = "claude-sonnet-4-6"
@@ -18,7 +17,7 @@ class GeneralSettings(BaseSettings):
     keybinding: str = "ctrl-enter"
 
 
-class ContextSettings(BaseSettings):
+class ContextSettings(BaseModel):
     """Context gathering settings."""
 
     max_file_size: int = 100_000
@@ -27,7 +26,7 @@ class ContextSettings(BaseSettings):
     include_env_vars: list[str] = ["PATH", "HOME", "USER", "PWD"]
 
 
-class ProviderConfig(BaseSettings):
+class ProviderConfig(BaseModel):
     """Provider-specific configuration (non-secret settings)."""
 
     enabled: bool = True
@@ -35,16 +34,22 @@ class ProviderConfig(BaseSettings):
     default_model: str | None = None
 
 
-class ServerSettings(BaseSettings):
+class ServerSettings(BaseModel):
     """Agent Hub server settings."""
 
     host: str = "127.0.0.1"
     port: int = 4096
     db_path: str = "~/.local/share/fin/hub.db"
+    log_path: str = "~/.local/share/fin/hub.log"
 
 
 class Config(BaseSettings):
     """Root configuration model."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="FIN_",
+        env_nested_delimiter="__",
+    )
 
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()

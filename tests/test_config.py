@@ -29,26 +29,18 @@ class TestGeneralSettings:
         assert settings.thinking_effort == "medium"
         assert settings.keybinding == "ctrl-enter"
 
-    def test_general_settings_from_env(self) -> None:
-        """Test that GeneralSettings reads from environment variables with FIN_ prefix."""
-        with patch.dict(
-            os.environ,
-            {
-                "FIN_DEFAULT_PROVIDER": "openrouter",
-                "FIN_DEFAULT_MODEL": "gpt-4o",
-                "FIN_KEYBINDING": "ctrl-space",
-            },
-        ):
-            settings = GeneralSettings()
-            assert settings.default_provider == "openrouter"
-            assert settings.default_model == "gpt-4o"
-            assert settings.keybinding == "ctrl-space"
-
-    def test_general_settings_explicit_override(self) -> None:
-        """Test that explicit values override environment variables."""
-        with patch.dict(os.environ, {"FIN_DEFAULT_PROVIDER": "openrouter"}):
-            settings = GeneralSettings(default_provider="ollama")
-            assert settings.default_provider == "ollama"
+    def test_general_settings_custom_values(self) -> None:
+        """Test GeneralSettings with explicit values."""
+        settings = GeneralSettings(
+            default_provider="ollama",
+            default_model="llama3",
+            thinking_effort="low",
+            keybinding="ctrl-space",
+        )
+        assert settings.default_provider == "ollama"
+        assert settings.default_model == "llama3"
+        assert settings.thinking_effort == "low"
+        assert settings.keybinding == "ctrl-space"
 
 
 class TestContextSettings:
@@ -154,6 +146,55 @@ class TestConfig:
         config = Config()
         assert config.server.host == "127.0.0.1"
         assert config.server.port == 4096
+
+    def test_config_reads_general_env_vars(self) -> None:
+        """Test that Config reads FIN_GENERAL__ env vars for general settings."""
+        with patch.dict(
+            os.environ,
+            {
+                "FIN_GENERAL__DEFAULT_PROVIDER": "openrouter",
+                "FIN_GENERAL__DEFAULT_MODEL": "gpt-4o",
+                "FIN_GENERAL__KEYBINDING": "ctrl-space",
+            },
+        ):
+            config = Config()
+            assert config.general.default_provider == "openrouter"
+            assert config.general.default_model == "gpt-4o"
+            assert config.general.keybinding == "ctrl-space"
+
+    def test_config_reads_nested_server_env_vars(self) -> None:
+        """Test that Config reads FIN_SERVER__ env vars for server settings."""
+        with patch.dict(
+            os.environ,
+            {
+                "FIN_SERVER__HOST": "0.0.0.0",
+                "FIN_SERVER__PORT": "8080",
+                "FIN_SERVER__LOG_PATH": "/var/log/fin.log",
+            },
+        ):
+            config = Config()
+            assert config.server.host == "0.0.0.0"
+            assert config.server.port == 8080
+            assert config.server.log_path == "/var/log/fin.log"
+
+    def test_config_reads_nested_context_env_vars(self) -> None:
+        """Test that Config reads FIN_CONTEXT__ env vars for context settings."""
+        with patch.dict(
+            os.environ,
+            {
+                "FIN_CONTEXT__MAX_FILE_SIZE": "50000",
+                "FIN_CONTEXT__INCLUDE_GIT_STATUS": "false",
+            },
+        ):
+            config = Config()
+            assert config.context.max_file_size == 50_000
+            assert config.context.include_git_status is False
+
+    def test_config_explicit_values_override_env_vars(self) -> None:
+        """Test that explicit values override environment variables."""
+        with patch.dict(os.environ, {"FIN_GENERAL__DEFAULT_PROVIDER": "openrouter"}):
+            config = Config(general=GeneralSettings(default_provider="ollama"))
+            assert config.general.default_provider == "ollama"
 
 
 class TestLoadConfig:

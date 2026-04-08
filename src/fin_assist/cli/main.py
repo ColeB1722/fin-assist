@@ -35,7 +35,7 @@ from fin_assist.cli.interaction.prompt import FinPrompt
 from fin_assist.cli.server import ServerStartupError, ensure_server_running, stop_server
 from fin_assist.config.loader import load_config
 from fin_assist.hub.app import create_hub_app
-from fin_assist.hub.logging import LOG_FILE, configure_logging
+from fin_assist.hub.logging import configure_logging
 
 SESSIONS_DIR = Path("~/.local/share/fin/sessions").expanduser()
 
@@ -133,7 +133,7 @@ async def _do_command(args: argparse.Namespace, config) -> int:
 
             fp = FinPrompt(agents=[a.name for a in agents])
 
-            prompt = args.prompt
+            prompt = " ".join(args.prompt)
             while True:
                 result = await client.run_agent(args.agent, prompt)
 
@@ -252,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a one-shot query to an agent (no memory).",
     )
     do_parser.add_argument("agent", help="Name of the agent to use.")
-    do_parser.add_argument("prompt", help="The prompt to send.")
+    do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
 
     talk_parser = subparsers.add_parser(
         "talk",
@@ -315,14 +315,12 @@ def main(argv: list[str] | None = None) -> int:
             host = args.host or config.server.host
             port = args.port or config.server.port
             db_path = os.path.expanduser(args.db or config.server.db_path)
+            log_path = Path(os.path.expanduser(config.server.log_path))
             credentials = CredentialStore()
-            # TODO: make agent list configurable via [agents.*] config
-            # (see docs/architecture.md). Hardcoded until Phase 16 adds
-            # optional agents that benefit from enable/disable.
+            configure_logging(log_file=log_path)
+            console.print(f"[dim]Logging to {log_path}[/dim]")
             agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
             app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
-            configure_logging()
-            console.print(f"[dim]Logging to {LOG_FILE}[/dim]")
             uvicorn.run(app, host=host, port=port, log_config=None)
             return 0
         case _:

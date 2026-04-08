@@ -33,6 +33,7 @@
   env = {
     OPENROUTER_API_KEY = config.secretspec.secrets.OPENROUTER_API_KEY or "";
     ANTHROPIC_API_KEY = config.secretspec.secrets.ANTHROPIC_API_KEY or "";
+    FIN_SERVER__LOG_PATH = /home/coleb/repos/fin-assist;
   };
 
   git-hooks.hooks = {

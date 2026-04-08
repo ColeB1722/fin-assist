@@ -107,6 +107,7 @@ def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[
     db_path = os.path.expanduser(config.server.db_path)
     host = config.server.host
     port = config.server.port
+    log_path = os.path.expanduser(config.server.log_path)
 
     args = [
         sys.executable,
@@ -121,13 +122,15 @@ def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[
         db_path,
     ]
 
+    stderr_file = open(log_path, "a", buffering=1)  # noqa: SIM115
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_file,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
         start_new_session=True,
     )
+    stderr_file.close()
 
     _write_pid(proc.pid, pid_file)
     return proc
@@ -198,8 +201,9 @@ async def ensure_server_running(
         return base_url
     except TimeoutError as e:
         _kill_and_cleanup(proc, pid_file)
+        log_path = os.path.expanduser(config.server.log_path)
         raise ServerStartupError(
-            f"Server failed to start within {timeout}s. Check {LOG_FILE} for details."
+            f"Server failed to start within {timeout}s. Check {log_path} for details."
         ) from e
 
 

@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-03)**: Phases 1-8 complete. `auth-required` credential pre-check implemented (see [Auth-Required Credential Pre-Check](#auth-required-credential-pre-check-2026-04-03)). Phase 8b (CLI REPL Mode) is next.
+**Current state (2026-04-08)**: Phases 1-8b complete. Manual testing of Phase 8b (CLI REPL Mode) is next — see `docs/manual-testing.md` for the checklist.
 
 ---
 
@@ -635,80 +635,62 @@ Total: 303 tests, all passing
 
 ---
 
-## Next Session: Phase 8b — CLI REPL Mode
+## Previous Session: Phase 8b — CLI REPL Mode
+
+**Date**: 2026-04-08
+**Status**: Complete (pending manual testing)
+
+### What Was Accomplished
+
+1. **`FinPrompt` implemented** (`cli/interaction/prompt.py`)
+   - `prompt_toolkit`-backed input widget with `FuzzyCompleter(WordCompleter(...))`
+   - Slash commands: `/exit`, `/quit`, `/q`, `/switch`, `/help`
+   - Agent name tab completion via `agents` parameter
+   - Persistent history via `FileHistory` at `~/.local/share/fin/history`
+   - Ctrl-C/Ctrl-D keybindings return empty string (handled by callers)
+   - Async `ask()` method using `session.prompt_async()`
+
+2. **`chat.py` updated** — accepts optional `FinPrompt`, creates one if not provided, uses `await fp.ask(...)` for input. No `rich.prompt.Prompt` references remain.
+
+3. **`approve.py` updated** — accepts optional `FinPrompt`, creates one if not provided, uses `await fp.ask(...)` for input. Invalid input falls through to `case _` and loops (completion-only, no hard enforcement).
+
+4. **`main.py` updated** — constructs `FinPrompt(agents=[a.name for a in agents])` in both `_do_command` and `_talk_command`, passes down to widgets.
+
+5. **`prompt-toolkit>=3.0`** added as explicit dependency in `pyproject.toml`.
+
+### Design Decision Resolved
+
+| Question | Resolution |
+|----------|------------|
+| FinPrompt instantiation | Constructed in `main.py`, passed to widgets via parameter. Shared instance for history continuity; testable with mocks. |
+
+### Test Summary
+
+```text
+tests/test_cli/interaction/test_prompt.py: 8 tests (new)
+Total: 368 tests, all passing
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/interaction/prompt.py` | **New** — `FinPrompt` class |
+| `src/fin_assist/cli/interaction/chat.py` | Accept `FinPrompt`, replace `Prompt.ask` |
+| `src/fin_assist/cli/interaction/approve.py` | Accept `FinPrompt`, replace `Prompt.ask` |
+| `src/fin_assist/cli/main.py` | Construct `FinPrompt` with agent names, pass to widgets |
+| `pyproject.toml` | Added `prompt-toolkit>=3.0` |
+| `tests/test_cli/interaction/test_prompt.py` | **New** — 8 tests |
+
+---
+
+## Next Session: Manual Testing Phase 8b + Phase 9
 
 ### Goals
 
-Replace `rich.prompt.Prompt.ask` in `chat.py` and `approve.py` with a reusable
-`prompt_toolkit`-backed input widget (`FinPrompt`) that provides:
-
-- **Fuzzy slash-command completion** — type `/` and get a fuzzy-filtered list of
-  available commands (`/exit`, `/quit`, `/switch <agent>`, etc.), matching the
-  OpenCode pattern
-- **Tab completion for agent names** — after `/switch `, complete against live
-  `discover_agents()` results
-- **Persistent input history** — stored at `~/.local/share/fin/history`, shared
-  across sessions
-- **Richer editing** — readline-style keybindings, multi-line input (future)
-
-### Design Sketch: `FinPrompt`
-
-```python
-# src/fin_assist/cli/interaction/prompt.py
-
-class FinPrompt:
-    """Reusable prompt_toolkit session with slash-command fuzzy completion."""
-
-    SLASH_COMMANDS = ["/exit", "/quit", "/q", "/switch", "/help"]
-
-    def __init__(
-        self,
-        agents: list[str] | None = None,
-        history_path: Path = HISTORY_PATH,
-    ) -> None: ...
-
-    async def ask(self, prompt_text: str) -> str:
-        """Async prompt with completion and history."""
-        ...
-```
-
-`FinPrompt` uses:
-- `FuzzyCompleter(WordCompleter(commands + agents))` — built-in to prompt_toolkit
-- `FileHistory(history_path)` — persistent across sessions
-- `KeyBindings` — `Tab` triggers completion, standard readline keys work
-
-### Wiring
-
-Both existing widgets replace `Prompt.ask` with `FinPrompt.ask`:
-
-- `chat.py` — `run_chat_loop` accepts an optional `FinPrompt` instance (or
-  creates one if not provided), uses it for the main input loop
-- `approve.py` — `run_approve_widget` uses `FinPrompt` for action choice, but
-  note: `Prompt.ask(choices=...)` currently enforces valid input for free.
-  With `FinPrompt` this becomes completion-only (no hard enforcement) — invalid
-  input falls through to `case _` in the match block and loops, which is fine
-
-### Open Design Question
-
-Should `FinPrompt` be instantiated once per command (in `main.py`) and passed
-down, or constructed inside each widget? Shared instance is better for history
-continuity across a session. Passing it down keeps widgets testable with mocks.
-**Recommendation**: construct in `main.py`, pass to widgets via parameter.
-
-### Implementation Steps (SDD → TDD)
-
-1. Sketch `FinPrompt` interface + write failing tests
-2. Implement `FinPrompt` with `FuzzyCompleter` + `FileHistory`
-3. Update `chat.py` — accept `FinPrompt`, replace `Prompt.ask`
-4. Update `approve.py` — replace `Prompt.ask` with `FinPrompt.ask`
-5. Update `main.py` — construct `FinPrompt` with live agent names, pass down
-6. Update existing tests to mock `FinPrompt.ask` instead of `Prompt.ask`
-7. Run `just ci`
-
-### Dependencies
-
-Add `prompt_toolkit>=3.0` to `pyproject.toml` (already a transitive dep of
-several packages — worth pinning explicitly).
+1. **Manual testing** — run through `docs/manual-testing.md` checklist (Chunks A-D)
+2. **Fix any issues** found during manual testing
+3. **Begin Phase 9** (Streaming + Integration Tests) once manual testing passes
 
 ---
 
@@ -791,7 +773,7 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 6 | Agent Protocol & Registry | ✅ Complete |
 | 7 | **Agent Hub Server** | ✅ Complete |
 | 8 | **CLI Client** | ✅ Complete |
-| 8b | CLI REPL Mode | ⬜ Not Started ← next |
+| 8b | **CLI REPL Mode** | ✅ Complete (manual testing next) |
 | 9 | Streaming + Integration Tests | ⬜ Not Started |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
