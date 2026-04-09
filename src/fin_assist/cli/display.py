@@ -126,8 +126,6 @@ def render_agent_card(agent: DiscoveredAgent) -> None:
         meta_parts.append("[dim]one-shot[/dim]")
     if agent.card_meta.requires_approval:
         meta_parts.append("[yellow]requires approval[/yellow]")
-    if agent.card_meta.supports_regenerate:
-        meta_parts.append("[green]supports regenerate[/green]")
 
     meta_str = "  |  ".join(meta_parts) if meta_parts else ""
 

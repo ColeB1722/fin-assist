@@ -44,7 +44,7 @@ async def run_chat_loop(
 
     while True:
         try:
-            user_input = (await fp.ask("[bold]>[/bold] ")).strip()
+            user_input = (await fp.ask("> ")).strip()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Exiting chat[/dim]")
             break

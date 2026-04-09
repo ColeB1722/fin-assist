@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-08)**: Phases 1-8b complete. Manual testing of Phase 8b (CLI REPL Mode) is next — see `docs/manual-testing.md` for the checklist.
+**Current state (2026-04-09)**: Phases 1-8b complete. Manual testing of Chunk B found 3 bugs (now fixed) and led to removal of the regenerate feature. Resume manual testing from Chunk B (re-verify) and continue with Chunks C-D.
 
 ---
 
@@ -635,6 +635,61 @@ Total: 303 tests, all passing
 
 ---
 
+## Manual Testing Bug Fixes + Regenerate Removal (2026-04-09)
+
+**Status**: Complete
+
+### Bugs Found During Chunk B Manual Testing
+
+1. **Ctrl+C/D trapped in approval loop (B6/B7)**: `FinPrompt.ask()` swallowed `KeyboardInterrupt`/`EOFError` and returned `""`, which the approval widget treated as empty input and looped. User could never escape.
+
+2. **Rich markup rendered as literal text**: Prompt text `[bold]Action:[/bold]` was passed to `prompt_toolkit`, which doesn't understand Rich markup. Appeared as literal `[bold]` tags.
+
+3. **Regenerate always broken**: `regenerate_prompt` was never populated in task artifact metadata. Typing `regenerate` always showed "not available".
+
+### What Changed
+
+**Bug fixes:**
+- `FinPrompt.ask()` now propagates `KeyboardInterrupt`/`EOFError` instead of swallowing them — callers decide how to handle
+- `approve.py` catches both exceptions and returns `CANCEL`
+- `chat.py` already caught them (no change needed to its logic)
+- Removed Rich markup tags from prompt text passed to `prompt_toolkit`
+
+**Regenerate removal (simplification):**
+
+The regenerate feature was removed entirely. Rationale:
+- The implementation was broken (never worked end-to-end)
+- Re-rolling the same prompt at default temperature gives the same result
+- The client already has the prompt in local scope — the server round-trip was unnecessary indirection
+- Removing it eliminated: the `while True` loop in `_do_command`, the `EDIT` action, `supports_regenerate`/`regenerate_prompt` parameters, and the `regenerate` match case
+- Can be re-added properly when there's temperature control or prompt-editing support
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/interaction/prompt.py` | Stop swallowing `KeyboardInterrupt`/`EOFError` in `ask()` |
+| `src/fin_assist/cli/interaction/approve.py` | Catch Ctrl+C/D, strip Rich markup, remove regenerate |
+| `src/fin_assist/cli/interaction/chat.py` | Strip Rich markup from prompt text |
+| `src/fin_assist/cli/main.py` | Simplify `_do_command` to linear flow (no while loop) |
+| `src/fin_assist/agents/base.py` | Remove `supports_regenerate` from `AgentCardMeta` |
+| `src/fin_assist/agents/shell.py` | Remove `supports_regenerate=True` |
+| `src/fin_assist/cli/display.py` | Remove `supports_regenerate` rendering |
+| `docs/manual-testing.md` | Fix B1, remove B3 (regenerate), renumber |
+| `tests/test_cli/interaction/test_prompt.py` | Update: exceptions propagate, not swallowed |
+| `tests/test_cli/interaction/test_approve.py` | Rewrite: remove regenerate tests, add Ctrl+C/D/markup tests |
+| `tests/test_cli/test_main.py` | Remove regenerate/edit tests, update return types |
+| `tests/test_cli/test_display.py` | Remove `supports_regenerate` rendering test |
+| `tests/test_cli/test_client.py` | Remove `supports_regenerate` from test fixture |
+
+### Test Summary
+
+```text
+Total: 371 tests, all passing (was 368 before; net +3 from new Ctrl+C/D/markup tests minus removed regenerate tests)
+```
+
+---
+
 ## Previous Session: Phase 8b — CLI REPL Mode
 
 **Date**: 2026-04-08
@@ -684,12 +739,12 @@ Total: 368 tests, all passing
 
 ---
 
-## Next Session: Manual Testing Phase 8b + Phase 9
+## Next Session: Continue Manual Testing + Phase 9
 
 ### Goals
 
-1. **Manual testing** — run through `docs/manual-testing.md` checklist (Chunks A-D)
-2. **Fix any issues** found during manual testing
+1. **Re-verify Chunk B** — confirm Ctrl+C/D and markup fixes work in practice
+2. **Manual testing Chunks C-D** — chat loop and FinPrompt completions/history
 3. **Begin Phase 9** (Streaming + Integration Tests) once manual testing passes
 
 ---

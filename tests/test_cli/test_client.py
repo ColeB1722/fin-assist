@@ -221,7 +221,6 @@ class TestDiscoverAgents:
                     "card_meta": {
                         "multi_turn": False,
                         "requires_approval": True,
-                        "supports_regenerate": True,
                         "supports_thinking": False,
                         "supports_model_selection": True,
                         "tags": ["shell"],

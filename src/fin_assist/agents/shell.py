@@ -40,5 +40,4 @@ class ShellAgent(BaseAgent[CommandResult]):
             supports_thinking=False,
             tags=["shell", "one-shot"],
             requires_approval=True,
-            supports_regenerate=True,
         )

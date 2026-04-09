@@ -134,37 +134,31 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             fp = FinPrompt(agents=[a.name for a in agents])
 
             prompt = " ".join(args.prompt)
-            while True:
-                result = await client.run_agent(args.agent, prompt)
+            result = await client.run_agent(args.agent, prompt)
 
-                if result.metadata.get("auth_required"):
-                    render_auth_required(result.output)
-                    return 1
+            if result.metadata.get("auth_required"):
+                render_auth_required(result.output)
+                return 1
 
-                if not discovered.card_meta.requires_approval:
-                    render_response(result.output, agent_name=discovered.name)
-                    if result.warnings:
-                        render_warnings(result.warnings)
-                    return 0
+            if not discovered.card_meta.requires_approval:
+                render_response(result.output, agent_name=discovered.name)
+                if result.warnings:
+                    render_warnings(result.warnings)
+                return 0
 
-                render_command(result.output, result.warnings, result.metadata)
+            render_command(result.output, result.warnings, result.metadata)
 
-                action, edited = await run_approve_widget(
-                    command=result.output,
-                    warnings=result.warnings,
-                    supports_regenerate=discovered.card_meta.supports_regenerate,
-                    regenerate_prompt=result.metadata.get("regenerate_prompt"),
-                    prompt=fp,
-                )
+            action = await run_approve_widget(
+                command=result.output,
+                warnings=result.warnings,
+                prompt=fp,
+            )
 
-                if action == ApprovalAction.EXECUTE:
-                    return execute_command(result.output)
-                elif action == ApprovalAction.EDIT and edited:
-                    prompt = edited
-                    continue
-                else:
-                    render_info("Cancelled")
-                    return 0
+            if action == ApprovalAction.EXECUTE:
+                return execute_command(result.output)
+            else:
+                render_info("Cancelled")
+                return 0
     except (ServerStartupError, Exception):
         return 1
 

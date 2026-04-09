@@ -140,11 +140,6 @@ class TestRenderAgentCard:
         output = _capture_output(render_agent_card, agent)
         assert "requires approval" in output
 
-    def test_renders_supports_regenerate_flag(self):
-        agent = self._make_agent(card_meta=AgentCardMeta(supports_regenerate=True))
-        output = _capture_output(render_agent_card, agent)
-        assert "supports regenerate" in output
-
 
 class TestRenderAgentsList:
     def test_renders_all_agents(self):

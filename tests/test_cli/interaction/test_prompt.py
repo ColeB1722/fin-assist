@@ -34,7 +34,7 @@ class TestFinPromptAsk:
         assert result == "hello world"
         mock_session.prompt_async.assert_called_once_with("> ")
 
-    async def test_ask_keyboard_interrupt_returns_empty_string(self):
+    async def test_ask_propagates_keyboard_interrupt(self):
         from fin_assist.cli.interaction.prompt import FinPrompt
 
         fp = FinPrompt()
@@ -42,11 +42,10 @@ class TestFinPromptAsk:
         mock_session.prompt_async = AsyncMock(side_effect=KeyboardInterrupt)
 
         with patch("fin_assist.cli.interaction.prompt.PromptSession", return_value=mock_session):
-            result = await fp.ask("> ")
+            with pytest.raises(KeyboardInterrupt):
+                await fp.ask("> ")
 
-        assert result == ""
-
-    async def test_ask_eof_error_returns_empty_string(self):
+    async def test_ask_propagates_eof_error(self):
         from fin_assist.cli.interaction.prompt import FinPrompt
 
         fp = FinPrompt()
@@ -54,9 +53,8 @@ class TestFinPromptAsk:
         mock_session.prompt_async = AsyncMock(side_effect=EOFError)
 
         with patch("fin_assist.cli.interaction.prompt.PromptSession", return_value=mock_session):
-            result = await fp.ask("> ")
-
-        assert result == ""
+            with pytest.raises(EOFError):
+                await fp.ask("> ")
 
 
 class TestFinPromptHistory:

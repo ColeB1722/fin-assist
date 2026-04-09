@@ -33,13 +33,12 @@
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
-| B1 | Approve default | Press Enter or type `execute` | Command executes, exit code 0 |
+| B1 | Execute | Type `execute` | Command executes, exit code 0 |
 | B2 | Cancel | Type `cancel` | "Cancelled" info message, no execution |
-| B3 | Regenerate | Type `regenerate` | New command generated, approval shown again |
-| B4 | Unknown input | Type `whoops` | Loops, prints valid options |
-| B5 | Empty input | Just press Enter | Loops, no action |
-| B6 | Ctrl+C | During approval prompt | Exits cleanly to shell |
-| B7 | Ctrl+D | During approval prompt | Exits cleanly to shell |
+| B3 | Unknown input | Type `whoops` | Loops, prints valid options |
+| B4 | Empty input | Just press Enter | Loops, no action |
+| B5 | Ctrl+C | During approval prompt | Exits cleanly to shell |
+| B6 | Ctrl+D | During approval prompt | Exits cleanly to shell |
 
 **If B fails**: `approve.py`, FinPrompt wiring, or `main.py` integration broken.
 
@@ -97,7 +96,7 @@
 ```
 A1-A6  →  Chunk A (blocks everything if broken)
           │
-          ├── B1-B7  →  Chunk B
+          ├── B1-B6  →  Chunk B
           │
           └── C1-C11 →  Chunk C  (run in parallel with B after A passes)
                        │

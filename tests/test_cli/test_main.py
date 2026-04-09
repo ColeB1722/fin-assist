@@ -39,7 +39,6 @@ def _run_main(*argv: str) -> int:
 def _make_discovered(
     name: str = "shell",
     requires_approval: bool = False,
-    supports_regenerate: bool = False,
 ) -> DiscoveredAgent:
     return DiscoveredAgent(
         name=name,
@@ -47,7 +46,6 @@ def _make_discovered(
         url=f"http://localhost/agents/{name}/",
         card_meta=AgentCardMeta(
             requires_approval=requires_approval,
-            supports_regenerate=supports_regenerate,
         ),
     )
 
@@ -354,7 +352,7 @@ class TestDoCommandNoApproval:
 
 class TestDoCommandApproval:
     def test_shows_approval_widget_when_requires_approval(self):
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
+        agent = _make_discovered("shell", requires_approval=True)
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
@@ -372,7 +370,7 @@ class TestDoCommandApproval:
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.CANCEL, None),
+                return_value=ApprovalAction.CANCEL,
             ) as mock_widget,
         ):
             result = _run_main("do", "shell", "remove temp")
@@ -399,7 +397,7 @@ class TestDoCommandApproval:
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.EXECUTE, None),
+                return_value=ApprovalAction.EXECUTE,
             ),
             patch("fin_assist.cli.main.execute_command", return_value=0) as mock_exec,
         ):
@@ -407,76 +405,6 @@ class TestDoCommandApproval:
 
         mock_exec.assert_called_once_with("echo hi")
         assert result == 0
-
-    def test_reruns_with_edited_prompt_on_edit(self):
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
-        run_results = [
-            AgentResult(success=True, output="echo first"),
-            AgentResult(success=True, output="echo second"),
-        ]
-        mock_client = _mock_client(agents=[agent])
-        mock_client.run_agent = AsyncMock(side_effect=run_results)
-
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        approve_responses = [
-            (ApprovalAction.EDIT, "edited prompt"),
-            (ApprovalAction.EXECUTE, None),
-        ]
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.run_approve_widget",
-                side_effect=approve_responses,
-            ),
-            patch("fin_assist.cli.main.execute_command", return_value=0),
-        ):
-            result = _run_main("do", "shell", "original prompt")
-
-        assert result == 0
-        assert mock_client.run_agent.call_count == 2
-        # Second call uses the edited prompt
-        mock_client.run_agent.assert_called_with("shell", "edited prompt")
-
-    def test_approval_widget_receives_card_meta_flags(self):
-        """supports_regenerate comes from card_meta, not result.metadata."""
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(
-                success=True,
-                output="ls",
-                metadata={"regenerate_prompt": "list files"},
-            ),
-        )
-
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.CANCEL, None),
-            ) as mock_widget,
-        ):
-            _run_main("do", "shell", "list files")
-
-        _, widget_kwargs = mock_widget.call_args
-        assert widget_kwargs["supports_regenerate"] is True
-        assert widget_kwargs["regenerate_prompt"] == "list files"
 
 
 # ---------------------------------------------------------------------------

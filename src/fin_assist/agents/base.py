@@ -69,9 +69,6 @@ class AgentCardMeta(BaseModel):
     requires_approval: bool = False
     """If True, CLI shows approval widget before executing the suggested action."""
 
-    supports_regenerate: bool = False
-    """If True, CLI shows regenerate option after a response."""
-
 
 class BaseAgent[T](ABC):
     """Base class for all agents.

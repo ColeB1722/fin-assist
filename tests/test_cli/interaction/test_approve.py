@@ -16,7 +16,6 @@ from fin_assist.cli.interaction.approve import (
 class TestApprovalAction:
     def test_values_are_strings(self):
         assert ApprovalAction.EXECUTE == "execute"
-        assert ApprovalAction.EDIT == "edit"
         assert ApprovalAction.CANCEL == "cancel"
 
     def test_is_str_enum(self):
@@ -30,73 +29,23 @@ class TestRunApproveWidget:
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="execute")
 
-        action, edited = await run_approve_widget("ls -la", prompt=mock_fp)
+        action = await run_approve_widget("ls -la", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
-        assert edited is None
 
     async def test_cancel_returns_cancel_action(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(return_value="cancel")
 
-        action, edited = await run_approve_widget("ls -la", prompt=mock_fp)
+        action = await run_approve_widget("ls -la", prompt=mock_fp)
 
         assert action == ApprovalAction.CANCEL
-        assert edited is None
-
-    async def test_regenerate_returns_edit_with_original_prompt(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="regenerate")
-
-        action, edited = await run_approve_widget(
-            "rm -rf /",
-            supports_regenerate=True,
-            regenerate_prompt="delete everything",
-            prompt=mock_fp,
-        )
-
-        assert action == ApprovalAction.EDIT
-        assert edited == "delete everything"
-
-    async def test_regenerate_loops_when_no_prompt(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["regenerate", "execute"])
-
-        action, edited = await run_approve_widget(
-            "ls",
-            supports_regenerate=True,
-            regenerate_prompt=None,
-            prompt=mock_fp,
-        )
-
-        assert action == ApprovalAction.EXECUTE
-        assert mock_fp.ask.call_count == 2
-
-    async def test_regenerate_not_in_options_when_disabled(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
-
-        await run_approve_widget("ls", supports_regenerate=False, prompt=mock_fp)
-
-        call_args = mock_fp.ask.call_args[0][0]
-        assert "regenerate" not in call_args
-        assert "execute" in call_args
-        assert "cancel" in call_args
-
-    async def test_regenerate_in_options_when_enabled(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
-
-        await run_approve_widget("ls", supports_regenerate=True, prompt=mock_fp)
-
-        call_args = mock_fp.ask.call_args[0][0]
-        assert "regenerate" in call_args
 
     async def test_unknown_input_loops(self):
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["unknown", "execute"])
 
-        action, edited = await run_approve_widget("ls", prompt=mock_fp)
+        action = await run_approve_widget("ls", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
         assert mock_fp.ask.call_count == 2
@@ -105,10 +54,48 @@ class TestRunApproveWidget:
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["", "execute"])
 
-        action, edited = await run_approve_widget("ls", prompt=mock_fp)
+        action = await run_approve_widget("ls", prompt=mock_fp)
 
         assert action == ApprovalAction.EXECUTE
         assert mock_fp.ask.call_count == 2
+
+    async def test_ctrl_c_returns_cancel(self):
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+
+        action = await run_approve_widget("ls", prompt=mock_fp)
+
+        assert action == ApprovalAction.CANCEL
+
+    async def test_ctrl_d_returns_cancel(self):
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=EOFError)
+
+        action = await run_approve_widget("ls", prompt=mock_fp)
+
+        assert action == ApprovalAction.CANCEL
+
+    async def test_prompt_text_has_no_rich_markup(self):
+        """Prompt text passed to FinPrompt.ask() must not contain Rich markup tags
+        because prompt_toolkit doesn't render them — they'd appear as literal text."""
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="execute")
+
+        await run_approve_widget("ls", prompt=mock_fp)
+
+        prompt_text = mock_fp.ask.call_args[0][0]
+        assert "[bold]" not in prompt_text
+        assert "[/bold]" not in prompt_text
+
+    async def test_prompt_shows_execute_and_cancel_options(self):
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="execute")
+
+        await run_approve_widget("ls", prompt=mock_fp)
+
+        prompt_text = mock_fp.ask.call_args[0][0]
+        assert "execute" in prompt_text
+        assert "cancel" in prompt_text
 
     async def test_creates_finprompt_if_not_provided(self):
         mock_fp = MagicMock()
@@ -117,7 +104,7 @@ class TestRunApproveWidget:
         with patch(
             "fin_assist.cli.interaction.approve.FinPrompt", return_value=mock_fp
         ) as mock_init:
-            action, edited = await run_approve_widget("ls")
+            action = await run_approve_widget("ls")
             mock_init.assert_called_once()
 
         assert action == ApprovalAction.EXECUTE

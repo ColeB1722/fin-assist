@@ -67,9 +67,10 @@ class FinPrompt:
 
         Returns:
             The user's input string (may be empty).
+
+        Raises:
+            KeyboardInterrupt: When the user presses Ctrl+C.
+            EOFError: When the user presses Ctrl+D.
         """
-        try:
-            session = self._build_session()
-            return await session.prompt_async(prompt_text)
-        except (KeyboardInterrupt, EOFError):
-            return ""
+        session = self._build_session()
+        return await session.prompt_async(prompt_text)
