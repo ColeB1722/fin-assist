@@ -31,11 +31,13 @@ class DefaultAgent(BaseAgent[str]):
         return str
 
     def build_pydantic_agent(self) -> Agent[Any, str]:
-        """Build a pydantic-ai Agent with thinking capabilities when configured."""
+        """Build a pydantic-ai Agent with thinking capabilities when configured.
+
+        Model is deferred — see ``BaseAgent.build_pydantic_agent`` docstring.
+        """
         from pydantic_ai import Agent
         from pydantic_ai.capabilities import Thinking
 
-        model = self._build_model()
         thinking_effort = self._config.general.thinking_effort
         capabilities = (
             [Thinking(effort=thinking_effort)]
@@ -43,7 +45,6 @@ class DefaultAgent(BaseAgent[str]):
             else None
         )
         return Agent(
-            model,
             output_type=str,
             instructions=self.system_prompt,
             capabilities=capabilities,

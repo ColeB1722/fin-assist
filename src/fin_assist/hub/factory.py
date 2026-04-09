@@ -118,9 +118,10 @@ class AgentFactory:
         pydantic_agent = agent.build_pydantic_agent()
         broker = InMemoryBroker()
         worker = FinAssistWorker(
-            agent=pydantic_agent,
+            pydantic_agent=pydantic_agent,
             broker=broker,
             storage=self._storage,
+            agent_def=agent,
         )
 
         app = pydantic_agent.to_a2a(

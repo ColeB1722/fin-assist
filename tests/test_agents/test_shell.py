@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from fin_assist.agents.base import AgentCardMeta
 from fin_assist.agents.results import CommandResult
 from fin_assist.agents.shell import ShellAgent
@@ -62,20 +60,15 @@ class TestShellAgentCardMetadata:
 class TestShellAgentBuildPydanticAgent:
     def test_returns_pydantic_agent(self, mock_config, mock_credentials) -> None:
         from pydantic_ai import Agent
-        from pydantic_ai.models.test import TestModel
 
-        with patch.object(ShellAgent, "_build_model", return_value=TestModel()):
-            agent = ShellAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
+        agent = ShellAgent(mock_config, mock_credentials)
+        built = agent.build_pydantic_agent()
 
         assert isinstance(built, Agent)
 
     def test_no_thinking_capabilities(self, mock_config, mock_credentials) -> None:
         """ShellAgent uses the BaseAgent default — no thinking capabilities."""
-        from pydantic_ai.models.test import TestModel
+        agent = ShellAgent(mock_config, mock_credentials)
+        built = agent.build_pydantic_agent()
 
-        with patch.object(ShellAgent, "_build_model", return_value=TestModel()):
-            agent = ShellAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
-
-            assert not built._root_capability.capabilities
+        assert not built._root_capability.capabilities

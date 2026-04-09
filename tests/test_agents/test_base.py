@@ -241,7 +241,7 @@ class TestGetModelName:
         assert agent._get_model_name("openai", "gpt-4o") == "gpt-4o"
 
 
-# -- _build_model tests -------------------------------------------------------
+# -- build_model tests --------------------------------------------------------
 
 
 class TestBuildModel:
@@ -256,7 +256,7 @@ class TestBuildModel:
         mock_registry.create_model.return_value = mock_model
 
         with patch.object(agent, "_get_registry", return_value=mock_registry):
-            model = agent._build_model()
+            model = agent.build_model()
 
         assert model is mock_model
         mock_registry.create_model.assert_called_once_with(
@@ -283,6 +283,6 @@ class TestBuildModel:
         mock_registry.create_model.return_value = TestModel()
 
         with patch.object(agent, "_get_registry", return_value=mock_registry):
-            model = agent._build_model()
+            model = agent.build_model()
 
         assert isinstance(model, FallbackModel)

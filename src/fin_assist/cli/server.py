@@ -29,6 +29,26 @@ class ServerStartupError(Exception):
     """Raised when the server fails to start."""
 
 
+def _read_log_tail(log_path: str, max_lines: int = 20) -> str:
+    """Read the last ``max_lines`` lines from the log file.
+
+    Returns an empty string if the file doesn't exist or is empty.
+    Used to surface the root cause when the server subprocess crashes
+    before becoming healthy.
+    """
+    try:
+        path = Path(log_path)
+        if not path.exists():
+            return ""
+        text = path.read_text().strip()
+        if not text:
+            return ""
+        lines = text.splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
+
+
 async def _check_health(base_url: str) -> bool:
     """Return True if the hub server is reachable at base_url."""
     try:
@@ -202,9 +222,13 @@ async def ensure_server_running(
     except TimeoutError as e:
         _kill_and_cleanup(proc, pid_file)
         log_path = os.path.expanduser(config.server.log_path)
-        raise ServerStartupError(
-            f"Server failed to start within {timeout}s. Check {log_path} for details."
-        ) from e
+        hint = _read_log_tail(log_path)
+        msg = f"Server failed to start within {timeout}s."
+        if hint:
+            msg += f"\n\nLast log output:\n{hint}"
+        else:
+            msg += f" Check {log_path} for details."
+        raise ServerStartupError(msg) from e
 
 
 def stop_server(pid_file: Path = PID_FILE, wait_timeout: float = 0) -> bool:

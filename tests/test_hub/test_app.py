@@ -19,8 +19,8 @@ def mock_agents(mock_config, mock_credentials):
     from fin_assist.agents.default import DefaultAgent
     from fin_assist.agents.shell import ShellAgent
 
-    with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
-        with patch.object(ShellAgent, "_build_model", return_value=TestModel()):
+    with patch.object(DefaultAgent, "build_model", return_value=TestModel()):
+        with patch.object(ShellAgent, "build_model", return_value=TestModel()):
             yield [
                 ShellAgent(mock_config, mock_credentials),
                 DefaultAgent(mock_config, mock_credentials),

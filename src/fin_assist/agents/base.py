@@ -152,17 +152,25 @@ class BaseAgent[T](ABC):
     def build_pydantic_agent(self) -> Agent[Any, T]:
         """Build the pydantic-ai Agent that fasta2a's AgentWorker will execute.
 
-        This default creates a plain ``Agent(model, output_type, instructions)``
-        with no extra capabilities.  Override to add thinking, tools, etc.
-        (see ``DefaultAgent``).
+        The Agent is constructed **without a model** — pydantic-ai accepts
+        ``model=None`` at construction and resolves it at run time via the
+        ``model`` parameter on ``agent.run()``.  This lets the hub start and
+        serve discovery/health endpoints even when credentials are not yet
+        configured.
+
+        ``FinAssistWorker`` calls ``build_model()`` on the agent definition
+        before each task and passes the result to the pydantic-ai agent's
+        ``.run(model=...)``.  If credentials are missing,
+        ``MissingCredentialsError`` is caught and translated to
+        ``auth-required`` task state instead of crashing the hub.
+
+        Override to add thinking, tools, etc. (see ``DefaultAgent``).
         """
         from pydantic_ai import Agent
 
-        model = self._build_model()
         return cast(
             "Agent[Any, T]",
             Agent(
-                model,
                 output_type=self.output_type,
                 instructions=self.system_prompt,
             ),
@@ -199,7 +207,7 @@ class BaseAgent[T](ABC):
             self._registry = ProviderRegistry()
         return self._registry
 
-    def _build_model(self) -> Model:
+    def build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel
 
         missing = self.check_credentials()

@@ -120,7 +120,7 @@ class TestMissingCredentialsError:
         assert "ANTHROPIC_API_KEY" in msg
 
 
-# -- _build_model raises MissingCredentialsError ------------------------------
+# -- build_model raises MissingCredentialsError -------------------------------
 
 
 class TestBuildModelCredentialCheck:
@@ -132,7 +132,7 @@ class TestBuildModelCredentialCheck:
 
         agent = DummyAgent(mock_config, mock_credentials)
         with pytest.raises(MissingCredentialsError) as exc_info:
-            agent._build_model()
+            agent.build_model()
         assert "anthropic" in exc_info.value.providers
 
     def test_does_not_raise_when_credentials_present(self, mock_config, mock_credentials) -> None:
@@ -148,5 +148,5 @@ class TestBuildModelCredentialCheck:
         mock_registry.create_model.return_value = MagicMock()
 
         with patch.object(agent, "_get_registry", return_value=mock_registry):
-            model = agent._build_model()
+            model = agent.build_model()
         assert model is not None

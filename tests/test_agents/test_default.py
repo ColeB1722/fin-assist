@@ -50,41 +50,34 @@ class TestDefaultAgentProperties:
 class TestDefaultAgentBuildPydanticAgent:
     def test_returns_pydantic_agent(self, mock_config, mock_credentials) -> None:
         from pydantic_ai import Agent
-        from pydantic_ai.models.test import TestModel
 
-        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
+        agent = DefaultAgent(mock_config, mock_credentials)
+        built = agent.build_pydantic_agent()
 
         assert isinstance(built, Agent)
 
     def test_with_thinking_effort(self, mock_config, mock_credentials) -> None:
         from pydantic_ai.capabilities import Thinking
-        from pydantic_ai.models.test import TestModel
 
         mock_config.general.thinking_effort = "high"
 
-        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
+        agent = DefaultAgent(mock_config, mock_credentials)
+        built = agent.build_pydantic_agent()
 
-            caps = built._root_capability.capabilities
-            assert len(caps) == 1
-            assert isinstance(caps[0], Thinking)
+        caps = built._root_capability.capabilities
+        assert len(caps) == 1
+        assert isinstance(caps[0], Thinking)
 
     @pytest.mark.parametrize("effort", ["off", None])
     def test_thinking_off_means_no_capabilities(
         self, mock_config, mock_credentials, effort
     ) -> None:
-        from pydantic_ai.models.test import TestModel
-
         mock_config.general.thinking_effort = effort
 
-        with patch.object(DefaultAgent, "_build_model", return_value=TestModel()):
-            agent = DefaultAgent(mock_config, mock_credentials)
-            built = agent.build_pydantic_agent()
+        agent = DefaultAgent(mock_config, mock_credentials)
+        built = agent.build_pydantic_agent()
 
-            assert not built._root_capability.capabilities
+        assert not built._root_capability.capabilities
 
 
 class TestDefaultAgentBuildModel:
@@ -95,7 +88,7 @@ class TestDefaultAgentBuildModel:
             "fin_assist.llm.model_registry.ProviderRegistry.create_model", return_value=mock_model
         ):
             agent = DefaultAgent(mock_config, mock_credentials)
-            result = agent._build_model()
+            result = agent.build_model()
             assert result is mock_model
 
     def test_uses_fallback_when_multiple_providers_enabled(
@@ -118,7 +111,7 @@ class TestDefaultAgentBuildModel:
                 mock_fallback_class.return_value = mock_fallback_instance
 
                 agent = DefaultAgent(mock_config, mock_credentials)
-                result = agent._build_model()
+                result = agent.build_model()
 
                 assert result is mock_fallback_instance
                 mock_fallback_class.assert_called_once_with(mock_model1, mock_model2)
