@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 console = rich.console.Console()
 
 PID_FILE = Path("~/.local/share/fin/hub.pid").expanduser()
-LOG_FILE = Path("~/.local/share/fin/hub.log").expanduser()
 
 
 class ServerStartupError(Exception):
@@ -113,7 +112,11 @@ def _pid_is_running(pid: int) -> bool:
         return False
 
 
-def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[bytes]:
+def _spawn_serve(
+    config: Config,
+    pid_file: Path = PID_FILE,
+    config_path: Path | None = None,
+) -> subprocess.Popen[bytes]:
     """Spawn `fin-assist serve` as a detached background process and write its PID.
 
     Uses ``subprocess.Popen`` (not ``asyncio.create_subprocess_exec``) so the
@@ -123,6 +126,13 @@ def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[
     child that is still running — even with ``start_new_session=True``.
     ``Popen`` has no such lifecycle coupling: the child lives independently
     after ``Popen`` returns.
+
+    Args:
+        config: Resolved configuration.
+        pid_file: Path to write the server PID.
+        config_path: Resolved TOML config path.  When provided, set as
+            ``FIN_CONFIG_PATH`` in the child environment so the subprocess
+            loads the same file regardless of its working directory.
     """
     db_path = os.path.expanduser(config.server.db_path)
     host = config.server.host
@@ -142,12 +152,16 @@ def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> subprocess.Popen[
         db_path,
     ]
 
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if config_path is not None:
+        env["FIN_CONFIG_PATH"] = str(config_path.resolve())
+
     stderr_file = open(log_path, "a", buffering=1)  # noqa: SIM115
     proc = subprocess.Popen(
         args,
         stdout=subprocess.DEVNULL,
         stderr=stderr_file,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env=env,
         start_new_session=True,
     )
     stderr_file.close()
@@ -172,6 +186,7 @@ def _kill_and_cleanup(
 
 async def ensure_server_running(
     config: Config | None = None,
+    config_path: Path | None = None,
     base_url: str | None = None,
     timeout: float = 10.0,
     pid_file: Path = PID_FILE,
@@ -184,6 +199,8 @@ async def ensure_server_running(
 
     Args:
         config: Config object. If None, loads from default location.
+        config_path: Resolved TOML config path, forwarded to the child
+            process via ``FIN_CONFIG_PATH``.
         base_url: Base URL of the hub. If None, derived from config.
         timeout: Maximum seconds to wait for server to become healthy.
         pid_file: Path to write the server PID file.
@@ -196,7 +213,7 @@ async def ensure_server_running(
             healthy within the timeout.
     """
     if config is None:
-        config = load_config()
+        config, config_path = load_config()
 
     if base_url is None:
         host = config.server.host
@@ -213,7 +230,7 @@ async def ensure_server_running(
 
     console.print(f"[dim]Starting fin-assist hub at {base_url}...[/dim]")
 
-    proc = _spawn_serve(config, pid_file)
+    proc = _spawn_serve(config, pid_file, config_path=config_path)
 
     try:
         await _wait_for_health(base_url, timeout=timeout)

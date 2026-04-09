@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from fin_assist.hub.logging import (
-    LOG_FILE,
     _DEFAULT_BACKUP_COUNT,
     _DEFAULT_MAX_BYTES,
     configure_logging,
@@ -95,5 +94,13 @@ class TestConfigureLogging:
         )
         assert rfh_count == 1
 
-    def test_default_log_file_constant(self):
-        assert LOG_FILE == Path("~/.local/share/fin/hub.log").expanduser()
+    def test_log_file_is_required_parameter(self, tmp_path):
+        """Ensure log_file must be provided (no silent default)."""
+        # configure_logging requires an explicit log_file argument.
+        # This verifies the signature change — callers must always pass the
+        # config-resolved path rather than relying on a hardcoded default.
+        import inspect
+
+        sig = inspect.signature(configure_logging)
+        param = sig.parameters["log_file"]
+        assert param.default is inspect.Parameter.empty

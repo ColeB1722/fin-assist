@@ -33,7 +33,9 @@
   env = {
     OPENROUTER_API_KEY = config.secretspec.secrets.OPENROUTER_API_KEY or "";
     ANTHROPIC_API_KEY = config.secretspec.secrets.ANTHROPIC_API_KEY or "";
-    FIN_SERVER__LOG_PATH = /home/coleb/repos/fin-assist;
+    FIN_GENERAL__DEFAULT_PROVIDER = "openrouter";
+    FIN_GENERAL__DEFAULT_MODEL = "google/gemini-2.5-flash";
+    FIN_SERVER__LOG_PATH = "./hub.log";
   };
 
   git-hooks.hooks = {

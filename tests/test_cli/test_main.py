@@ -78,6 +78,7 @@ class TestServeCommand:
     def test_serve_starts_uvicorn(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             result = _run_main("serve")
@@ -88,6 +89,7 @@ class TestServeCommand:
     def test_serve_allows_host_override(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             _run_main("serve", "--host", "0.0.0.0")
@@ -99,6 +101,7 @@ class TestServeCommand:
     def test_serve_allows_port_override(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             _run_main("serve", "--port", "8080")

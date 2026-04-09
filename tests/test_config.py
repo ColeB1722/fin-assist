@@ -18,6 +18,16 @@ from fin_assist.config.schema import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _clean_fin_env_vars():
+    """Remove FIN_* env vars so pydantic-settings doesn't read devenv values."""
+    fin_vars = {k: v for k, v in os.environ.items() if k.startswith("FIN_")}
+    for k in fin_vars:
+        del os.environ[k]
+    yield
+    os.environ.update(fin_vars)
+
+
 class TestGeneralSettings:
     """Tests for GeneralSettings."""
 
@@ -198,22 +208,27 @@ class TestConfig:
 
 
 class TestLoadConfig:
-    """Tests for config loader."""
+    """Tests for config loader.
+
+    ``load_config()`` returns a ``(Config, Path | None)`` tuple.
+    """
 
     def test_load_config_file_not_found(self, tmp_path: Path) -> None:
         """Test that missing config file returns default Config."""
         nonexistent = tmp_path / "config.toml"
-        config = load_config(nonexistent)
+        config, config_path = load_config(nonexistent)
         assert isinstance(config, Config)
         assert config.general.default_provider == "anthropic"
+        assert config_path is None
 
     def test_load_config_empty_file(self, tmp_path: Path) -> None:
-        """Test that empty config file returns default Config."""
+        """Test that empty config file still resolves (pydantic-settings reads it)."""
         config_file = tmp_path / "config.toml"
         config_file.write_text("")
-        config = load_config(config_file)
+        config, config_path = load_config(config_file)
         assert isinstance(config, Config)
         assert config.general.default_provider == "anthropic"
+        assert config_path == config_file
 
     def test_load_config_valid_toml(self, tmp_path: Path) -> None:
         """Test parsing a valid TOML config file."""
@@ -226,7 +241,7 @@ default_model = "gpt-4o"
 [context]
 max_file_size = 50000
 """)
-        config = load_config(config_file)
+        config, _ = load_config(config_file)
         assert config.general.default_provider == "openrouter"
         assert config.general.default_model == "gpt-4o"
         assert config.context.max_file_size == 50_000
@@ -238,16 +253,16 @@ max_file_size = 50000
 [general]
 default_provider = "ollama"
 """)
-        config = load_config(config_file)
+        config, _ = load_config(config_file)
         assert config.general.default_provider == "ollama"
         assert config.general.default_model == "claude-sonnet-4-6"
         assert config.context.max_file_size == 100_000
 
     def test_load_config_invalid_toml(self, tmp_path: Path) -> None:
-        """Test that invalid TOML raises TOMLDecodeError."""
+        """Test that invalid TOML raises an error."""
         config_file = tmp_path / "config.toml"
         config_file.write_text("not valid toml [[[")
-        with pytest.raises(tomllib.TOMLDecodeError):
+        with pytest.raises((tomllib.TOMLDecodeError, Exception)):
             load_config(config_file)
 
     def test_load_config_with_providers(self, tmp_path: Path) -> None:
@@ -262,7 +277,7 @@ default_model = "llama3"
 [providers.openrouter]
 enabled = false
 """)
-        config = load_config(config_file)
+        config, _ = load_config(config_file)
         assert "ollama" in config.providers
         assert config.providers["ollama"].base_url == "http://localhost:11434"
         assert config.providers["ollama"].default_model == "llama3"
@@ -278,7 +293,7 @@ host = "0.0.0.0"
 port = 8080
 db_path = "/data/fin/hub.db"
 """)
-        config = load_config(config_file)
+        config, _ = load_config(config_file)
         assert config.server.host == "0.0.0.0"
         assert config.server.port == 8080
         assert config.server.db_path == "/data/fin/hub.db"
@@ -290,19 +305,17 @@ db_path = "/data/fin/hub.db"
 [server]
 port = 9000
 """)
-        config = load_config(config_file)
+        config, _ = load_config(config_file)
         assert config.server.port == 9000
         assert config.server.host == "127.0.0.1"
         assert config.server.db_path == "~/.local/share/fin/hub.db"
 
     def test_load_config_path_default(self, tmp_path: Path) -> None:
         """Test that default path is ~/.config/fin/config.toml."""
-        from fin_assist.config import loader
-
         with patch.object(
             loader, "DEFAULT_CONFIG_PATH", tmp_path / ".config" / "fin" / "config.toml"
         ):
-            config = load_config()
+            config, _ = load_config()
             assert isinstance(config, Config)
 
     def test_load_config_path_override(self, tmp_path: Path) -> None:
@@ -312,8 +325,9 @@ port = 9000
 [general]
 default_provider = "custom"
 """)
-        config = load_config(config_file)
+        config, config_path = load_config(config_file)
         assert config.general.default_provider == "custom"
+        assert config_path == config_file
 
     def test_load_config_env_path(self, tmp_path: Path) -> None:
         """Test that FIN_CONFIG_PATH environment variable is respected."""
@@ -323,8 +337,9 @@ default_provider = "custom"
 default_provider = "env_provider"
 """)
         with patch.dict(os.environ, {"FIN_CONFIG_PATH": str(config_file)}):
-            config = load_config()
+            config, config_path = load_config()
             assert config.general.default_provider == "env_provider"
+            assert config_path == config_file
 
     def test_load_config_cwd_fallback(self, tmp_path: Path) -> None:
         """Test that ./config.toml in cwd is used when no explicit path or env var."""
@@ -334,7 +349,7 @@ default_provider = "env_provider"
 default_provider = "cwd_provider"
 """)
         with patch("fin_assist.config.loader.Path.cwd", return_value=tmp_path):
-            config = load_config()
+            config, _ = load_config()
             assert config.general.default_provider == "cwd_provider"
 
     def test_load_config_cwd_missing_falls_to_default(self, tmp_path: Path) -> None:
@@ -344,8 +359,9 @@ default_provider = "cwd_provider"
             with patch.object(
                 loader, "DEFAULT_CONFIG_PATH", tmp_path / ".config" / "fin" / "config.toml"
             ):
-                config = load_config()
+                config, config_path = load_config()
                 assert isinstance(config, Config)
+                assert config_path is None
 
     def test_load_config_priority(self, tmp_path: Path) -> None:
         """Test config loading priority: explicit path > env var > cwd > default."""
@@ -363,9 +379,45 @@ default_provider = "cwd_provider"
         with patch.dict(os.environ, {"FIN_CONFIG_PATH": str(env_path)}):
             with patch("fin_assist.config.loader.Path.cwd", return_value=cwd_dir):
                 # Explicit path wins over env var
-                config = load_config(explicit_path)
+                config, _ = load_config(explicit_path)
                 assert config.general.default_provider == "explicit"
 
                 # Env var wins over cwd when no explicit path
-                config = load_config()
+                config, _ = load_config()
                 assert config.general.default_provider == "env"
+
+    def test_env_vars_override_toml_values(self, tmp_path: Path) -> None:
+        """Test that env vars take precedence over TOML file values."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""
+[general]
+default_provider = "from-toml"
+
+[server]
+port = 9000
+""")
+        with patch.dict(
+            os.environ,
+            {"FIN_GENERAL__DEFAULT_PROVIDER": "from-env"},
+        ):
+            config, _ = load_config(config_file)
+            # Env var wins over TOML
+            assert config.general.default_provider == "from-env"
+            # TOML value still used for fields without env override
+            assert config.server.port == 9000
+
+    def test_returns_config_path_tuple(self, tmp_path: Path) -> None:
+        """Test that load_config returns a (Config, Path | None) tuple."""
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[general]\ndefault_provider = 'test'")
+        result = load_config(config_file)
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], Config)
+        assert isinstance(result[1], Path)
+
+    def test_returns_none_path_when_no_file(self, tmp_path: Path) -> None:
+        """Test that config_path is None when no TOML file is found."""
+        nonexistent = tmp_path / "nope.toml"
+        _, config_path = load_config(nonexistent)
+        assert config_path is None

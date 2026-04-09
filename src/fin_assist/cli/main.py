@@ -73,7 +73,7 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
 
 
 @asynccontextmanager
-async def _hub_client(config) -> AsyncIterator[HubClient]:
+async def _hub_client(config, config_path: Path | None = None) -> AsyncIterator[HubClient]:
     """Start the hub if needed, yield a connected client, close it on exit.
 
     Handles two error categories so commands don't have to:
@@ -83,7 +83,7 @@ async def _hub_client(config) -> AsyncIterator[HubClient]:
     Commands catch the re-raised exceptions and return 1.
     """
     try:
-        base_url = await ensure_server_running(config)
+        base_url = await ensure_server_running(config, config_path=config_path)
     except ServerStartupError as e:
         render_error(str(e))
         raise
@@ -123,10 +123,10 @@ async def _get_agent_or_error(
 # ---------------------------------------------------------------------------
 
 
-async def _do_command(args: argparse.Namespace, config) -> int:
+async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             discovered, agents = await _get_agent_or_error(client, args.agent)
             if discovered is None:
                 return 1
@@ -169,7 +169,7 @@ async def _do_command(args: argparse.Namespace, config) -> int:
         return 1
 
 
-async def _talk_command(args: argparse.Namespace, config) -> int:
+async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
     if args.list_sessions:
         if not args.agent:
@@ -203,7 +203,7 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
         return 1
 
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
             fp = FinPrompt(agents=[a.name for a in agents])
             final_context_id = await run_chat_loop(client.send_message, args.agent, context_id, fp)
@@ -218,10 +218,10 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
     return 0
 
 
-async def _agents_command(args: argparse.Namespace, config) -> int:
+async def _agents_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist agents`."""
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
     except (ServerStartupError, Exception):
         return 1
@@ -237,7 +237,7 @@ async def _agents_command(args: argparse.Namespace, config) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for CLI client commands."""
-    config = load_config()
+    config, config_path = load_config()
 
     parser = argparse.ArgumentParser(
         prog="fin-assist",
@@ -296,11 +296,11 @@ def main(argv: list[str] | None = None) -> int:
 
     match args.command:
         case "agents":
-            return asyncio.run(_agents_command(args, config))
+            return asyncio.run(_agents_command(args, config, config_path))
         case "do":
-            return asyncio.run(_do_command(args, config))
+            return asyncio.run(_do_command(args, config, config_path))
         case "talk":
-            return asyncio.run(_talk_command(args, config))
+            return asyncio.run(_talk_command(args, config, config_path))
         case "stop":
             if stop_server():
                 render_info("Hub stopped.")
