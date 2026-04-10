@@ -285,6 +285,11 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=f"SQLite storage path (config default: {config.server.db_path}).",
     )
+    serve_parser.add_argument(
+        "--pid-file",
+        default=None,
+        help="Path to PID file (written and locked by the server process).",
+    )
 
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
@@ -305,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         case "serve":
             from fin_assist.agents import DefaultAgent, ShellAgent
             from fin_assist.credentials.store import CredentialStore
+            from fin_assist.hub.pidfile import acquire as acquire_pidfile
 
             host = args.host or config.server.host
             port = args.port or config.server.port
@@ -312,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
             log_path = Path(os.path.expanduser(config.server.log_path))
             credentials = CredentialStore()
             configure_logging(log_file=log_path)
+
+            if args.pid_file:
+                acquire_pidfile(Path(args.pid_file))
+
             console.print(f"[dim]Logging to {log_path}[/dim]")
             agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
             app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")

@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-09)**: Phases 1-8b complete. Manual testing of Chunk B found 3 bugs (now fixed) and led to removal of the regenerate feature. Resume manual testing from Chunk B (re-verify) and continue with Chunks C-D.
+**Current state (2026-04-09)**: Phases 1-8b complete. Manual testing found Chunk B bugs (fixed), led to regenerate removal, and uncovered a PID file reliability issue (fixed with server-side locking). Resume manual testing from Chunk A6/B (re-verify stop + approval) and continue with Chunks C-D.
 
 ---
 
@@ -635,6 +635,42 @@ Total: 303 tests, all passing
 
 ---
 
+## Reliable Server Lifecycle: PID File Locking (2026-04-09)
+
+**Status**: Complete
+
+### Problem
+
+`fin stop` was unreliable — it would report "no running hub found" even when the hub was clearly running. Root cause: the CLI spawner wrote the PID file, then `stop_server` sent SIGTERM and immediately deleted the PID file (wait_timeout=0) without confirming the process actually died. The server itself had no awareness of the PID file. This caused orphaned processes that couldn't be stopped.
+
+### Solution: Server-Owned PID File with fcntl Locking
+
+Modeled after daemonocle and PEP 3143 best practices:
+
+1. **Server writes and locks**: The hub server (`fin serve --pid-file <path>`) writes its PID and acquires an exclusive `fcntl.flock()` for its entire lifetime
+2. **Server cleans up**: `atexit` handler + custom SIGTERM handler (calls `sys.exit(0)` to trigger atexit) removes the PID file on shutdown
+3. **Lock-based stale detection**: If the server crashes (SIGKILL), the OS releases the lock. Clients detect stale files by probing with a non-blocking `flock`
+4. **Stop = SIGTERM + wait + SIGKILL**: `stop_server` sends SIGTERM, waits up to 10s for the process to exit, escalates to SIGKILL if needed. Only cleans up PID file as a safety net after confirmed death
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/hub/pidfile.py` | **New** — `acquire()`, `release()`, `is_locked()` with fcntl locking |
+| `src/fin_assist/cli/server.py` | Refactored: removed `_write_pid`/`_remove_pid`, `_spawn_serve` passes `--pid-file` to server, `stop_server` waits+escalates |
+| `src/fin_assist/cli/main.py` | Added `--pid-file` arg to serve command, server calls `acquire_pidfile()` before `uvicorn.run()` |
+| `pyproject.toml` | Added `fin` entry point alias |
+| `tests/test_hub/test_pidfile.py` | **New** — 11 tests for acquire/release/is_locked |
+| `tests/test_cli/test_server.py` | Updated: removed `_write_pid`/`_remove_pid` tests, added SIGKILL escalation test |
+
+### Test Summary
+
+```text
+Total: 381 tests, all passing (was 371; +10 new pidfile tests)
+```
+
+---
+
 ## Manual Testing Bug Fixes + Regenerate Removal (2026-04-09)
 
 **Status**: Complete
@@ -743,7 +779,7 @@ Total: 368 tests, all passing
 
 ### Goals
 
-1. **Re-verify Chunk B** — confirm Ctrl+C/D and markup fixes work in practice
+1. **Re-verify Chunks A-B** — confirm `fin stop` now works reliably, Ctrl+C/D and markup fixes work
 2. **Manual testing Chunks C-D** — chat loop and FinPrompt completions/history
 3. **Begin Phase 9** (Streaming + Integration Tests) once manual testing passes
 

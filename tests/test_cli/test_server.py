@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,9 +14,7 @@ from fin_assist.cli.server import (
     _check_health,
     _pid_is_running,
     _read_pid,
-    _remove_pid,
     _wait_for_health,
-    _write_pid,
     ensure_server_running,
     stop_server,
 )
@@ -138,14 +137,14 @@ class TestWaitForHealth:
 
 
 # ---------------------------------------------------------------------------
-# PID file helpers
+# PID file helpers (client-side)
 # ---------------------------------------------------------------------------
 
 
 class TestPidHelpers:
-    def test_write_and_read_pid(self, tmp_path):
+    def test_read_pid_returns_value(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(12345, pid_file)
+        pid_file.write_text("12345\n")
         assert _read_pid(pid_file) == 12345
 
     def test_read_pid_returns_none_when_missing(self, tmp_path):
@@ -157,16 +156,6 @@ class TestPidHelpers:
         pid_file.write_text("not-a-number")
         assert _read_pid(pid_file) is None
 
-    def test_remove_pid_deletes_file(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        pid_file.write_text("99")
-        _remove_pid(pid_file)
-        assert not pid_file.exists()
-
-    def test_remove_pid_is_idempotent_when_missing(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        _remove_pid(pid_file)  # should not raise
-
     def test_pid_is_running_true_for_current_process(self):
         import os
 
@@ -175,12 +164,6 @@ class TestPidHelpers:
     def test_pid_is_running_false_for_nonexistent_pid(self):
         # PID 0 is always invalid for kill(); PID max is unreachable in practice
         assert _pid_is_running(99999999) is False
-
-    def test_write_pid_creates_parent_dirs(self, tmp_path):
-        pid_file = tmp_path / "nested" / "dir" / "hub.pid"
-        _write_pid(42, pid_file)
-        assert pid_file.exists()
-        assert _read_pid(pid_file) == 42
 
 
 # ---------------------------------------------------------------------------
@@ -195,20 +178,10 @@ class TestStopServer:
 
     def test_returns_false_when_process_not_running(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(99999999, pid_file)
+        pid_file.write_text("99999999\n")
         result = stop_server(pid_file)
         assert result is False
-        assert not pid_file.exists()
-
-    def test_removes_pid_file_after_stop(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        import os
-
-        _write_pid(os.getpid(), pid_file)
-
-        with patch("fin_assist.cli.server.os.kill"):
-            stop_server(pid_file)
-
+        # Stale file should be cleaned up
         assert not pid_file.exists()
 
     def test_sends_sigterm_to_process(self, tmp_path):
@@ -217,7 +190,7 @@ class TestStopServer:
         import signal
 
         target_pid = os.getpid()
-        _write_pid(target_pid, pid_file)
+        pid_file.write_text(f"{target_pid}\n")
 
         sigterm_calls: list[tuple[int, int]] = []
         real_kill = os.kill
@@ -228,19 +201,62 @@ class TestStopServer:
             else:
                 real_kill(pid, sig)
 
-        with patch("fin_assist.cli.server.os.kill", side_effect=selective_kill):
-            stop_server(pid_file)
+        with (
+            patch("fin_assist.cli.server.os.kill", side_effect=selective_kill),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            stop_server(pid_file, timeout=1.0)
 
         assert sigterm_calls == [(target_pid, signal.SIGTERM)]
 
+    def test_waits_for_process_to_exit(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        # Simulate process exiting after 2 checks
+        with (
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=5.0)
+
+        assert result is True
+
+    def test_escalates_to_sigkill_on_timeout(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        kill_calls: list[tuple[int, int]] = []
+
+        def track_kill(pid: int, sig: int) -> None:
+            kill_calls.append((pid, sig))
+
+        # Process never exits from SIGTERM
+        with (
+            patch("fin_assist.cli.server.os.kill", side_effect=track_kill),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=0.0)
+
+        assert result is True
+        # Should have sent SIGTERM then SIGKILL
+        signals_sent = [sig for _, sig in kill_calls]
+        assert signal.SIGTERM in signals_sent
+        assert signal.SIGKILL in signals_sent
+
     def test_returns_true_on_successful_stop(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        import os
+        pid_file.write_text("12345\n")
 
-        _write_pid(os.getpid(), pid_file)
-
-        with patch("fin_assist.cli.server.os.kill"):
-            result = stop_server(pid_file)
+        with (
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=5.0)
 
         assert result is True
 
@@ -287,7 +303,7 @@ class TestEnsureServerRunning:
 
     async def test_cleans_up_stale_pid_before_spawn(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(99999999, pid_file)  # stale — process not running
+        pid_file.write_text("99999999\n")  # stale — process not running
 
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
