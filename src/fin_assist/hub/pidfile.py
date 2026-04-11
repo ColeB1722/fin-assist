@@ -41,7 +41,7 @@ def acquire(pid_file: Path) -> None:
 
     pid_file.parent.mkdir(parents=True, exist_ok=True)
 
-    fd = os.open(str(pid_file), os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o644)
+    fd = os.open(str(pid_file), os.O_CREAT | os.O_RDWR, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -52,6 +52,8 @@ def acquire(pid_file: Path) -> None:
         )
         sys.exit(1)
 
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
     os.write(fd, f"{os.getpid()}\n".encode())
     os.fsync(fd)
 

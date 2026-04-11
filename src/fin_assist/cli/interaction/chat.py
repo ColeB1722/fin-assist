@@ -93,7 +93,8 @@ async def run_chat_loop(
                                 session = json.loads(session_file.read_text())
                                 sid = session.get("session_id", "unknown")
                                 cid = session.get("context_id", "unknown")
-                                console.print(f"  {sid}  (context: {cid[:8]}...)")
+                                cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid
+                                console.print(f"  {sid}  (context: {cid_display})")
                             console.print(
                                 f"[dim]Resume with: fin talk {agent_name} --resume <slug>[/dim]"
                             )

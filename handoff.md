@@ -891,7 +891,7 @@ Today, if an agent returned `input-required`, our poll loop would spin forever u
 
 ### A2A Task State Machine
 
-```
+```text
 submitted → working → completed
                     → failed
                     → canceled

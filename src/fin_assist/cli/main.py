@@ -159,7 +159,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             else:
                 render_info("Cancelled")
                 return 0
-    except (ServerStartupError, Exception):
+    except Exception:
         return 1
 
 
@@ -208,7 +208,7 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 fp,
                 initial_message=initial_message,
             )
-    except (ServerStartupError, Exception):
+    except Exception:
         return 1
 
     if final_context_id and not args.resume:
@@ -224,7 +224,7 @@ async def _agents_command(args: argparse.Namespace, config, config_path: Path | 
     try:
         async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
-    except (ServerStartupError, Exception):
+    except Exception:
         return 1
 
     render_agents_list(agents)

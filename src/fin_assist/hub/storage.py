@@ -155,6 +155,6 @@ class SQLiteStorage(Storage[list[ModelMessage]]):
             INSERT INTO contexts (context_id, data) VALUES (?, ?)
             ON CONFLICT(context_id) DO UPDATE SET data = excluded.data
             """,
-            (context_id, _context_ta.dump_json(context)),
+            (context_id, _context_ta.dump_json(context).decode()),
         )
         conn.commit()

@@ -9,6 +9,8 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
+from fin_assist.paths import CREDENTIALS_FILE
+
 if TYPE_CHECKING:
     from fin_assist.cli.client import DiscoveredAgent
 
@@ -93,7 +95,7 @@ def render_auth_required(provider_info: str) -> None:
         if name:
             lines.append(f"  export {name.upper()}_API_KEY=<your-key>")
     lines.append("")
-    lines.append("[dim]Or write credentials to ~/.local/share/fin/credentials.json[/dim]")
+    lines.append(f"[dim]Or write credentials to {CREDENTIALS_FILE}[/dim]")
 
     text = Text.from_markup("\n".join(lines))
     panel = Panel(text, border_style="yellow", expand=False)

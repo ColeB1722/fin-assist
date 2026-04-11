@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fcntl
 import os
-import signal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -115,6 +114,6 @@ class TestIsLocked:
     def test_returns_false_for_stale_file(self, tmp_path: Path):
         """A PID file without a lock is stale (e.g. after SIGKILL)."""
         pid_file = tmp_path / "hub.pid"
-        pid_file.write_text("99999\n")
+        pid_file.write_text("0\n")
 
         assert pidfile.is_locked(pid_file) is False

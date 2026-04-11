@@ -94,7 +94,7 @@ class TestConfigureLogging:
         )
         assert rfh_count == 1
 
-    def test_log_file_is_required_parameter(self, tmp_path):
+    def test_log_file_is_required_parameter(self):
         """Ensure log_file must be provided (no silent default)."""
         # configure_logging requires an explicit log_file argument.
         # This verifies the signature change — callers must always pass the

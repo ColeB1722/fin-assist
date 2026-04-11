@@ -195,16 +195,15 @@ def _spawn_serve(
     if config_path is not None:
         env["FIN_CONFIG_PATH"] = str(config_path.resolve())
 
-    stderr_file = open(log_path, "a", buffering=1)  # noqa: SIM115
-    proc = subprocess.Popen(
-        args,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=stderr_file,
-        env=env,
-        start_new_session=True,
-    )
-    stderr_file.close()
+    with open(log_path, "a", buffering=1) as stderr_file:  # noqa: SIM115
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+            env=env,
+            start_new_session=True,
+        )
 
     return proc
 
@@ -405,7 +404,7 @@ async def check_status(
 
     healthy = await _check_health(base_url)
     pid = _read_pid(pid_file)
-    pid_file_exists = pid is not None
+    pid_file_exists = pid_file.exists()
 
     # If PID file is missing but server is healthy, try to find the PID.
     if pid is None and healthy:

@@ -27,7 +27,7 @@ class TestRunChatLoop:
         send_fn.assert_not_called()
         assert ctx is None
 
-    async def test_exits_on_quit_command(self):
+    async def test_quit_is_unrecognized_command(self):
         send_fn = AsyncMock()
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["/quit", "/exit"])

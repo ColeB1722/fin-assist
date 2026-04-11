@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from fin_assist.config.schema import Config
     from fin_assist.credentials.store import CredentialStore
+    from fin_assist.llm.model_registry import ProviderRegistry
 
 
 class MissingCredentialsError(Exception):
@@ -197,7 +198,7 @@ class BaseAgent[T](ABC):
     # Shared model-building utilities
     # ------------------------------------------------------------------
 
-    def _get_registry(self):
+    def _get_registry(self) -> ProviderRegistry:
         if self._registry is None:
             from fin_assist.llm.model_registry import ProviderRegistry
 
