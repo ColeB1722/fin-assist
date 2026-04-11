@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -108,6 +109,39 @@ def _pid_is_running(pid: int) -> bool:
         return False
 
 
+def _find_server_pid(port: int) -> int | None:
+    """Find a running ``fin-assist serve`` process listening on *port*.
+
+    Scans ``/proc`` for a process whose command line matches the expected
+    pattern.  Used as a fallback when the PID file is missing but the
+    server is still running (orphaned server).
+
+    Returns the PID if found, None otherwise.
+    """
+    target = "fin_assist serve"
+    port_arg = f"--port {port}"
+    my_pid = os.getpid()
+
+    proc_path = Path("/proc")
+    if not proc_path.is_dir():
+        return None
+
+    for entry in proc_path.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == my_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().decode().replace("\x00", " ")
+        except (OSError, PermissionError):
+            continue
+        if target in cmdline and port_arg in cmdline:
+            return pid
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Spawn
 # ---------------------------------------------------------------------------
@@ -165,6 +199,7 @@ def _spawn_serve(
     stderr_file = open(log_path, "a", buffering=1)  # noqa: SIM115
     proc = subprocess.Popen(
         args,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=stderr_file,
         env=env,
@@ -267,20 +302,30 @@ async def ensure_server_running(
 def stop_server(
     pid_file: Path = PID_FILE,
     timeout: float = _STOP_TIMEOUT,
+    port: int | None = None,
 ) -> bool:
     """Stop the hub server by sending SIGTERM and waiting for exit.
 
     The server process cleans up its own PID file via ``atexit``.
     If it doesn't exit within *timeout* seconds, SIGKILL is sent.
 
+    When the PID file is missing (orphaned server), falls back to
+    scanning ``/proc`` for a ``fin-assist serve`` process on *port*.
+
     Args:
         pid_file: Path to the PID file.
         timeout: Seconds to wait for the process to exit after SIGTERM.
+        port: Server port, used for fallback PID discovery.
 
     Returns True if the server was stopped, False if no PID file was found
     or the process was not running.
     """
     pid = _read_pid(pid_file)
+
+    if pid is None and port is not None:
+        # Fallback: PID file missing but server may still be running.
+        pid = _find_server_pid(port)
+
     if pid is None:
         return False
 
@@ -319,3 +364,61 @@ def stop_server(
     time.sleep(0.2)
     pid_file.unlink(missing_ok=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# check_status
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HubStatus:
+    """Snapshot of the hub server's state."""
+
+    healthy: bool
+    """True if the server responded to a health check."""
+    base_url: str
+    """The URL that was checked."""
+    pid: int | None = None
+    """Server PID, if known (from PID file or process scan)."""
+    pid_file_exists: bool = False
+    """True if the PID file is present on disk."""
+
+
+async def check_status(
+    config: Config | None = None,
+    pid_file: Path = PID_FILE,
+) -> HubStatus:
+    """Check the hub server's current status.
+
+    Returns a :class:`HubStatus` with health, PID, and PID file info.
+
+    Args:
+        config: Config object. If None, loads from default location.
+        pid_file: Path to the PID file.
+    """
+    if config is None:
+        config, _ = load_config()
+
+    host = config.server.host
+    port = config.server.port
+    base_url = f"http://{host}:{port}"
+
+    healthy = await _check_health(base_url)
+    pid = _read_pid(pid_file)
+    pid_file_exists = pid is not None
+
+    # If PID file is missing but server is healthy, try to find the PID.
+    if pid is None and healthy:
+        pid = _find_server_pid(port)
+
+    # If PID is stale, clear it.
+    if pid is not None and not _pid_is_running(pid):
+        pid = None
+
+    return HubStatus(
+        healthy=healthy,
+        base_url=base_url,
+        pid=pid,
+        pid_file_exists=pid_file_exists,
+    )

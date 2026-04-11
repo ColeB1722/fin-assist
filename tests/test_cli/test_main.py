@@ -497,6 +497,54 @@ class TestSessionIdFormat:
 # ---------------------------------------------------------------------------
 
 
+class TestStartCommand:
+    def test_start_calls_ensure_server_running(self):
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://127.0.0.1:4096",
+            ) as mock_ensure,
+            patch("fin_assist.cli.main.render_info"),
+        ):
+            result = _run_main("start")
+
+        mock_ensure.assert_called_once()
+        assert result == 0
+
+    def test_start_renders_info_with_url(self):
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://127.0.0.1:4096",
+            ),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            _run_main("start")
+
+        mock_info.assert_called_once_with("Hub running at http://127.0.0.1:4096")
+
+    def test_start_returns_1_on_startup_error(self):
+        from fin_assist.cli.server import ServerStartupError
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                side_effect=ServerStartupError("failed"),
+            ),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("start")
+
+        assert result == 1
+        mock_error.assert_called_once()
+
+
 class TestStopCommand:
     def test_stop_renders_info_and_returns_0_when_server_stopped(self):
         with (
@@ -526,6 +574,71 @@ class TestStopCommand:
             _run_main("stop")
 
         mock_stop.assert_called_once()
+
+    def test_stop_passes_port_to_stop_server(self):
+        with (
+            patch("fin_assist.cli.main.stop_server", return_value=True) as mock_stop,
+            patch("fin_assist.cli.main.render_info"),
+        ):
+            _run_main("stop")
+
+        _, kwargs = mock_stop.call_args
+        assert "port" in kwargs
+
+
+# ---------------------------------------------------------------------------
+# status command
+# ---------------------------------------------------------------------------
+
+
+class TestStatusCommand:
+    def test_status_returns_0_when_healthy(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=True, base_url="http://127.0.0.1:4096", pid=12345, pid_file_exists=True
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "running" in info_text.lower() or "12345" in info_text
+
+    def test_status_returns_0_when_not_running(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=False, base_url="http://127.0.0.1:4096", pid=None, pid_file_exists=False
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "not running" in info_text.lower()
+
+    def test_status_warns_about_orphaned_server(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=True, base_url="http://127.0.0.1:4096", pid=12345, pid_file_exists=False
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "orphan" in info_text.lower() or "PID file missing" in info_text
 
 
 # ---------------------------------------------------------------------------

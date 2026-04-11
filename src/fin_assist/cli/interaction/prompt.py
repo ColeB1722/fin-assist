@@ -7,7 +7,6 @@ from pathlib import Path
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import FuzzyCompleter, WordCompleter
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
 HISTORY_PATH = Path("~/.local/share/fin/history").expanduser()
@@ -38,24 +37,10 @@ class FinPrompt:
         word_completer = WordCompleter(words, ignore_case=True)
         return FuzzyCompleter(word_completer)
 
-    def _build_key_bindings(self) -> KeyBindings:
-        kb = KeyBindings()
-
-        @kb.add("c-c", eager=True)
-        def _interrupt(event):
-            raise KeyboardInterrupt()
-
-        @kb.add("c-d", eager=True)
-        def _eof(event):
-            raise EOFError()
-
-        return kb
-
     def _build_session(self) -> PromptSession[str]:
         return PromptSession(
             completer=self._build_completer(),
             history=FileHistory(self.history_path),
-            key_bindings=self._build_key_bindings(),
             style=Style.from_dict({"": "#ansibrightgreen"}),
         )
 

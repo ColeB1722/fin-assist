@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from fin_assist.cli.interaction.approve import (
     ApprovalAction,
+    _build_key_bindings,
     execute_command,
     run_approve_widget,
 )
@@ -25,89 +26,86 @@ class TestApprovalAction:
 
 
 class TestRunApproveWidget:
-    async def test_execute_returns_execute_action(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
+    """Tests for the choice()-based approval widget."""
 
-        action = await run_approve_widget("ls -la", prompt=mock_fp)
+    async def test_execute_returns_execute_action(self):
+        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
+            mock_cls.return_value = mock_instance
+
+            action = await run_approve_widget("ls -la")
 
         assert action == ApprovalAction.EXECUTE
 
     async def test_cancel_returns_cancel_action(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="cancel")
+        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.prompt_async = _async_return(ApprovalAction.CANCEL)
+            mock_cls.return_value = mock_instance
 
-        action = await run_approve_widget("ls -la", prompt=mock_fp)
+            action = await run_approve_widget("ls -la")
 
         assert action == ApprovalAction.CANCEL
-
-    async def test_unknown_input_loops(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["unknown", "execute"])
-
-        action = await run_approve_widget("ls", prompt=mock_fp)
-
-        assert action == ApprovalAction.EXECUTE
-        assert mock_fp.ask.call_count == 2
-
-    async def test_empty_input_loops(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["", "execute"])
-
-        action = await run_approve_widget("ls", prompt=mock_fp)
-
-        assert action == ApprovalAction.EXECUTE
-        assert mock_fp.ask.call_count == 2
 
     async def test_ctrl_c_returns_cancel(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.prompt_async = _async_raise(KeyboardInterrupt)
+            mock_cls.return_value = mock_instance
 
-        action = await run_approve_widget("ls", prompt=mock_fp)
-
-        assert action == ApprovalAction.CANCEL
-
-    async def test_ctrl_d_returns_cancel(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=EOFError)
-
-        action = await run_approve_widget("ls", prompt=mock_fp)
-
-        assert action == ApprovalAction.CANCEL
-
-    async def test_prompt_text_has_no_rich_markup(self):
-        """Prompt text passed to FinPrompt.ask() must not contain Rich markup tags
-        because prompt_toolkit doesn't render them — they'd appear as literal text."""
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
-
-        await run_approve_widget("ls", prompt=mock_fp)
-
-        prompt_text = mock_fp.ask.call_args[0][0]
-        assert "[bold]" not in prompt_text
-        assert "[/bold]" not in prompt_text
-
-    async def test_prompt_shows_execute_and_cancel_options(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
-
-        await run_approve_widget("ls", prompt=mock_fp)
-
-        prompt_text = mock_fp.ask.call_args[0][0]
-        assert "execute" in prompt_text
-        assert "cancel" in prompt_text
-
-    async def test_creates_finprompt_if_not_provided(self):
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="execute")
-
-        with patch(
-            "fin_assist.cli.interaction.approve.FinPrompt", return_value=mock_fp
-        ) as mock_init:
             action = await run_approve_widget("ls")
-            mock_init.assert_called_once()
 
-        assert action == ApprovalAction.EXECUTE
+        assert action == ApprovalAction.CANCEL
+
+    async def test_choice_input_created_with_both_options(self):
+        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
+            mock_cls.return_value = mock_instance
+
+            await run_approve_widget("ls")
+
+            kwargs = mock_cls.call_args.kwargs
+            values = [v for v, _label in kwargs["options"]]
+            assert ApprovalAction.EXECUTE in values
+            assert ApprovalAction.CANCEL in values
+
+    async def test_default_is_execute(self):
+        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
+            mock_instance = MagicMock()
+            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
+            mock_cls.return_value = mock_instance
+
+            await run_approve_widget("ls")
+
+            kwargs = mock_cls.call_args.kwargs
+            assert kwargs["default"] == ApprovalAction.EXECUTE
+
+    async def test_no_prompt_parameter(self):
+        """run_approve_widget no longer accepts a prompt parameter."""
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            await run_approve_widget("ls", prompt=MagicMock())  # type: ignore[call-arg]
+
+
+class TestBuildKeyBindings:
+    """Tests for the extra key bindings (Escape, Ctrl+D)."""
+
+    def test_returns_key_bindings(self):
+        from prompt_toolkit.key_binding import KeyBindings
+
+        kb = _build_key_bindings()
+        assert isinstance(kb, KeyBindings)
+
+    def test_has_escape_binding(self):
+        kb = _build_key_bindings()
+        keys = [b.keys for b in kb.bindings]
+        assert ("escape",) in keys
+
+    def test_has_ctrl_d_binding(self):
+        kb = _build_key_bindings()
+        keys = [b.keys for b in kb.bindings]
+        assert ("c-d",) in keys
 
 
 class TestExecuteCommand:
@@ -139,3 +137,26 @@ class TestExecuteCommand:
             execute_command("echo hello")
 
         mock_run.assert_called_once_with("echo hello", shell=True)
+
+
+# ---------------------------------------------------------------------------
+# Test helpers
+# ---------------------------------------------------------------------------
+
+
+def _async_return(value):
+    """Create an async callable that returns a value."""
+
+    async def _inner():
+        return value
+
+    return _inner
+
+
+def _async_raise(exc_type):
+    """Create an async callable that raises an exception."""
+
+    async def _inner():
+        raise exc_type()
+
+    return _inner

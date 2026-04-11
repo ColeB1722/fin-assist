@@ -10,11 +10,14 @@ import httpx
 import pytest
 
 from fin_assist.cli.server import (
+    HubStatus,
     ServerStartupError,
     _check_health,
+    _find_server_pid,
     _pid_is_running,
     _read_pid,
     _wait_for_health,
+    check_status,
     ensure_server_running,
     stop_server,
 )
@@ -167,6 +170,57 @@ class TestPidHelpers:
 
 
 # ---------------------------------------------------------------------------
+# _find_server_pid
+# ---------------------------------------------------------------------------
+
+
+class TestFindServerPid:
+    def test_returns_none_when_no_proc(self):
+        with patch("fin_assist.cli.server.Path") as mock_path_cls:
+            mock_proc = MagicMock()
+            mock_proc.is_dir.return_value = False
+            mock_path_cls.return_value = mock_proc
+            assert _find_server_pid(4096) is None
+
+    def test_returns_pid_when_matching_process_found(self, tmp_path):
+        # Create a fake /proc/<pid>/cmdline
+        proc_dir = tmp_path / "42"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00fin_assist\x00serve\x00--port\x004096"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) == 42
+
+    def test_returns_none_when_no_matching_process(self, tmp_path):
+        proc_dir = tmp_path / "42"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00some_other_app\x00serve"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) is None
+
+    def test_skips_own_pid(self, tmp_path):
+        proc_dir = tmp_path / "999"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00fin_assist\x00serve\x00--port\x004096"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) is None
+
+
+# ---------------------------------------------------------------------------
 # stop_server
 # ---------------------------------------------------------------------------
 
@@ -259,6 +313,24 @@ class TestStopServer:
             result = stop_server(pid_file, timeout=5.0)
 
         assert result is True
+
+    def test_falls_back_to_find_server_pid_when_no_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        # No PID file exists — but _find_server_pid discovers the orphan.
+        with (
+            patch("fin_assist.cli.server._find_server_pid", return_value=12345),
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, port=4096)
+
+        assert result is True
+
+    def test_no_fallback_without_port(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        # No PID file and no port — cannot fall back.
+        assert stop_server(pid_file) is False
 
 
 # ---------------------------------------------------------------------------
@@ -403,3 +475,79 @@ class TestEnsureServerRunning:
             result = await ensure_server_running(config)
 
         assert result == "http://localhost:8080"
+
+
+# ---------------------------------------------------------------------------
+# check_status
+# ---------------------------------------------------------------------------
+
+
+class TestCheckStatus:
+    async def test_healthy_server_with_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=True),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is True
+        assert status.pid == 12345
+        assert status.pid_file_exists is True
+        assert status.base_url == "http://127.0.0.1:4096"
+
+    async def test_healthy_server_without_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=True),
+            patch("fin_assist.cli.server._find_server_pid", return_value=99999),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is True
+        assert status.pid == 99999
+        assert status.pid_file_exists is False
+
+    async def test_not_running(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with patch("fin_assist.cli.server._check_health", return_value=False):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is False
+        assert status.pid is None
+        assert status.pid_file_exists is False
+
+    async def test_stale_pid_cleared(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=False),
+            patch("fin_assist.cli.server._pid_is_running", return_value=False),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is False
+        assert status.pid is None
+        assert status.pid_file_exists is True  # file existed when read

@@ -32,7 +32,12 @@ from fin_assist.cli.display import (
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 from fin_assist.cli.interaction.chat import run_chat_loop
 from fin_assist.cli.interaction.prompt import FinPrompt
-from fin_assist.cli.server import ServerStartupError, ensure_server_running, stop_server
+from fin_assist.cli.server import (
+    ServerStartupError,
+    check_status,
+    ensure_server_running,
+    stop_server,
+)
 from fin_assist.config.loader import load_config
 from fin_assist.hub.app import create_hub_app
 from fin_assist.hub.logging import configure_logging
@@ -131,8 +136,6 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             if discovered is None:
                 return 1
 
-            fp = FinPrompt(agents=[a.name for a in agents])
-
             prompt = " ".join(args.prompt)
             result = await client.run_agent(args.agent, prompt)
 
@@ -151,7 +154,6 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             action = await run_approve_widget(
                 command=result.output,
                 warnings=result.warnings,
-                prompt=fp,
             )
 
             if action == ApprovalAction.EXECUTE:
@@ -266,7 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Resume a saved session.",
     )
 
+    subparsers.add_parser("start", help="Start the agent hub server in the background.")
     subparsers.add_parser("stop", help="Stop the running agent hub server.")
+    subparsers.add_parser("status", help="Check if the agent hub server is running.")
 
     serve_parser = subparsers.add_parser("serve", help="Start the agent hub server.")
     serve_parser.add_argument(
@@ -300,12 +304,31 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_do_command(args, config, config_path))
         case "talk":
             return asyncio.run(_talk_command(args, config, config_path))
+        case "start":
+            try:
+                base_url = asyncio.run(ensure_server_running(config, config_path))
+                render_info(f"Hub running at {base_url}")
+                return 0
+            except ServerStartupError as e:
+                render_error(str(e))
+                return 1
         case "stop":
-            if stop_server():
+            if stop_server(port=config.server.port):
                 render_info("Hub stopped.")
             else:
                 render_error("No running hub found (no PID file or process already stopped).")
                 return 1
+            return 0
+        case "status":
+            status = asyncio.run(check_status(config))
+            if status.healthy:
+                pid_info = f", PID {status.pid}" if status.pid else ""
+                note = ""
+                if not status.pid_file_exists and status.pid:
+                    note = " [yellow](PID file missing — orphaned server)[/yellow]"
+                render_info(f"Hub running at {status.base_url}{pid_info}{note}")
+            else:
+                render_info("Hub is not running.")
             return 0
         case "serve":
             from fin_assist.agents import DefaultAgent, ShellAgent
