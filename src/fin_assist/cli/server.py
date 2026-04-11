@@ -16,13 +16,12 @@ import httpx
 import rich.console
 
 from fin_assist.config.loader import load_config
+from fin_assist.paths import PID_FILE
 
 if TYPE_CHECKING:
     from fin_assist.config.schema import Config
 
 console = rich.console.Console()
-
-PID_FILE = Path("~/.local/share/fin/hub.pid").expanduser()
 
 # Default timeout (seconds) to wait for the server to exit after SIGTERM.
 _STOP_TIMEOUT: float = 10.0

@@ -5,11 +5,14 @@ import os
 import stat
 from contextlib import suppress
 from datetime import UTC, datetime
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import keyring
 
-CREDENTIALS_FILE = Path("~/.local/share/fin/credentials.json").expanduser()
+from fin_assist.paths import CREDENTIALS_FILE
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class CredentialStore:

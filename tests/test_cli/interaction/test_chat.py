@@ -30,19 +30,20 @@ class TestRunChatLoop:
     async def test_exits_on_quit_command(self):
         send_fn = AsyncMock()
         mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="/quit")
+        mock_fp.ask = AsyncMock(side_effect=["/quit", "/exit"])
 
-        ctx = await run_chat_loop(send_fn, "default", prompt=mock_fp)
+        from io import StringIO
 
-        send_fn.assert_not_called()
+        from rich.console import Console
 
-    async def test_exits_on_q_shortcut(self):
-        send_fn = AsyncMock()
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(return_value="/q")
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
 
-        ctx = await run_chat_loop(send_fn, "default", prompt=mock_fp)
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp)
 
+        output = buf.getvalue()
+        assert "Unknown command" in output
         send_fn.assert_not_called()
 
     async def test_sends_message_to_agent(self):
@@ -126,6 +127,77 @@ class TestRunChatLoop:
 
         output = buf.getvalue()
         assert "Unknown command" in output
+        send_fn.assert_not_called()
+
+    async def test_help_shows_available_commands(self):
+        send_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/help", "/exit"])
+
+        from io import StringIO
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp)
+
+        output = buf.getvalue()
+        assert "/exit" in output
+        assert "/help" in output
+        assert "/sessions" in output
+        send_fn.assert_not_called()
+
+    async def test_sessions_lists_saved_sessions(self, tmp_path):
+        send_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/sessions", "/exit"])
+
+        # Create a fake session file
+        agent_dir = tmp_path / "default"
+        agent_dir.mkdir()
+        import json
+
+        session_data = {"session_id": "cool-slug", "context_id": "ctx-abc12345"}
+        (agent_dir / "cool-slug.json").write_text(json.dumps(session_data))
+
+        from io import StringIO
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.chat.SESSIONS_DIR", tmp_path),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp)
+
+        output = buf.getvalue()
+        assert "cool-slug" in output
+        assert "ctx-abc1" in output
+        send_fn.assert_not_called()
+
+    async def test_sessions_shows_no_sessions_message(self, tmp_path):
+        send_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/sessions", "/exit"])
+
+        from io import StringIO
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.chat.SESSIONS_DIR", tmp_path),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp)
+
+        output = buf.getvalue()
+        assert "No saved sessions" in output
         send_fn.assert_not_called()
 
     async def test_creates_finprompt_if_not_provided(self):

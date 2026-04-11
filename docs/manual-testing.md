@@ -1,52 +1,61 @@
-# Manual Testing Checklist — Phase 8b (CLI REPL Mode)
+# Manual Testing Checklist
 
-**When to run**: After implementing Phase 8b, before Phase 9 (streaming).
+**When to run**: After changes to CLI commands, server lifecycle, approval widget, or chat loop.
 
-**Purpose**: Verify FinPrompt integration end-to-end without automated tests. Designed for parallel testing + fixing.
+**Purpose**: Verify CLI integration end-to-end without automated tests. Designed for parallel testing + fixing.
+
+> All commands shown as `fin` can also be invoked as `fin-assist`.
 
 ---
 
 ## Chunk A — Basic CLI and Server
 
-*No FinPrompt interactivity yet. Tests the foundation: server lifecycle and basic agent dispatch.*
+*Tests the foundation: server lifecycle, start/stop/status, and basic agent dispatch.*
 
-> If this breaks, fix before touching FinPrompt.
+> If this breaks, fix before touching interactive features.
 
 | # | Test | Command | Expected |
 |---|------|---------|----------|
-| A1 | List agents | `fin-assist agents` | Auto-starts server, prints `shell` and `default` agent cards |
-| A2 | List agents (reuse) | `fin-assist agents` (while server still up) | No restart, same output |
-| A3 | Do shell one-shot | `fin-assist do shell list files` | Command output printed, no approval prompt |
-| A4 | Do default one-shot | `fin-assist do default "hello"` | Text response printed |
-| A5 | Stop server | `fin-assist stop` | "Hub stopped." printed |
-| A6 | Stop when down | `fin-assist stop` (already stopped) | Error message, exit code 1 |
+| A1 | List agents | `fin agents` | Auto-starts server, prints `shell` and `default` agent cards |
+| A2 | List agents (reuse) | `fin agents` (while server still up) | No restart, same output |
+| A3 | Do shell | `fin do shell list files` | Generated command in panel, then approval widget (Execute/Cancel) |
+| A4 | Do default one-shot | `fin do default "hello"` | Text response printed |
+| A5 | Start server | `fin start` | "Hub running at http://..." |
+| A6 | Start when running | `fin start` (already up) | Same message, no restart (idempotent) |
+| A7 | Status when running | `fin status` (server up) | "Hub running at http://..., PID ..." |
+| A8 | Status when stopped | `fin status` (server down) | "Hub is not running." |
+| A9 | Stop server | `fin stop` | "Hub stopped." printed |
+| A10 | Stop when down | `fin stop` (already stopped) | Error message, exit code 1 |
 
-**If A fails**: server startup, client connectivity, or agent dispatch broken — not FinPrompt.
+**If A fails**: server startup, client connectivity, or agent dispatch broken.
 
 ---
 
-## Chunk B — Approval Widget (`fin-assist do shell`)
+## Chunk B — Approval Widget (`fin do shell`)
 
-*Tests `run_approve_widget` via `fin-assist do shell` (requires approval).*
+*Tests the arrow-key selection widget via `fin do shell` (requires approval).*
+
+The approval widget uses `ChoiceInput` — arrow-key navigation between Execute/Cancel, Enter to confirm. No text input, no slash commands.
 
 > Run B after confirming A works.
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
-| B1 | Execute | Type `execute` | Command executes, exit code 0 |
-| B2 | Cancel | Type `cancel` | "Cancelled" info message, no execution |
-| B3 | Unknown input | Type `whoops` | Loops, prints valid options |
-| B4 | Empty input | Just press Enter | Loops, no action |
-| B5 | Ctrl+C | During approval prompt | Exits cleanly to shell |
-| B6 | Ctrl+D | During approval prompt | Exits cleanly to shell |
+| B1 | Execute (default) | Press Enter immediately | Command executes, exit code 0 (Execute is default selection) |
+| B2 | Execute (navigate) | Arrow to Execute, press Enter | Command executes, exit code 0 |
+| B3 | Cancel | Arrow to Cancel, press Enter | "Cancelled" info message, no execution |
+| B4 | Ctrl+C | During approval prompt | Cancels, exits cleanly to shell |
+| B5 | Ctrl+D | During approval prompt | Cancels, exits cleanly to shell |
+| B6 | Escape | During approval prompt | Cancels, exits cleanly to shell |
+| B7 | No text input | Observe widget | Only arrow-key selection shown; no text field, no slash completions |
 
-**If B fails**: `approve.py`, FinPrompt wiring, or `main.py` integration broken.
+**If B fails**: `approve.py` or `main.py` approval integration broken.
 
 ---
 
-## Chunk C — REPL Loop (`talk`)
+## Chunk C — REPL Loop (`fin talk <agent>`)
 
-*Tests the full `run_chat_loop` with FinPrompt.*
+*Tests the full `run_chat_loop` with FinPrompt. Start with `fin talk default`.*
 
 > Run C in parallel with B if A passes.
 
@@ -62,7 +71,7 @@
 | C8 | Ctrl+C | While typing input | Returns to prompt, no message sent |
 | C9 | Ctrl+D | While typing input | Chat exits cleanly |
 | C10 | Session file | After /exit | `~/.local/share/fin/sessions/<agent>/<slug>.json` exists |
-| C11 | Resume session | `fin-assist talk <agent> --resume <slug>` | Conversation continues from prior context |
+| C11 | Resume session | `fin talk <agent> --resume <slug>` | Conversation continues from prior context |
 
 **If C fails**: `chat.py`, FinPrompt, or session persistence broken.
 
@@ -94,9 +103,9 @@
 ## Running Order
 
 ```
-A1-A6  →  Chunk A (blocks everything if broken)
+A1-A10 →  Chunk A (blocks everything if broken)
           │
-          ├── B1-B6  →  Chunk B
+          ├── B1-B7  →  Chunk B
           │
           └── C1-C11 →  Chunk C  (run in parallel with B after A passes)
                        │
@@ -114,6 +123,7 @@ A1-A6  →  Chunk A (blocks everything if broken)
 ## Notes
 
 - Server auto-starts on first command (`do`, `talk`, `agents`) via `ensure_server_running`.
-- Use `fin-assist stop` between test sessions to ensure clean state.
+- Use `fin stop` between test sessions to ensure clean state. Use `fin status` to check.
+- If `fin stop` fails but the server is running, it falls back to `/proc` scanning to find the orphaned process.
 - Session IDs are coolname slugs (e.g., `swift-harbor`) — not UUIDs.
-- History file is at `~/.local/share/fin/history` (shared across `do` and `talk`).
+- History file is at `~/.local/share/fin/history` (used by `talk` sessions only).

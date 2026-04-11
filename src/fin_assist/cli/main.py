@@ -41,9 +41,7 @@ from fin_assist.cli.server import (
 from fin_assist.config.loader import load_config
 from fin_assist.hub.app import create_hub_app
 from fin_assist.hub.logging import configure_logging
-
-SESSIONS_DIR = Path("~/.local/share/fin/sessions").expanduser()
-
+from fin_assist.paths import SESSIONS_DIR
 
 # ---------------------------------------------------------------------------
 # Session helpers
@@ -202,7 +200,14 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
         async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
             fp = FinPrompt(agents=[a.name for a in agents])
-            final_context_id = await run_chat_loop(client.send_message, args.agent, context_id, fp)
+            initial_message = " ".join(args.message) if args.message else None
+            final_context_id = await run_chat_loop(
+                client.send_message,
+                args.agent,
+                context_id,
+                fp,
+                initial_message=initial_message,
+            )
     except (ServerStartupError, Exception):
         return 1
 
@@ -255,6 +260,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Start a multi-turn chat session with an agent.",
     )
     talk_parser.add_argument("agent", nargs="?", help="Name of the agent to use.")
+    talk_parser.add_argument(
+        "message",
+        nargs="*",
+        help="Optional initial message to send as the first turn.",
+    )
     talk_parser.add_argument(
         "--list",
         dest="list_sessions",

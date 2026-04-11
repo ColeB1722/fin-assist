@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 
 from fin_assist.cli.display import render_auth_required
-from fin_assist.cli.interaction.prompt import FinPrompt
+from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
+from fin_assist.paths import SESSIONS_DIR
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from fin_assist.cli.client import AgentResult
+    from fin_assist.cli.interaction.prompt import SlashCommand
 
 console = Console()
+
+_CMD_LOOKUP: dict[str, SlashCommand] = {cmd.name: cmd for cmd in SLASH_COMMANDS}
+
+
+def _print_help() -> None:
+    console.print("[bold]Available commands:[/bold]")
+    for cmd in SLASH_COMMANDS:
+        console.print(f"  {cmd.name}  — {cmd.description}")
 
 
 async def run_chat_loop(
@@ -22,6 +33,8 @@ async def run_chat_loop(
     agent_name: str,
     context_id: str | None = None,
     prompt: FinPrompt | None = None,
+    *,
+    initial_message: str | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -31,6 +44,8 @@ async def run_chat_loop(
         agent_name: Name of the agent to chat with.
         context_id: Optional context ID for resuming a conversation.
         prompt: Optional FinPrompt instance for input (created if not provided).
+        initial_message: Optional message to send as the first turn before
+                        entering the interactive prompt loop.
 
     Returns:
         The final context_id if the conversation had one.
@@ -41,24 +56,59 @@ async def run_chat_loop(
     console.print("[dim]Type /exit to end the conversation[/dim]\n")
 
     fp = prompt or FinPrompt()
+    pending_message = initial_message
 
     while True:
-        try:
-            user_input = (await fp.ask("> ")).strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\n[dim]Exiting chat[/dim]")
-            break
+        if pending_message is not None:
+            user_input = pending_message
+            pending_message = None
+            console.print(f"> {user_input}")
+        else:
+            try:
+                user_input = (await fp.ask("> ")).strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Exiting chat[/dim]")
+                break
 
         if not user_input:
             continue
 
-        if user_input.lower() in ("/exit", "/quit", "/q"):
-            console.print("[dim]Ending conversation[/dim]")
-            break
+        matched = _CMD_LOOKUP.get(user_input.lower())
+
+        if matched is not None:
+            match matched.name:
+                case "/exit":
+                    console.print("[dim]Ending conversation[/dim]")
+                    break
+                case "/help":
+                    _print_help()
+                    continue
+                case "/sessions":
+                    sessions_dir = SESSIONS_DIR / agent_name
+                    if sessions_dir.exists():
+                        files = list(sessions_dir.glob("*.json"))
+                        if files:
+                            console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
+                            for session_file in files:
+                                session = json.loads(session_file.read_text())
+                                sid = session.get("session_id", "unknown")
+                                cid = session.get("context_id", "unknown")
+                                console.print(f"  {sid}  (context: {cid[:8]}...)")
+                            console.print(
+                                f"[dim]Resume with: fin talk {agent_name} --resume <slug>[/dim]"
+                            )
+                        else:
+                            console.print(f"  No saved sessions for {agent_name}")
+                    else:
+                        console.print(f"  No saved sessions for {agent_name}")
+                    continue
+                case _:
+                    console.print(f"[yellow]Command {matched.name} is not yet implemented[/yellow]")
+                    continue
 
         if user_input.startswith("/"):
             console.print(f"[yellow]Unknown command: {user_input}[/yellow]")
-            console.print("Available: /exit")
+            console.print("Type /help for available commands")
             continue
 
         try:
