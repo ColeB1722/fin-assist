@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import signal
+import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,18 +16,39 @@ import httpx
 import rich.console
 
 from fin_assist.config.loader import load_config
+from fin_assist.paths import PID_FILE
 
 if TYPE_CHECKING:
     from fin_assist.config.schema import Config
 
 console = rich.console.Console()
 
-PID_FILE = Path("~/.local/share/fin/hub.pid").expanduser()
-LOG_FILE = Path("~/.local/share/fin/hub.log").expanduser()
+# Default timeout (seconds) to wait for the server to exit after SIGTERM.
+_STOP_TIMEOUT: float = 10.0
 
 
 class ServerStartupError(Exception):
     """Raised when the server fails to start."""
+
+
+def _read_log_tail(log_path: str, max_lines: int = 20) -> str:
+    """Read the last ``max_lines`` lines from the log file.
+
+    Returns an empty string if the file doesn't exist or is empty.
+    Used to surface the root cause when the server subprocess crashes
+    before becoming healthy.
+    """
+    try:
+        path = Path(log_path)
+        if not path.exists():
+            return ""
+        text = path.read_text().strip()
+        if not text:
+            return ""
+        lines = text.splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return ""
 
 
 async def _check_health(base_url: str) -> bool:
@@ -61,10 +84,9 @@ async def _wait_for_health(
         raise TimeoutError(f"Server did not become healthy within {timeout}s") from None
 
 
-def _write_pid(pid: int, pid_file: Path = PID_FILE) -> None:
-    """Write the server PID to the PID file."""
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(pid))
+# ---------------------------------------------------------------------------
+# PID file helpers (client-side — reading only)
+# ---------------------------------------------------------------------------
 
 
 def _read_pid(pid_file: Path = PID_FILE) -> int | None:
@@ -77,12 +99,6 @@ def _read_pid(pid_file: Path = PID_FILE) -> int | None:
         return None
 
 
-def _remove_pid(pid_file: Path = PID_FILE) -> None:
-    """Remove the PID file if it exists."""
-    with contextlib.suppress(OSError):
-        pid_file.unlink(missing_ok=True)
-
-
 def _pid_is_running(pid: int) -> bool:
     """Return True if a process with this PID is currently running."""
     try:
@@ -92,11 +108,73 @@ def _pid_is_running(pid: int) -> bool:
         return False
 
 
-async def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> asyncio.subprocess.Process:
-    """Spawn `fin-assist serve` as a background process and write its PID."""
+def _find_server_pid(port: int) -> int | None:
+    """Find a running ``fin-assist serve`` process listening on *port*.
+
+    Scans ``/proc`` for a process whose command line matches the expected
+    pattern.  Used as a fallback when the PID file is missing but the
+    server is still running (orphaned server).
+
+    Returns the PID if found, None otherwise.
+    """
+    target = "fin_assist serve"
+    port_arg = f"--port {port}"
+    my_pid = os.getpid()
+
+    proc_path = Path("/proc")
+    if not proc_path.is_dir():
+        return None
+
+    for entry in proc_path.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == my_pid:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().decode().replace("\x00", " ")
+        except (OSError, PermissionError):
+            continue
+        if target in cmdline and port_arg in cmdline:
+            return pid
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Spawn
+# ---------------------------------------------------------------------------
+
+
+def _spawn_serve(
+    config: Config,
+    pid_file: Path = PID_FILE,
+    config_path: Path | None = None,
+) -> subprocess.Popen[bytes]:
+    """Spawn ``fin-assist serve`` as a detached background process.
+
+    The server process itself writes and locks the PID file (via
+    ``hub/pidfile.py``).  This function only passes the path.
+
+    Uses ``subprocess.Popen`` (not ``asyncio.create_subprocess_exec``) so the
+    child process is not tracked by any asyncio transport.  When
+    ``asyncio.run()`` tears down the event loop it garbage-collects subprocess
+    transports and their ``BaseSubprocessTransport.close()`` method kills any
+    child that is still running — even with ``start_new_session=True``.
+    ``Popen`` has no such lifecycle coupling: the child lives independently
+    after ``Popen`` returns.
+
+    Args:
+        config: Resolved configuration.
+        pid_file: Path the server should write its PID to.
+        config_path: Resolved TOML config path.  When provided, set as
+            ``FIN_CONFIG_PATH`` in the child environment so the subprocess
+            loads the same file regardless of its working directory.
+    """
     db_path = os.path.expanduser(config.server.db_path)
     host = config.server.host
     port = config.server.port
+    log_path = os.path.expanduser(config.server.log_path)
 
     args = [
         sys.executable,
@@ -109,35 +187,47 @@ async def _spawn_serve(config: Config, pid_file: Path = PID_FILE) -> asyncio.sub
         str(port),
         "--db",
         db_path,
+        "--pid-file",
+        str(pid_file),
     ]
 
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
-    )
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    if config_path is not None:
+        env["FIN_CONFIG_PATH"] = str(config_path.resolve())
 
-    _write_pid(proc.pid, pid_file)
+    with open(log_path, "a", buffering=1) as stderr_file:  # noqa: SIM115
+        proc = subprocess.Popen(
+            args,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+            env=env,
+            start_new_session=True,
+        )
+
     return proc
 
 
-async def _kill_and_cleanup(
-    proc: asyncio.subprocess.Process,
-    pid_file: Path,
+def _kill_and_cleanup(
+    proc: subprocess.Popen[bytes],
     graceful_timeout: float = 2.0,
 ) -> None:
-    """Terminate a subprocess and remove its PID file."""
+    """Terminate a subprocess (used on startup failure)."""
     proc.terminate()
     try:
-        await asyncio.wait_for(proc.wait(), timeout=graceful_timeout)
-    except TimeoutError:
+        proc.wait(timeout=graceful_timeout)
+    except subprocess.TimeoutExpired:
         proc.kill()
-    _remove_pid(pid_file)
+
+
+# ---------------------------------------------------------------------------
+# ensure_server_running
+# ---------------------------------------------------------------------------
 
 
 async def ensure_server_running(
     config: Config | None = None,
+    config_path: Path | None = None,
     base_url: str | None = None,
     timeout: float = 10.0,
     pid_file: Path = PID_FILE,
@@ -145,14 +235,16 @@ async def ensure_server_running(
     """Ensure the hub server is running.
 
     Checks if the server is reachable at base_url. If not, spawns
-    `fin-assist serve` as a background subprocess and waits for it to
+    ``fin-assist serve`` as a background subprocess and waits for it to
     become healthy.
 
     Args:
         config: Config object. If None, loads from default location.
+        config_path: Resolved TOML config path, forwarded to the child
+            process via ``FIN_CONFIG_PATH``.
         base_url: Base URL of the hub. If None, derived from config.
         timeout: Maximum seconds to wait for server to become healthy.
-        pid_file: Path to write the server PID file.
+        pid_file: Path the server should write its PID file to.
 
     Returns:
         The base_url of the (possibly newly started) server.
@@ -162,7 +254,7 @@ async def ensure_server_running(
             healthy within the timeout.
     """
     if config is None:
-        config = load_config()
+        config, config_path = load_config()
 
     if base_url is None:
         host = config.server.host
@@ -172,63 +264,159 @@ async def ensure_server_running(
     if await _check_health(base_url):
         return base_url
 
-    # Stale PID file check — clean up if the previous process is gone
+    # Stale PID file check — clean up if the previous process is gone.
+    # With server-owned locking, a stale file means the server crashed
+    # (SIGKILL) and left the file behind without the lock.
     existing_pid = _read_pid(pid_file)
     if existing_pid and not _pid_is_running(existing_pid):
-        _remove_pid(pid_file)
+        pid_file.unlink(missing_ok=True)
 
     console.print(f"[dim]Starting fin-assist hub at {base_url}...[/dim]")
 
-    proc = await _spawn_serve(config, pid_file)
+    proc = _spawn_serve(config, pid_file, config_path=config_path)
 
     try:
         await _wait_for_health(base_url, timeout=timeout)
         console.print("[dim]Hub started.[/dim]")
         return base_url
     except TimeoutError as e:
-        await _kill_and_cleanup(proc, pid_file)
-        raise ServerStartupError(
-            f"Server failed to start within {timeout}s. Check {LOG_FILE} for details."
-        ) from e
+        _kill_and_cleanup(proc)
+        pid_file.unlink(missing_ok=True)
+        log_path = os.path.expanduser(config.server.log_path)
+        hint = _read_log_tail(log_path)
+        msg = f"Server failed to start within {timeout}s."
+        if hint:
+            msg += f"\n\nLast log output:\n{hint}"
+        else:
+            msg += f" Check {log_path} for details."
+        raise ServerStartupError(msg) from e
 
 
-def stop_server(pid_file: Path = PID_FILE, wait_timeout: float = 0) -> bool:
-    """Stop the hub server by sending SIGTERM to the recorded PID.
+# ---------------------------------------------------------------------------
+# stop_server
+# ---------------------------------------------------------------------------
+
+
+def stop_server(
+    pid_file: Path = PID_FILE,
+    timeout: float = _STOP_TIMEOUT,
+    port: int | None = None,
+) -> bool:
+    """Stop the hub server by sending SIGTERM and waiting for exit.
+
+    The server process cleans up its own PID file via ``atexit``.
+    If it doesn't exit within *timeout* seconds, SIGKILL is sent.
+
+    When the PID file is missing (orphaned server), falls back to
+    scanning ``/proc`` for a ``fin-assist serve`` process on *port*.
 
     Args:
         pid_file: Path to the PID file.
-        wait_timeout: Seconds to wait for process to exit after SIGTERM.
-            Default 0 means don't wait (immediate PID file removal).
+        timeout: Seconds to wait for the process to exit after SIGTERM.
+        port: Server port, used for fallback PID discovery.
 
     Returns True if the server was stopped, False if no PID file was found
     or the process was not running.
     """
     pid = _read_pid(pid_file)
+
+    if pid is None and port is not None:
+        # Fallback: PID file missing but server may still be running.
+        pid = _find_server_pid(port)
+
     if pid is None:
         return False
 
     if not _pid_is_running(pid):
-        _remove_pid(pid_file)
+        # Process is gone but PID file remains (crash / SIGKILL).
+        pid_file.unlink(missing_ok=True)
         return False
 
     try:
         os.kill(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        _remove_pid(pid_file)
+        pid_file.unlink(missing_ok=True)
         return False
 
-    if wait_timeout > 0:
-        import time
+    # Wait for the process to exit.
+    elapsed = 0.0
+    interval = 0.05
+    while elapsed < timeout:
+        time.sleep(interval)
+        if not _pid_is_running(pid):
+            # Server exited cleanly — it removed its own PID file.
+            # Clean up just in case (e.g. race with atexit).
+            pid_file.unlink(missing_ok=True)
+            return True
+        elapsed += interval
+        interval = min(interval * 2, 0.5)
 
-        elapsed = 0.0
-        interval = 0.05
-        while elapsed < wait_timeout:
-            time.sleep(interval)
-            if not _pid_is_running(pid):
-                _remove_pid(pid_file)
-                return True
-            elapsed += interval
-            interval = min(interval * 2, 0.5)
+    # Escalate to SIGKILL.
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pid_file.unlink(missing_ok=True)
+        return True
 
-    _remove_pid(pid_file)
+    # Brief wait for SIGKILL to take effect.
+    time.sleep(0.2)
+    pid_file.unlink(missing_ok=True)
     return True
+
+
+# ---------------------------------------------------------------------------
+# check_status
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HubStatus:
+    """Snapshot of the hub server's state."""
+
+    healthy: bool
+    """True if the server responded to a health check."""
+    base_url: str
+    """The URL that was checked."""
+    pid: int | None = None
+    """Server PID, if known (from PID file or process scan)."""
+    pid_file_exists: bool = False
+    """True if the PID file is present on disk."""
+
+
+async def check_status(
+    config: Config | None = None,
+    pid_file: Path = PID_FILE,
+) -> HubStatus:
+    """Check the hub server's current status.
+
+    Returns a :class:`HubStatus` with health, PID, and PID file info.
+
+    Args:
+        config: Config object. If None, loads from default location.
+        pid_file: Path to the PID file.
+    """
+    if config is None:
+        config, _ = load_config()
+
+    host = config.server.host
+    port = config.server.port
+    base_url = f"http://{host}:{port}"
+
+    healthy = await _check_health(base_url)
+    pid = _read_pid(pid_file)
+    pid_file_exists = pid_file.exists()
+
+    # If PID file is missing but server is healthy, try to find the PID.
+    if pid is None and healthy:
+        pid = _find_server_pid(port)
+
+    # If PID is stale, clear it.
+    if pid is not None and not _pid_is_running(pid):
+        pid = None
+
+    return HubStatus(
+        healthy=healthy,
+        base_url=base_url,
+        pid=pid,
+        pid_file_exists=pid_file_exists,
+    )

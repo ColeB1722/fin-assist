@@ -12,6 +12,7 @@ from fin_assist.cli.client import DiscoveredAgent
 from fin_assist.cli.display import (
     render_agent_card,
     render_agents_list,
+    render_auth_required,
     render_command,
     render_error,
     render_info,
@@ -88,6 +89,26 @@ class TestRenderInfo:
         assert "loading..." in output
 
 
+class TestRenderAuthRequired:
+    def test_renders_provider_name(self):
+        output = _capture_output(render_auth_required, "anthropic")
+        assert "anthropic" in output.lower()
+
+    def test_renders_env_var_hint(self):
+        output = _capture_output(render_auth_required, "anthropic")
+        assert "ANTHROPIC_API_KEY" in output
+
+    def test_renders_distinct_from_generic_error(self):
+        """Should use 'Authentication required' or similar, not 'Error:'."""
+        output = _capture_output(render_auth_required, "anthropic")
+        assert "auth" in output.lower()
+
+    def test_renders_multiple_providers(self):
+        output = _capture_output(render_auth_required, "anthropic, openrouter")
+        assert "anthropic" in output.lower()
+        assert "openrouter" in output.lower()
+
+
 class TestRenderAgentCard:
     def _make_agent(self, **kwargs) -> DiscoveredAgent:
         defaults = {
@@ -118,11 +139,6 @@ class TestRenderAgentCard:
         agent = self._make_agent(card_meta=AgentCardMeta(requires_approval=True))
         output = _capture_output(render_agent_card, agent)
         assert "requires approval" in output
-
-    def test_renders_supports_regenerate_flag(self):
-        agent = self._make_agent(card_meta=AgentCardMeta(supports_regenerate=True))
-        output = _capture_output(render_agent_card, agent)
-        assert "supports regenerate" in output
 
 
 class TestRenderAgentsList:

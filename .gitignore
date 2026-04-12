@@ -55,6 +55,10 @@ ehthumbs.db
 
 # Local config overrides
 config.local.toml
+config.toml
 
 # Test snapshots (generated)
 tests/snapshots/*.svg
+
+# Logging
+hub.log

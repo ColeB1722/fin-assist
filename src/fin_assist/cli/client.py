@@ -1,26 +1,37 @@
-"""A2A HTTP client for communicating with the agent hub."""
+"""Client for the fin-assist agent hub.
+
+Wraps fasta2a's ``A2AClient`` for per-agent A2A calls and adds hub-level
+concerns: agent discovery (custom ``/agents`` endpoint), task polling,
+and result extraction.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
-from fasta2a.client import get_task_response_ta
-from fasta2a.schema import (
-    Task,
-    send_message_response_ta,
-)
+from fasta2a.client import A2AClient as _A2AClient
 
 from fin_assist.agents.base import AgentCardMeta
+
+if TYPE_CHECKING:
+    from fasta2a.schema import Message, Task, TaskState
+
+# The A2A spec defines nine task states.  fasta2a exposes them as a
+# ``Literal`` type alias (``TaskState``) — not an enum — so there's no
+# programmatic way to ask "which are terminal?".  We define the set here,
+# derived from the spec: any state from which no further transitions occur.
+_TERMINAL_STATES: frozenset[TaskState] = frozenset(
+    {"completed", "failed", "canceled", "rejected", "auth-required"}
+)
 
 
 @dataclass
 class DiscoveredAgent:
-    """An agent discovered from the hub's /agents endpoint."""
+    """An agent discovered from the hub's ``/agents`` endpoint."""
 
     name: str
     description: str
@@ -39,8 +50,15 @@ class AgentResult:
     context_id: str | None = None
 
 
-class A2AClient:
-    """HTTP client for A2A agent communication."""
+class HubClient:
+    """Client for the fin-assist agent hub.
+
+    Combines hub-level discovery (``GET /agents``) with per-agent A2A
+    communication via ``fasta2a.client.A2AClient``.
+
+    The hub mounts each agent at ``/agents/{name}/``, so each fasta2a
+    client is pointed at the agent-specific sub-app URL.
+    """
 
     DEFAULT_POLL_INTERVAL = 0.5
     DEFAULT_TIMEOUT = 60.0
@@ -54,22 +72,39 @@ class A2AClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.poll_interval = poll_interval
-        self._client: httpx.AsyncClient | None = None
+        self._http: httpx.AsyncClient | None = None
+        self._a2a_clients: dict[str, _A2AClient] = {}
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
-        return self._client
+    def _get_http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=self.timeout)
+        return self._http
+
+    def _get_a2a(self, agent_name: str) -> _A2AClient:
+        """Return (or create) a fasta2a A2AClient for the given agent."""
+        if agent_name not in self._a2a_clients:
+            agent_url = f"{self.base_url}/agents/{agent_name}/"
+            self._a2a_clients[agent_name] = _A2AClient(
+                base_url=agent_url,
+                http_client=self._get_http(),
+            )
+        return self._a2a_clients[agent_name]
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        """Close the shared HTTP client.  Safe to call multiple times."""
+        self._a2a_clients.clear()
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    # ------------------------------------------------------------------
+    # Discovery (hub-specific, not part of A2A protocol)
+    # ------------------------------------------------------------------
 
     async def discover_agents(self) -> list[DiscoveredAgent]:
         """Fetch the list of available agents from the hub."""
-        client = await self._get_client()
-        response = await client.get(f"{self.base_url}/agents")
+        http = self._get_http()
+        response = await http.get(f"{self.base_url}/agents")
         response.raise_for_status()
         data = response.json()
 
@@ -83,95 +118,103 @@ class A2AClient:
             for entry in data.get("agents", [])
         ]
 
-    async def _send_jsonrpc(
-        self,
-        agent_name: str,
-        method: str,
-        params: dict[str, Any],
-    ) -> bytes:
-        """Send a JSON-RPC 2.0 request to an agent sub-app, return raw response bytes."""
-        client = await self._get_client()
-        payload = {
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "method": method,
-            "params": params,
-        }
-        response = await client.post(
-            f"{self.base_url}/agents/{agent_name}/",
-            content=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        response.raise_for_status()
-        return response.content
+    # ------------------------------------------------------------------
+    # Task polling
+    # ------------------------------------------------------------------
 
     async def _poll_task(self, agent_name: str, task_id: str) -> Task:
-        """Poll a task until it reaches a terminal state.
+        """Poll ``tasks/get`` until the task reaches a terminal state.
 
-        This is a fallback for non-blocking ``message/send`` (``blocking: false``
-        in ``MessageSendConfiguration``), where the hub acknowledges immediately
-        with a Message and the client must poll ``tasks/get`` separately.
-
-        The current fasta2a hub uses blocking mode by default, so this path is
-        not exercised in normal operation — it exists as correct protocol
-        implementation for future non-blocking or async agent use cases.
+        fasta2a's broker processes tasks asynchronously — ``message/send``
+        returns the task in ``"submitted"`` state.  Neither fasta2a nor the
+        official ``a2a-python`` SDK provide a send-and-wait helper, so
+        polling is the client's responsibility.
         """
-        client = await self._get_client()
+        a2a = self._get_a2a(agent_name)
 
         try:
             async with asyncio.timeout(self.timeout):
                 while True:
                     await asyncio.sleep(self.poll_interval)
-
-                    payload = {
-                        "jsonrpc": "2.0",
-                        "id": str(uuid.uuid4()),
-                        "method": "tasks/get",
-                        "params": {"id": task_id},
-                    }
-                    response = await client.post(
-                        f"{self.base_url}/agents/{agent_name}/",
-                        content=json.dumps(payload).encode(),
-                        headers={"Content-Type": "application/json"},
-                    )
-                    response.raise_for_status()
-
-                    rpc_response = get_task_response_ta.validate_json(response.content)
-                    task = rpc_response.get("result")
-                    if task and task["status"]["state"] in (
-                        "completed",
-                        "failed",
-                        "canceled",
-                        "rejected",
-                        "auth-required",
-                    ):
+                    rpc = await a2a.get_task(task_id)
+                    task = rpc.get("result")
+                    if task and task["status"]["state"] in _TERMINAL_STATES:
                         return task
         except TimeoutError:
             raise TimeoutError(f"Task {task_id} did not complete within {self.timeout}s") from None
 
-    def _extract_result(self, task: Task) -> AgentResult:
-        """Extract AgentResult from a completed task."""
-        success = task["status"]["state"] == "completed"
+    async def _resolve_task(self, agent_name: str, result: Any) -> Task:
+        """Return a terminal ``Task`` — polling if necessary.
+
+        ``message/send`` may return a task that's already terminal (fast
+        agent), still in-progress (async broker), or even a bare Message.
+        """
+        match result:
+            case {"kind": "task"} if result["status"]["state"] in _TERMINAL_STATES:
+                return result
+            case {"kind": "task"}:
+                return await self._poll_task(agent_name, result["id"])
+            case _:
+                raise RuntimeError(f"Unexpected message/send result: {result!r:.200}")
+
+    # ------------------------------------------------------------------
+    # Result extraction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_result(task: Task) -> AgentResult:
+        """Extract ``AgentResult`` from a completed ``Task``.
+
+        Artifacts are checked first (they contain the agent's response).
+        History is the fallback — it includes the user's input message,
+        so scanning it first would return the prompt instead of the reply.
+
+        pydantic-ai wraps structured ``output_type`` values in a
+        ``{"result": ...}`` envelope inside data parts; we unwrap that.
+
+        For ``auth-required`` tasks, the worker adds an agent message to
+        history explaining which credentials are missing.  We extract that
+        and flag the result so the display layer can render it distinctly.
+        """
+        state = task["status"]["state"]
+        success = state == "completed"
         context_id = task["context_id"]
 
         output = ""
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
 
-        items = [*(task.get("artifacts") or []), *(task.get("history") or [])]
-        for item in reversed(items):
+        # Flag auth-required so the display layer can render it distinctly
+        if state == "auth-required":
+            metadata["auth_required"] = True
+
+        # Artifacts contain the agent's response
+        for item in reversed(task.get("artifacts") or []):
             for part in item.get("parts", []):
                 match part:
                     case {"kind": "data", "data": data}:
+                        # pydantic-ai wraps structured output in a "result" key
+                        inner = data.get("result", data)
                         if not output:
-                            output = data.get("command", "")
-                        if data.get("warnings"):
-                            warnings = data["warnings"]
-                        if data.get("metadata"):
-                            metadata = data["metadata"]
+                            output = inner.get("command", "")
+                        if inner.get("warnings"):
+                            warnings = inner["warnings"]
+                        if inner.get("metadata"):
+                            metadata.update(inner["metadata"])
                     case {"kind": "text", "text": text}:
                         if not output:
                             output = text
+
+        # Fall back to history only if artifacts had no output
+        if not output:
+            for item in reversed(task.get("history") or []):
+                for part in item.get("parts", []):
+                    match part:
+                        case {"kind": "text", "text": text}:
+                            output = text
+                            break
+                if output:
+                    break
 
         return AgentResult(
             success=success,
@@ -181,32 +224,31 @@ class A2AClient:
             context_id=context_id,
         )
 
-    async def run_agent(
-        self,
-        agent_name: str,
-        prompt: str,
-    ) -> AgentResult:
-        """Send a one-shot message to an agent and wait for the result."""
-        message = {
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_message(prompt: str, context_id: str | None = None) -> Message:
+        """Build an A2A ``Message`` TypedDict for the given prompt."""
+        msg: dict[str, Any] = {
             "role": "user",
-            "kind": "message",
-            "messageId": str(uuid.uuid4()),
             "parts": [{"kind": "text", "text": prompt}],
+            "kind": "message",
+            "message_id": str(uuid.uuid4()),
         }
+        if context_id:
+            msg["context_id"] = context_id
+        return cast("Message", msg)
 
-        raw = await self._send_jsonrpc(agent_name, "message/send", {"message": message})
-        rpc_response = send_message_response_ta.validate_json(raw)
+    async def run_agent(self, agent_name: str, prompt: str) -> AgentResult:
+        """Send a one-shot message to an agent and wait for the result."""
+        a2a = self._get_a2a(agent_name)
+        rpc = await a2a.send_message(self._build_message(prompt))
 
-        result = rpc_response.get("result")
-        match result:
-            case {"kind": "task"}:
-                task = result
-            case _:
-                # Response was a Message or absent — poll for the task by RPC id
-                task_id = rpc_response.get("id", "")
-                task = await self._poll_task(agent_name, str(task_id))
-
-        return self._extract_result(task)  # type: ignore[arg-type]
+        result = rpc.get("result")
+        task = await self._resolve_task(agent_name, result)
+        return self._extract_result(task)
 
     async def send_message(
         self,
@@ -215,26 +257,9 @@ class A2AClient:
         context_id: str | None = None,
     ) -> AgentResult:
         """Send a message to an agent (multi-turn) and wait for the result."""
-        message: dict[str, Any] = {
-            "role": "user",
-            "kind": "message",
-            "messageId": str(uuid.uuid4()),
-            "parts": [{"kind": "text", "text": prompt}],
-        }
-        if context_id:
-            message["contextId"] = context_id
+        a2a = self._get_a2a(agent_name)
+        rpc = await a2a.send_message(self._build_message(prompt, context_id))
 
-        params: dict[str, Any] = {"message": message}
-
-        raw = await self._send_jsonrpc(agent_name, "message/send", params)
-        rpc_response = send_message_response_ta.validate_json(raw)
-
-        result = rpc_response.get("result")
-        match result:
-            case {"kind": "task"}:
-                task = result
-            case _:
-                task_id = rpc_response.get("id", "")
-                task = await self._poll_task(agent_name, str(task_id))
-
-        return self._extract_result(task)  # type: ignore[arg-type]
+        result = rpc.get("result")
+        task = await self._resolve_task(agent_name, result)
+        return self._extract_result(task)

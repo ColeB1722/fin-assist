@@ -1,16 +1,30 @@
-"""Configuration schema definitions using pydantic-settings."""
+"""Configuration schema definitions using pydantic-settings.
+
+Source precedence (highest wins):
+    init args > env vars (FIN_*) > TOML file > schema defaults
+
+Env vars use the ``FIN_`` prefix with ``__`` as nested delimiter:
+    FIN_GENERAL__DEFAULT_PROVIDER=openrouter
+    FIN_SERVER__LOG_PATH=./hub.log
+"""
+
+from __future__ import annotations
 
 from typing import Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 
-class GeneralSettings(BaseSettings):
+class GeneralSettings(BaseModel):
     """General application settings."""
-
-    model_config = SettingsConfigDict(env_prefix="FIN_")
 
     default_provider: str = "anthropic"
     default_model: str = "claude-sonnet-4-6"
@@ -18,7 +32,7 @@ class GeneralSettings(BaseSettings):
     keybinding: str = "ctrl-enter"
 
 
-class ContextSettings(BaseSettings):
+class ContextSettings(BaseModel):
     """Context gathering settings."""
 
     max_file_size: int = 100_000
@@ -27,7 +41,7 @@ class ContextSettings(BaseSettings):
     include_env_vars: list[str] = ["PATH", "HOME", "USER", "PWD"]
 
 
-class ProviderConfig(BaseSettings):
+class ProviderConfig(BaseModel):
     """Provider-specific configuration (non-secret settings)."""
 
     enabled: bool = True
@@ -35,18 +49,47 @@ class ProviderConfig(BaseSettings):
     default_model: str | None = None
 
 
-class ServerSettings(BaseSettings):
+class ServerSettings(BaseModel):
     """Agent Hub server settings."""
 
     host: str = "127.0.0.1"
     port: int = 4096
     db_path: str = "~/.local/share/fin/hub.db"
+    log_path: str = "~/.local/share/fin/hub.log"
 
 
 class Config(BaseSettings):
-    """Root configuration model."""
+    """Root configuration model.
+
+    Uses pydantic-settings to layer multiple sources.  The TOML file path
+    is set dynamically by ``load_config()`` via the ``_toml_file`` init
+    kwarg — callers should not set ``toml_file`` in ``model_config``
+    directly.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="FIN_",
+        env_nested_delimiter="__",
+        toml_file=None,  # set dynamically by load_config() via _toml_file
+    )
 
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()
     server: ServerSettings = ServerSettings()
     providers: dict[str, ProviderConfig] = {}
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Define source precedence: init > env > TOML > defaults."""
+        return (
+            init_settings,
+            env_settings,
+            TomlConfigSettingsSource(settings_cls),
+        )

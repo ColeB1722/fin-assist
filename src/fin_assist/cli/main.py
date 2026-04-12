@@ -11,31 +11,37 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import coolname
+from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 import uvicorn
 
-from fin_assist.cli.client import A2AClient, DiscoveredAgent
+from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
     console,
     render_agents_list,
+    render_auth_required,
     render_command,
     render_error,
     render_info,
+    render_response,
+    render_warnings,
 )
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 from fin_assist.cli.interaction.chat import run_chat_loop
 from fin_assist.cli.interaction.prompt import FinPrompt
-from fin_assist.cli.server import ServerStartupError, ensure_server_running, stop_server
+from fin_assist.cli.server import (
+    ServerStartupError,
+    check_status,
+    ensure_server_running,
+    stop_server,
+)
 from fin_assist.config.loader import load_config
 from fin_assist.hub.app import create_hub_app
-from fin_assist.hub.logging import LOG_FILE, configure_logging
-
-SESSIONS_DIR = Path("~/.local/share/fin/sessions").expanduser()
-
+from fin_assist.hub.logging import configure_logging
+from fin_assist.paths import SESSIONS_DIR
 
 # ---------------------------------------------------------------------------
 # Session helpers
@@ -70,7 +76,7 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
 
 
 @asynccontextmanager
-async def _hub_client(config) -> AsyncIterator[A2AClient]:
+async def _hub_client(config, config_path: Path | None = None) -> AsyncIterator[HubClient]:
     """Start the hub if needed, yield a connected client, close it on exit.
 
     Handles two error categories so commands don't have to:
@@ -80,12 +86,12 @@ async def _hub_client(config) -> AsyncIterator[A2AClient]:
     Commands catch the re-raised exceptions and return 1.
     """
     try:
-        base_url = await ensure_server_running(config)
+        base_url = await ensure_server_running(config, config_path=config_path)
     except ServerStartupError as e:
         render_error(str(e))
         raise
 
-    client = A2AClient(base_url)
+    client = HubClient(base_url)
     try:
         yield client
     except Exception as e:
@@ -101,7 +107,7 @@ async def _hub_client(config) -> AsyncIterator[A2AClient]:
 
 
 async def _get_agent_or_error(
-    client: A2AClient, agent_name: str
+    client: HubClient, agent_name: str
 ) -> tuple[DiscoveredAgent | None, list[DiscoveredAgent]]:
     """Look up an agent by name. Returns (agent, all_agents). Agent is None if not found."""
     agents = await client.discover_agents()
@@ -120,45 +126,44 @@ async def _get_agent_or_error(
 # ---------------------------------------------------------------------------
 
 
-async def _do_command(args: argparse.Namespace, config) -> int:
+async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             discovered, agents = await _get_agent_or_error(client, args.agent)
             if discovered is None:
                 return 1
 
-            fp = FinPrompt(agents=[a.name for a in agents])
+            prompt = " ".join(args.prompt)
+            result = await client.run_agent(args.agent, prompt)
 
-            prompt = args.prompt
-            while True:
-                result = await client.run_agent(args.agent, prompt)
+            if result.metadata.get("auth_required"):
+                render_auth_required(result.output)
+                return 1
 
-                if not discovered.card_meta.requires_approval:
-                    render_command(result.output, result.warnings, result.metadata)
-                    return 0
+            if not discovered.card_meta.requires_approval:
+                render_response(result.output, agent_name=discovered.name)
+                if result.warnings:
+                    render_warnings(result.warnings)
+                return 0
 
-                action, edited = await run_approve_widget(
-                    command=result.output,
-                    warnings=result.warnings,
-                    supports_regenerate=discovered.card_meta.supports_regenerate,
-                    regenerate_prompt=result.metadata.get("regenerate_prompt"),
-                    prompt=fp,
-                )
+            render_command(result.output, result.warnings, result.metadata)
 
-                if action == ApprovalAction.EXECUTE:
-                    return execute_command(result.output)
-                elif action == ApprovalAction.EDIT and edited:
-                    prompt = edited
-                    continue
-                else:
-                    render_info("Cancelled")
-                    return 0
-    except (ServerStartupError, Exception):
+            action = await run_approve_widget(
+                command=result.output,
+                warnings=result.warnings,
+            )
+
+            if action == ApprovalAction.EXECUTE:
+                return execute_command(result.output)
+            else:
+                render_info("Cancelled")
+                return 0
+    except Exception:
         return 1
 
 
-async def _talk_command(args: argparse.Namespace, config) -> int:
+async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
     if args.list_sessions:
         if not args.agent:
@@ -192,27 +197,34 @@ async def _talk_command(args: argparse.Namespace, config) -> int:
         return 1
 
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
             fp = FinPrompt(agents=[a.name for a in agents])
-            final_context_id = await run_chat_loop(client.send_message, args.agent, context_id, fp)
-    except (ServerStartupError, Exception):
+            initial_message = " ".join(args.message) if args.message else None
+            final_context_id = await run_chat_loop(
+                client.send_message,
+                args.agent,
+                context_id,
+                fp,
+                initial_message=initial_message,
+            )
+    except Exception:
         return 1
 
     if final_context_id and not args.resume:
-        session_id = coolname.generate_slug(2)
+        session_id = generate_slug(2)
         _save_session(args.agent, session_id, final_context_id)
         render_info(f"Session saved: {session_id}")
 
     return 0
 
 
-async def _agents_command(args: argparse.Namespace, config) -> int:
+async def _agents_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist agents`."""
     try:
-        async with _hub_client(config) as client:
+        async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
-    except (ServerStartupError, Exception):
+    except Exception:
         return 1
 
     render_agents_list(agents)
@@ -226,7 +238,7 @@ async def _agents_command(args: argparse.Namespace, config) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for CLI client commands."""
-    config = load_config()
+    config, config_path = load_config()
 
     parser = argparse.ArgumentParser(
         prog="fin-assist",
@@ -241,13 +253,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a one-shot query to an agent (no memory).",
     )
     do_parser.add_argument("agent", help="Name of the agent to use.")
-    do_parser.add_argument("prompt", help="The prompt to send.")
+    do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
 
     talk_parser = subparsers.add_parser(
         "talk",
         help="Start a multi-turn chat session with an agent.",
     )
     talk_parser.add_argument("agent", nargs="?", help="Name of the agent to use.")
+    talk_parser.add_argument(
+        "message",
+        nargs="*",
+        help="Optional initial message to send as the first turn.",
+    )
     talk_parser.add_argument(
         "--list",
         dest="list_sessions",
@@ -261,7 +278,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Resume a saved session.",
     )
 
+    subparsers.add_parser("start", help="Start the agent hub server in the background.")
     subparsers.add_parser("stop", help="Stop the running agent hub server.")
+    subparsers.add_parser("status", help="Check if the agent hub server is running.")
 
     serve_parser = subparsers.add_parser("serve", help="Start the agent hub server.")
     serve_parser.add_argument(
@@ -280,30 +299,65 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help=f"SQLite storage path (config default: {config.server.db_path}).",
     )
+    serve_parser.add_argument(
+        "--pid-file",
+        default=None,
+        help="Path to PID file (written and locked by the server process).",
+    )
 
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     match args.command:
         case "agents":
-            return asyncio.run(_agents_command(args, config))
+            return asyncio.run(_agents_command(args, config, config_path))
         case "do":
-            return asyncio.run(_do_command(args, config))
+            return asyncio.run(_do_command(args, config, config_path))
         case "talk":
-            return asyncio.run(_talk_command(args, config))
+            return asyncio.run(_talk_command(args, config, config_path))
+        case "start":
+            try:
+                base_url = asyncio.run(ensure_server_running(config, config_path))
+                render_info(f"Hub running at {base_url}")
+                return 0
+            except ServerStartupError as e:
+                render_error(str(e))
+                return 1
         case "stop":
-            if stop_server():
+            if stop_server(port=config.server.port):
                 render_info("Hub stopped.")
             else:
                 render_error("No running hub found (no PID file or process already stopped).")
                 return 1
             return 0
+        case "status":
+            status = asyncio.run(check_status(config))
+            if status.healthy:
+                pid_info = f", PID {status.pid}" if status.pid else ""
+                note = ""
+                if not status.pid_file_exists and status.pid:
+                    note = " [yellow](PID file missing — orphaned server)[/yellow]"
+                render_info(f"Hub running at {status.base_url}{pid_info}{note}")
+            else:
+                render_info("Hub is not running.")
+            return 0
         case "serve":
+            from fin_assist.agents import DefaultAgent, ShellAgent
+            from fin_assist.credentials.store import CredentialStore
+            from fin_assist.hub.pidfile import acquire as acquire_pidfile
+
             host = args.host or config.server.host
             port = args.port or config.server.port
             db_path = os.path.expanduser(args.db or config.server.db_path)
-            app = create_hub_app(db_path=db_path, base_url=f"http://{host}:{port}")
-            configure_logging()
-            console.print(f"[dim]Logging to {LOG_FILE}[/dim]")
+            log_path = Path(os.path.expanduser(config.server.log_path))
+            credentials = CredentialStore()
+            configure_logging(log_file=log_path)
+
+            if args.pid_file:
+                acquire_pidfile(Path(args.pid_file))
+
+            console.print(f"[dim]Logging to {log_path}[/dim]")
+            agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
+            app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
             uvicorn.run(app, host=host, port=port, log_config=None)
             return 0
         case _:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,16 +10,16 @@ import httpx
 import pytest
 
 from fin_assist.cli.server import (
+    HubStatus,
     ServerStartupError,
     _check_health,
+    _find_server_pid,
     _pid_is_running,
     _read_pid,
-    _remove_pid,
     _wait_for_health,
-    _write_pid,
+    check_status,
     ensure_server_running,
     stop_server,
-    LOG_FILE,
 )
 
 
@@ -139,14 +140,14 @@ class TestWaitForHealth:
 
 
 # ---------------------------------------------------------------------------
-# PID file helpers
+# PID file helpers (client-side)
 # ---------------------------------------------------------------------------
 
 
 class TestPidHelpers:
-    def test_write_and_read_pid(self, tmp_path):
+    def test_read_pid_returns_value(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(12345, pid_file)
+        pid_file.write_text("12345\n")
         assert _read_pid(pid_file) == 12345
 
     def test_read_pid_returns_none_when_missing(self, tmp_path):
@@ -158,16 +159,6 @@ class TestPidHelpers:
         pid_file.write_text("not-a-number")
         assert _read_pid(pid_file) is None
 
-    def test_remove_pid_deletes_file(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        pid_file.write_text("99")
-        _remove_pid(pid_file)
-        assert not pid_file.exists()
-
-    def test_remove_pid_is_idempotent_when_missing(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        _remove_pid(pid_file)  # should not raise
-
     def test_pid_is_running_true_for_current_process(self):
         import os
 
@@ -177,11 +168,56 @@ class TestPidHelpers:
         # PID 0 is always invalid for kill(); PID max is unreachable in practice
         assert _pid_is_running(99999999) is False
 
-    def test_write_pid_creates_parent_dirs(self, tmp_path):
-        pid_file = tmp_path / "nested" / "dir" / "hub.pid"
-        _write_pid(42, pid_file)
-        assert pid_file.exists()
-        assert _read_pid(pid_file) == 42
+
+# ---------------------------------------------------------------------------
+# _find_server_pid
+# ---------------------------------------------------------------------------
+
+
+class TestFindServerPid:
+    def test_returns_none_when_no_proc(self):
+        with patch("fin_assist.cli.server.Path") as mock_path_cls:
+            mock_proc = MagicMock()
+            mock_proc.is_dir.return_value = False
+            mock_path_cls.return_value = mock_proc
+            assert _find_server_pid(4096) is None
+
+    def test_returns_pid_when_matching_process_found(self, tmp_path):
+        # Create a fake /proc/<pid>/cmdline
+        proc_dir = tmp_path / "42"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00fin_assist\x00serve\x00--port\x004096"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) == 42
+
+    def test_returns_none_when_no_matching_process(self, tmp_path):
+        proc_dir = tmp_path / "42"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00some_other_app\x00serve"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) is None
+
+    def test_skips_own_pid(self, tmp_path):
+        proc_dir = tmp_path / "999"
+        proc_dir.mkdir()
+        cmdline = "python3\x00-m\x00fin_assist\x00serve\x00--port\x004096"
+        (proc_dir / "cmdline").write_bytes(cmdline.encode())
+
+        with (
+            patch("fin_assist.cli.server.Path", return_value=tmp_path),
+            patch("fin_assist.cli.server.os.getpid", return_value=999),
+        ):
+            assert _find_server_pid(4096) is None
 
 
 # ---------------------------------------------------------------------------
@@ -196,20 +232,10 @@ class TestStopServer:
 
     def test_returns_false_when_process_not_running(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(99999999, pid_file)
+        pid_file.write_text("99999999\n")
         result = stop_server(pid_file)
         assert result is False
-        assert not pid_file.exists()
-
-    def test_removes_pid_file_after_stop(self, tmp_path):
-        pid_file = tmp_path / "hub.pid"
-        import os
-
-        _write_pid(os.getpid(), pid_file)
-
-        with patch("fin_assist.cli.server.os.kill"):
-            stop_server(pid_file)
-
+        # Stale file should be cleaned up
         assert not pid_file.exists()
 
     def test_sends_sigterm_to_process(self, tmp_path):
@@ -218,7 +244,7 @@ class TestStopServer:
         import signal
 
         target_pid = os.getpid()
-        _write_pid(target_pid, pid_file)
+        pid_file.write_text(f"{target_pid}\n")
 
         sigterm_calls: list[tuple[int, int]] = []
         real_kill = os.kill
@@ -229,21 +255,82 @@ class TestStopServer:
             else:
                 real_kill(pid, sig)
 
-        with patch("fin_assist.cli.server.os.kill", side_effect=selective_kill):
-            stop_server(pid_file)
+        with (
+            patch("fin_assist.cli.server.os.kill", side_effect=selective_kill),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            stop_server(pid_file, timeout=1.0)
 
         assert sigterm_calls == [(target_pid, signal.SIGTERM)]
 
-    def test_returns_true_on_successful_stop(self, tmp_path):
+    def test_waits_for_process_to_exit(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        import os
+        pid_file.write_text("12345\n")
 
-        _write_pid(os.getpid(), pid_file)
-
-        with patch("fin_assist.cli.server.os.kill"):
-            result = stop_server(pid_file)
+        # Simulate process exiting after 2 checks
+        with (
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=5.0)
 
         assert result is True
+
+    def test_escalates_to_sigkill_on_timeout(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        kill_calls: list[tuple[int, int]] = []
+
+        def track_kill(pid: int, sig: int) -> None:
+            kill_calls.append((pid, sig))
+
+        # Process never exits from SIGTERM
+        with (
+            patch("fin_assist.cli.server.os.kill", side_effect=track_kill),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=0.0)
+
+        assert result is True
+        # Should have sent SIGTERM then SIGKILL
+        signals_sent = [sig for _, sig in kill_calls]
+        assert signal.SIGTERM in signals_sent
+        assert signal.SIGKILL in signals_sent
+
+    def test_returns_true_on_successful_stop(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        with (
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, timeout=5.0)
+
+        assert result is True
+
+    def test_falls_back_to_find_server_pid_when_no_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        # No PID file exists — but _find_server_pid discovers the orphan.
+        with (
+            patch("fin_assist.cli.server._find_server_pid", return_value=12345),
+            patch("fin_assist.cli.server.os.kill"),
+            patch("fin_assist.cli.server._pid_is_running", side_effect=[True, False]),
+            patch("fin_assist.cli.server.time.sleep"),
+        ):
+            result = stop_server(pid_file, port=4096)
+
+        assert result is True
+
+    def test_no_fallback_without_port(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        # No PID file and no port — cannot fall back.
+        assert stop_server(pid_file) is False
 
 
 # ---------------------------------------------------------------------------
@@ -275,9 +362,7 @@ class TestEnsureServerRunning:
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ) as mock_spawn,
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc) as mock_spawn,
             patch("fin_assist.cli.server._wait_for_health", new_callable=AsyncMock),
         ):
             config = MagicMock()
@@ -290,16 +375,14 @@ class TestEnsureServerRunning:
 
     async def test_cleans_up_stale_pid_before_spawn(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
-        _write_pid(99999999, pid_file)  # stale — process not running
+        pid_file.write_text("99999999\n")  # stale — process not running
 
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch("fin_assist.cli.server._wait_for_health", new_callable=AsyncMock),
         ):
             config = MagicMock()
@@ -312,15 +395,13 @@ class TestEnsureServerRunning:
     async def test_raises_server_startup_error_on_timeout(self):
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,
@@ -334,18 +415,18 @@ class TestEnsureServerRunning:
             with pytest.raises(ServerStartupError):
                 await ensure_server_running(config)
 
-    async def test_startup_error_message_references_log_file(self):
+    async def test_startup_error_message_references_log_file(self, tmp_path):
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
+
+        log_path = tmp_path / "test.log"
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,
@@ -355,23 +436,22 @@ class TestEnsureServerRunning:
             config = MagicMock()
             config.server.host = "127.0.0.1"
             config.server.port = 4096
+            config.server.log_path = str(log_path)
 
-            with pytest.raises(ServerStartupError, match=str(LOG_FILE)):
+            with pytest.raises(ServerStartupError, match=str(log_path)):
                 await ensure_server_running(config)
 
     async def test_removes_pid_file_on_startup_failure(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
         mock_proc = MagicMock()
         mock_proc.terminate = MagicMock()
-        mock_proc.wait = AsyncMock()
+        mock_proc.wait = MagicMock()
         mock_proc.kill = MagicMock()
 
         with (
             patch("fin_assist.cli.server._check_health", return_value=False),
             patch("fin_assist.cli.server._read_pid", return_value=None),
-            patch(
-                "fin_assist.cli.server._spawn_serve", new_callable=AsyncMock, return_value=mock_proc
-            ),
+            patch("fin_assist.cli.server._spawn_serve", return_value=mock_proc),
             patch(
                 "fin_assist.cli.server._wait_for_health",
                 new_callable=AsyncMock,
@@ -395,3 +475,79 @@ class TestEnsureServerRunning:
             result = await ensure_server_running(config)
 
         assert result == "http://localhost:8080"
+
+
+# ---------------------------------------------------------------------------
+# check_status
+# ---------------------------------------------------------------------------
+
+
+class TestCheckStatus:
+    async def test_healthy_server_with_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=True),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is True
+        assert status.pid == 12345
+        assert status.pid_file_exists is True
+        assert status.base_url == "http://127.0.0.1:4096"
+
+    async def test_healthy_server_without_pid_file(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=True),
+            patch("fin_assist.cli.server._find_server_pid", return_value=99999),
+            patch("fin_assist.cli.server._pid_is_running", return_value=True),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is True
+        assert status.pid == 99999
+        assert status.pid_file_exists is False
+
+    async def test_not_running(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with patch("fin_assist.cli.server._check_health", return_value=False):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is False
+        assert status.pid is None
+        assert status.pid_file_exists is False
+
+    async def test_stale_pid_cleared(self, tmp_path):
+        pid_file = tmp_path / "hub.pid"
+        pid_file.write_text("12345\n")
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=False),
+            patch("fin_assist.cli.server._pid_is_running", return_value=False),
+        ):
+            status = await check_status(config, pid_file=pid_file)
+
+        assert status.healthy is False
+        assert status.pid is None
+        assert status.pid_file_exists is True  # file existed when read

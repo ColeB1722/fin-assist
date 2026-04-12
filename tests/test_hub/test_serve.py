@@ -12,6 +12,7 @@ class TestServeCommand:
         """fin-assist serve should create a hub app and call uvicorn.run."""
         with (
             patch("fin_assist.cli.main.create_hub_app") as mock_create,
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             mock_app = MagicMock()
@@ -28,7 +29,8 @@ class TestServeCommand:
     def test_serve_binds_to_localhost(self) -> None:
         """Server should always bind to 127.0.0.1."""
         with (
-            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             main(["serve"])
@@ -43,7 +45,8 @@ class TestServeCommand:
     def test_serve_uses_configured_port(self) -> None:
         """Default port should be 4096."""
         with (
-            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn") as mock_uvicorn,
         ):
             main(["serve"])

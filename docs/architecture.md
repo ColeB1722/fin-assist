@@ -80,7 +80,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │  Shared Services                                                      │    │
 │  │  • CredentialStore (API keys)                                         │    │
-│  │  • ConfigLoader (TOML)                                                │    │
+│  │  • ConfigLoader (TOML, 4-level priority)                               │    │
 │  │  • ContextProviders (files, git, history, env)                      │    │
 │  │  • ProviderRegistry (LLM providers)                                    │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
@@ -170,7 +170,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Shared Services                                                      │   │
 │  │  • CredentialStore — env var → file → keyring fallback              │   │
-│  │  • ConfigLoader — TOML config (~/.config/fin/config.toml)           │   │
+│  │  • ConfigLoader — TOML config (explicit > env > cwd > default)     │   │
 │  │  • ContextProviders — files, git, history, environment              │   │
 │  │  • ProviderRegistry — LLM provider/model creation                   │   │
 │  │  • PromptBuilder — system/user prompt construction                  │   │
@@ -203,14 +203,22 @@ fin-assist/
 │       │   ├── __init__.py
 │       │   ├── app.py               # Parent Starlette app, mounts agent sub-apps
 │       │   ├── factory.py           # BaseAgent → pydantic-ai Agent → .to_a2a()
-│       │   └── storage.py           # SQLite-backed fasta2a Storage implementation
+│       │   ├── storage.py           # SQLite-backed fasta2a Storage implementation
+│       │   ├── worker.py            # FinAssistWorker — maps MissingCredentialsError → auth-required
+│       │   └── logging.py           # Hub logging configuration (RotatingFileHandler)
 │       │
 │       ├── cli/                     # CLI client (primary client)
 │       │   ├── __init__.py
-│       │   ├── main.py              # Command dispatch (serve, agents, ask, chat)
-│       │   ├── client.py            # A2A client wrapper (httpx)
+│       │   ├── main.py              # Command dispatch (serve, agents, do, talk, stop)
+│       │   ├── client.py            # A2A client wrapper (httpx + fasta2a TypeAdapters)
 │       │   ├── display.py           # Rich-based output formatting
-│       │   └── repl.py              # Interactive REPL mode (prompt-toolkit)
+│       │   ├── server.py            # Auto-start hub, health polling, PID management
+│       │   ├── repl.py              # Interactive REPL mode (future — Phase 8b)
+│       │   └── interaction/         # Interactive CLI components
+│       │       ├── __init__.py
+│       │       ├── approve.py       # Approval widget (execute/cancel/regenerate)
+│       │       ├── chat.py          # Multi-turn chat loop (talk command)
+│       │       └── prompt.py        # FinPrompt — prompt-toolkit wrapper with completions
 │       │
 │       ├── agents/
 │       │   ├── __init__.py
@@ -552,7 +560,7 @@ class Multiplexer(ABC):
 Key benefits for fin-assist:
 - **Standardized interface** — any A2A-compatible client can talk to the server
 - **Agent discovery** — Agent Cards at `/.well-known/agent-card.json` per agent
-- **Task lifecycle** — built-in task state management (pending, working, completed, failed)
+- **Task lifecycle** — built-in task state management (pending, working, completed, failed, auth-required)
 - **Conversation context** — `context_id` links multi-turn conversations across tasks
 - **Structured artifacts** — pydantic models become `DataPart` artifacts with JSON schema metadata
 
@@ -579,7 +587,7 @@ Each agent maintains its own context and conversation state. Context IDs are nat
 
 - **Storage** — persists tasks and conversation context. We implement the `Storage` ABC with SQLite, shared across all agents.
 - **Broker** — schedules async task execution. `InMemoryBroker` for local use (single-process).
-- **Worker** — executes agent logic. pydantic-ai provides this via `Agent.to_a2a()`.
+- **Worker** — executes agent logic. pydantic-ai provides a default via `Agent.to_a2a()`. fin-assist overrides with `FinAssistWorker` (`hub/worker.py`) which maps `MissingCredentialsError` to `auth-required` task state instead of `failed`.
 
 ### Transport Layer
 
@@ -627,7 +635,13 @@ The server binds to `127.0.0.1` by default, ensuring only local processes can co
 
 ## Configuration
 
-### Config File (~/.config/fin/config.toml)
+### Config File
+
+Config is loaded from the first available location:
+1. Explicit path (API parameter)
+2. `FIN_CONFIG_PATH` environment variable
+3. `./config.toml` (project-local override in current working directory)
+4. `~/.config/fin/config.toml` (user default)
 
 ```toml
 [general]
@@ -715,14 +729,16 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Implement `DefaultAgent` (chain-of-thought base)
 - [x] TUI foundation (Textual widgets — set aside, usable as future client)
 
-### Phase 7: Agent Hub Server ⬜ **NEXT**
-- [ ] Extend `BaseAgent` with `AgentCardMeta` dataclass
-- [ ] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
-- [ ] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
-- [ ] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
-- [ ] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
-- [ ] Wire entry point — `fin-assist serve` starts the hub via uvicorn
-- [ ] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD
+### Phase 7: Agent Hub Server ✅
+- [x] Extend `BaseAgent` with `AgentCardMeta` dataclass
+- [x] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
+- [x] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
+- [x] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
+- [x] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
+- [x] Implement `hub/worker.py` — FinAssistWorker with `auth-required` state for missing credentials
+- [x] Implement `hub/logging.py` — RotatingFileHandler for background hub
+- [x] Wire entry point — `fin-assist serve` starts the hub via uvicorn
+- [x] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD, worker auth-required
 
 ### Phase 8: CLI Client ✅
 - [x] Implement `cli/client.py` — A2A client using httpx + fasta2a TypeAdapters
@@ -732,20 +748,27 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Implement `cli/interaction/chat.py` — multi-turn chat loop
 - [x] Implement `cli/main.py` — `serve`, `agents`, `do`, `talk` commands with `_hub_client` context manager
 - [x] Session persistence — `~/.local/share/fin/sessions/{agent}/{slug}.json` with coolname slugs
-- [x] Tests — 113 tests across all CLI modules
+- [x] Tests — CLI client, display, server, interaction modules
 
-### Phase 8b: CLI REPL Mode ⬜
-- [ ] Implement `cli/repl.py` — prompt-toolkit interactive REPL
-- [ ] Agent switching via `/switch <agent>`
-- [ ] Dynamic prompts from agent card metadata
-- [ ] History and tab completion
+### Phase 8b: CLI REPL Mode ✅
+- [x] Implement `cli/interaction/prompt.py` — `FinPrompt` with prompt-toolkit fuzzy completion
+- [x] Wire `FinPrompt` into `chat.py` and `approve.py` (replaces `rich.prompt.Prompt`)
+- [x] Agent name tab completion via `agents` parameter
+- [x] Persistent input history (`~/.local/share/fin/history`)
+- [x] Slash-command fuzzy completion (`/exit`, `/quit`, `/q`, `/switch`, `/help`)
+- [x] `prompt-toolkit>=3.0` added as explicit dependency
+- [x] Tests — 8 new tests for `FinPrompt`
 
-### Phase 9: Streaming ⬜
+### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
 - [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
 - [ ] Wire to `talk` command — streaming as default if agent card supports it
 - [ ] Tests — streaming output, partial artifact rendering
+- [ ] Integration test harness — real uvicorn server, real HTTP (httpx), subprocess lifecycle
+- [ ] Integration tests for CLI commands (`do`, `talk`, `agents`, `stop`) against live hub
+- [ ] Integration tests for streaming SSE connection lifecycle and progressive rendering
+- [ ] Integration tests for server auto-start/stop and PID management
 
 ### Phase 11: Multiplexer Integration ⬜
 - [ ] Multiplexer ABC (multiplexer/base.py)
@@ -816,7 +839,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
 | Non-blocking agents | Phase 10 | Open | `message/send` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
-| Hub server logging | Phase 9 | Open | Background hub writes to `~/.local/share/fin/hub.log` via `RotatingFileHandler` (1 MB, 1 backup). Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
+| Hub server logging | Phase 9 | **Resolved** | Configurable via `[server] log_path` (default `~/.local/share/fin/hub.log`). Startup errors captured via subprocess stderr redirect. `configure_logging()` called before `create_hub_app()` to catch early import/initialization errors. Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
 
 ---
 
@@ -854,6 +877,10 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 - #14: LLM evals for shell command generation
 - #15: MCP tool integration for extended capabilities
 - #16: Validation and test cleanup for LLM/credentials modules
+- #45: Test quality: improve assertions and remove private state access
+- #58: display.py: derive credentials path from shared constant
+- #60: config/loader.py: warn when FIN_CONFIG_PATH points to non-existent file
+- #61: hub/factory.py: add type hints to _worker_lifespan parameters
 
 ---
 

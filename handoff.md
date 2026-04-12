@@ -2,7 +2,80 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-03-31)**: Phases 1-8 complete. Code review from Phase 8 addressed (see [CodeRabbit Review Triage](#coderabbit-review-triage-2026-03-31)). Phase 8b (CLI REPL Mode) is next.
+**Current state (2026-04-09)**: Phases 1-8b complete. Manual testing found Chunk B bugs (fixed), led to regenerate removal, and uncovered a PID file reliability issue (fixed with server-side locking). Resume manual testing from Chunk A6/B (re-verify stop + approval) and continue with Chunks C-D.
+
+---
+
+## Auth-Required Credential Pre-Check (2026-04-03)
+
+**Status**: Complete
+
+### Problem
+
+When API keys were missing, `BaseAgent._build_model()` passed `api_key=None` to the pydantic-ai provider constructor, which silently accepted it. The first actual LLM call then exploded with a cryptic provider-specific 401 error. The task was set to `"failed"` with no indication of *which* provider was misconfigured or how to fix it.
+
+### What Was Implemented
+
+Graceful early detection of missing credentials using the A2A `auth-required` task state, providing clear remediation guidance instead of cryptic provider errors.
+
+**6 layers, bottom-up:**
+
+1. **`MissingCredentialsError`** (`agents/base.py`) — Exception carrying the list of providers missing keys. Message includes env var hints (e.g. `ANTHROPIC_API_KEY`).
+
+2. **`BaseAgent.check_credentials() -> list[str]`** (`agents/base.py`) — Iterates enabled providers, checks `PROVIDER_META.requires_api_key`, calls `credentials.get_api_key()`. Returns names of providers missing keys. Called as a guard at the top of `_build_model()`.
+
+3. **`FinAssistWorker(AgentWorker)`** (`hub/worker.py`) — Custom fasta2a worker subclass. Overrides `run_task()` to catch `MissingCredentialsError` and set task state to `"auth-required"` with an agent message explaining what's missing. Other exceptions still produce `"failed"`.
+
+4. **`AgentFactory` updated** (`hub/factory.py`) — Passes a custom `lifespan` to `to_a2a()` that starts `FinAssistWorker` instead of fasta2a's default `AgentWorker`.
+
+5. **`HubClient._extract_result`** (`cli/client.py`) — When state is `"auth-required"`, sets `metadata["auth_required"] = True` and extracts the agent message from history as output.
+
+6. **`render_auth_required`** (`cli/display.py`) — Yellow panel with provider name, env var hints, and credentials file path. Visually distinct from generic `Error:` rendering.
+
+7. **CLI wiring** (`cli/main.py`, `cli/interaction/chat.py`) — `_do_command` checks `result.metadata.get("auth_required")` and returns 1 with the auth panel. Chat loop breaks with the auth panel and a "fix credentials" message.
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Pre-check location | `_build_model()` guard | Catches before any LLM call attempt; pydantic-ai agent's `run()` triggers `_build_model` lazily |
+| Task state | `auth-required` (A2A spec) | Semantically correct; distinct from `failed` (bug) vs `auth-required` (config issue) |
+| `auth-required` remains terminal | Stays in `_TERMINAL_STATES` | Interactive recovery (Phase 10) deferred; user fixes credentials out-of-band |
+| Worker override | Full `run_task()` override | Can't use `super()` because parent catches `Exception` and sets `failed` before we can intercept |
+| Message transport | `new_messages` parameter on `update_task` | Uses existing A2A history mechanism; no storage changes needed |
+| Unknown providers | Assumed to not require key | Defensive; avoids false positives for custom/self-hosted providers |
+
+### Test Summary
+
+```text
+tests/test_agents/test_credentials_check.py: 12 tests (new)
+tests/test_hub/test_worker.py: 5 tests (new)
+tests/test_cli/test_client.py: 3 new tests (25 total)
+tests/test_cli/test_display.py: 4 new tests (22 total)
+Total: 368 tests, all passing (was 344 before)
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/base.py` | Added `MissingCredentialsError`, `check_credentials()`, guard in `_build_model()` |
+| `src/fin_assist/agents/__init__.py` | Export `MissingCredentialsError` |
+| `src/fin_assist/hub/worker.py` | **New** — `FinAssistWorker` subclass |
+| `src/fin_assist/hub/factory.py` | Custom lifespan using `FinAssistWorker` |
+| `src/fin_assist/hub/__init__.py` | Export `FinAssistWorker` |
+| `src/fin_assist/cli/client.py` | `_extract_result` handles `auth-required` state |
+| `src/fin_assist/cli/display.py` | Added `render_auth_required()` |
+| `src/fin_assist/cli/main.py` | `_do_command` checks `auth_required` metadata |
+| `src/fin_assist/cli/interaction/chat.py` | Chat loop breaks on `auth_required` |
+| `tests/test_agents/test_credentials_check.py` | **New** — 12 tests |
+| `tests/test_hub/test_worker.py` | **New** — 5 tests |
+| `tests/test_cli/test_client.py` | 3 new `auth-required` extraction tests |
+| `tests/test_cli/test_display.py` | 4 new `render_auth_required` tests |
+
+### Future: Interactive Recovery (Phase 10)
+
+The current implementation treats `auth-required` as terminal — the user fixes credentials out-of-band. The Phase 10 design sketch for `InputRequiredError` / `AuthRequiredError` (below) describes the interactive recovery pattern: move `auth-required` to a `_PAUSE_STATES` set, catch it in the client, prompt for credentials inline, write via `CredentialStore`, and resend on the same `context_id`. This builds naturally on top of the current implementation.
 
 ---
 
@@ -562,80 +635,153 @@ Total: 303 tests, all passing
 
 ---
 
-## Next Session: Phase 8b — CLI REPL Mode
+## Reliable Server Lifecycle: PID File Locking (2026-04-09)
+
+**Status**: Complete
+
+### Problem
+
+`fin stop` was unreliable — it would report "no running hub found" even when the hub was clearly running. Root cause: the CLI spawner wrote the PID file, then `stop_server` sent SIGTERM and immediately deleted the PID file (wait_timeout=0) without confirming the process actually died. The server itself had no awareness of the PID file. This caused orphaned processes that couldn't be stopped.
+
+### Solution: Server-Owned PID File with fcntl Locking
+
+Modeled after daemonocle and PEP 3143 best practices:
+
+1. **Server writes and locks**: The hub server (`fin serve --pid-file <path>`) writes its PID and acquires an exclusive `fcntl.flock()` for its entire lifetime
+2. **Server cleans up**: `atexit` handler + custom SIGTERM handler (calls `sys.exit(0)` to trigger atexit) removes the PID file on shutdown
+3. **Lock-based stale detection**: If the server crashes (SIGKILL), the OS releases the lock. Clients detect stale files by probing with a non-blocking `flock`
+4. **Stop = SIGTERM + wait + SIGKILL**: `stop_server` sends SIGTERM, waits up to 10s for the process to exit, escalates to SIGKILL if needed. Only cleans up PID file as a safety net after confirmed death
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/hub/pidfile.py` | **New** — `acquire()`, `release()`, `is_locked()` with fcntl locking |
+| `src/fin_assist/cli/server.py` | Refactored: removed `_write_pid`/`_remove_pid`, `_spawn_serve` passes `--pid-file` to server, `stop_server` waits+escalates |
+| `src/fin_assist/cli/main.py` | Added `--pid-file` arg to serve command, server calls `acquire_pidfile()` before `uvicorn.run()` |
+| `pyproject.toml` | Added `fin` entry point alias |
+| `tests/test_hub/test_pidfile.py` | **New** — 11 tests for acquire/release/is_locked |
+| `tests/test_cli/test_server.py` | Updated: removed `_write_pid`/`_remove_pid` tests, added SIGKILL escalation test |
+
+### Test Summary
+
+```text
+Total: 381 tests, all passing (was 371; +10 new pidfile tests)
+```
+
+---
+
+## Manual Testing Bug Fixes + Regenerate Removal (2026-04-09)
+
+**Status**: Complete
+
+### Bugs Found During Chunk B Manual Testing
+
+1. **Ctrl+C/D trapped in approval loop (B6/B7)**: `FinPrompt.ask()` swallowed `KeyboardInterrupt`/`EOFError` and returned `""`, which the approval widget treated as empty input and looped. User could never escape.
+
+2. **Rich markup rendered as literal text**: Prompt text `[bold]Action:[/bold]` was passed to `prompt_toolkit`, which doesn't understand Rich markup. Appeared as literal `[bold]` tags.
+
+3. **Regenerate always broken**: `regenerate_prompt` was never populated in task artifact metadata. Typing `regenerate` always showed "not available".
+
+### What Changed
+
+**Bug fixes:**
+- `FinPrompt.ask()` now propagates `KeyboardInterrupt`/`EOFError` instead of swallowing them — callers decide how to handle
+- `approve.py` catches both exceptions and returns `CANCEL`
+- `chat.py` already caught them (no change needed to its logic)
+- Removed Rich markup tags from prompt text passed to `prompt_toolkit`
+
+**Regenerate removal (simplification):**
+
+The regenerate feature was removed entirely. Rationale:
+- The implementation was broken (never worked end-to-end)
+- Re-rolling the same prompt at default temperature gives the same result
+- The client already has the prompt in local scope — the server round-trip was unnecessary indirection
+- Removing it eliminated: the `while True` loop in `_do_command`, the `EDIT` action, `supports_regenerate`/`regenerate_prompt` parameters, and the `regenerate` match case
+- Can be re-added properly when there's temperature control or prompt-editing support
+
+**Files changed:**
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/interaction/prompt.py` | Stop swallowing `KeyboardInterrupt`/`EOFError` in `ask()` |
+| `src/fin_assist/cli/interaction/approve.py` | Catch Ctrl+C/D, strip Rich markup, remove regenerate |
+| `src/fin_assist/cli/interaction/chat.py` | Strip Rich markup from prompt text |
+| `src/fin_assist/cli/main.py` | Simplify `_do_command` to linear flow (no while loop) |
+| `src/fin_assist/agents/base.py` | Remove `supports_regenerate` from `AgentCardMeta` |
+| `src/fin_assist/agents/shell.py` | Remove `supports_regenerate=True` |
+| `src/fin_assist/cli/display.py` | Remove `supports_regenerate` rendering |
+| `docs/manual-testing.md` | Fix B1, remove B3 (regenerate), renumber |
+| `tests/test_cli/interaction/test_prompt.py` | Update: exceptions propagate, not swallowed |
+| `tests/test_cli/interaction/test_approve.py` | Rewrite: remove regenerate tests, add Ctrl+C/D/markup tests |
+| `tests/test_cli/test_main.py` | Remove regenerate/edit tests, update return types |
+| `tests/test_cli/test_display.py` | Remove `supports_regenerate` rendering test |
+| `tests/test_cli/test_client.py` | Remove `supports_regenerate` from test fixture |
+
+### Test Summary
+
+```text
+Total: 371 tests, all passing (was 368 before; net +3 from new Ctrl+C/D/markup tests minus removed regenerate tests)
+```
+
+---
+
+## Previous Session: Phase 8b — CLI REPL Mode
+
+**Date**: 2026-04-08
+**Status**: Complete (pending manual testing)
+
+### What Was Accomplished
+
+1. **`FinPrompt` implemented** (`cli/interaction/prompt.py`)
+   - `prompt_toolkit`-backed input widget with `FuzzyCompleter(WordCompleter(...))`
+   - Slash commands: `/exit`, `/quit`, `/q`, `/switch`, `/help`
+   - Agent name tab completion via `agents` parameter
+   - Persistent history via `FileHistory` at `~/.local/share/fin/history`
+   - Ctrl-C/Ctrl-D keybindings return empty string (handled by callers)
+   - Async `ask()` method using `session.prompt_async()`
+
+2. **`chat.py` updated** — accepts optional `FinPrompt`, creates one if not provided, uses `await fp.ask(...)` for input. No `rich.prompt.Prompt` references remain.
+
+3. **`approve.py` updated** — accepts optional `FinPrompt`, creates one if not provided, uses `await fp.ask(...)` for input. Invalid input falls through to `case _` and loops (completion-only, no hard enforcement).
+
+4. **`main.py` updated** — constructs `FinPrompt(agents=[a.name for a in agents])` in both `_do_command` and `_talk_command`, passes down to widgets.
+
+5. **`prompt-toolkit>=3.0`** added as explicit dependency in `pyproject.toml`.
+
+### Design Decision Resolved
+
+| Question | Resolution |
+|----------|------------|
+| FinPrompt instantiation | Constructed in `main.py`, passed to widgets via parameter. Shared instance for history continuity; testable with mocks. |
+
+### Test Summary
+
+```text
+tests/test_cli/interaction/test_prompt.py: 8 tests (new)
+Total: 368 tests, all passing
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/interaction/prompt.py` | **New** — `FinPrompt` class |
+| `src/fin_assist/cli/interaction/chat.py` | Accept `FinPrompt`, replace `Prompt.ask` |
+| `src/fin_assist/cli/interaction/approve.py` | Accept `FinPrompt`, replace `Prompt.ask` |
+| `src/fin_assist/cli/main.py` | Construct `FinPrompt` with agent names, pass to widgets |
+| `pyproject.toml` | Added `prompt-toolkit>=3.0` |
+| `tests/test_cli/interaction/test_prompt.py` | **New** — 8 tests |
+
+---
+
+## Next Session: Continue Manual Testing + Phase 9
 
 ### Goals
 
-Replace `rich.prompt.Prompt.ask` in `chat.py` and `approve.py` with a reusable
-`prompt_toolkit`-backed input widget (`FinPrompt`) that provides:
-
-- **Fuzzy slash-command completion** — type `/` and get a fuzzy-filtered list of
-  available commands (`/exit`, `/quit`, `/switch <agent>`, etc.), matching the
-  OpenCode pattern
-- **Tab completion for agent names** — after `/switch `, complete against live
-  `discover_agents()` results
-- **Persistent input history** — stored at `~/.local/share/fin/history`, shared
-  across sessions
-- **Richer editing** — readline-style keybindings, multi-line input (future)
-
-### Design Sketch: `FinPrompt`
-
-```python
-# src/fin_assist/cli/interaction/prompt.py
-
-class FinPrompt:
-    """Reusable prompt_toolkit session with slash-command fuzzy completion."""
-
-    SLASH_COMMANDS = ["/exit", "/quit", "/q", "/switch", "/help"]
-
-    def __init__(
-        self,
-        agents: list[str] | None = None,
-        history_path: Path = HISTORY_PATH,
-    ) -> None: ...
-
-    async def ask(self, prompt_text: str) -> str:
-        """Async prompt with completion and history."""
-        ...
-```
-
-`FinPrompt` uses:
-- `FuzzyCompleter(WordCompleter(commands + agents))` — built-in to prompt_toolkit
-- `FileHistory(history_path)` — persistent across sessions
-- `KeyBindings` — `Tab` triggers completion, standard readline keys work
-
-### Wiring
-
-Both existing widgets replace `Prompt.ask` with `FinPrompt.ask`:
-
-- `chat.py` — `run_chat_loop` accepts an optional `FinPrompt` instance (or
-  creates one if not provided), uses it for the main input loop
-- `approve.py` — `run_approve_widget` uses `FinPrompt` for action choice, but
-  note: `Prompt.ask(choices=...)` currently enforces valid input for free.
-  With `FinPrompt` this becomes completion-only (no hard enforcement) — invalid
-  input falls through to `case _` in the match block and loops, which is fine
-
-### Open Design Question
-
-Should `FinPrompt` be instantiated once per command (in `main.py`) and passed
-down, or constructed inside each widget? Shared instance is better for history
-continuity across a session. Passing it down keeps widgets testable with mocks.
-**Recommendation**: construct in `main.py`, pass to widgets via parameter.
-
-### Implementation Steps (SDD → TDD)
-
-1. Sketch `FinPrompt` interface + write failing tests
-2. Implement `FinPrompt` with `FuzzyCompleter` + `FileHistory`
-3. Update `chat.py` — accept `FinPrompt`, replace `Prompt.ask`
-4. Update `approve.py` — replace `Prompt.ask` with `FinPrompt.ask`
-5. Update `main.py` — construct `FinPrompt` with live agent names, pass down
-6. Update existing tests to mock `FinPrompt.ask` instead of `Prompt.ask`
-7. Run `just ci`
-
-### Dependencies
-
-Add `prompt_toolkit>=3.0` to `pyproject.toml` (already a transitive dep of
-several packages — worth pinning explicitly).
+1. **Re-verify Chunks A-B** — confirm `fin stop` now works reliably, Ctrl+C/D and markup fixes work
+2. **Manual testing Chunks C-D** — chat loop and FinPrompt completions/history
+3. **Begin Phase 9** (Streaming + Integration Tests) once manual testing passes
 
 ---
 
@@ -718,9 +864,9 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 6 | Agent Protocol & Registry | ✅ Complete |
 | 7 | **Agent Hub Server** | ✅ Complete |
 | 8 | **CLI Client** | ✅ Complete |
-| 8b | CLI REPL Mode | ⬜ Not Started ← next |
-| 9 | Streaming (`message/stream` + SSE) | ⬜ Not Started |
-| 10 | Non-blocking + polling agents | ⬜ Not Started |
+| 8b | **CLI REPL Mode** | ✅ Complete (manual testing next) |
+| 9 | Streaming + Integration Tests | ⬜ Not Started |
+| 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
@@ -730,6 +876,102 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
 | — | gRPC transport | Issue (track fasta2a roadmap) |
+
+---
+
+## Design Sketch: Interactive Task State Machine (Phase 10)
+
+**Status**: Pre-design — no implementation. Depends on Chunks B-D (manual testing) and Phase 9 (streaming) being complete first. Sketched here so the intent is captured.
+
+### Problem
+
+The current `_poll_task` / `_resolve_task` logic in `HubClient` treats the A2A task lifecycle as binary: poll until terminal, then extract the result. This works for agents that run to completion without further input, but the A2A spec supports `input-required` — an agent pausing mid-task to ask the client for more information (e.g., disambiguation, confirmation, missing parameters).
+
+Today, if an agent returned `input-required`, our poll loop would spin forever until timeout because that state isn't in `_TERMINAL_STATES` and we have no mechanism to surface the agent's question to the user.
+
+### A2A Task State Machine
+
+```text
+submitted → working → completed
+                    → failed
+                    → canceled
+                    → rejected
+                    → input-required → (client sends message) → working → ...
+                    → auth-required  → (client authenticates) → working → ...
+```
+
+`input-required` and `auth-required` are **pause states** — the task is alive but blocked on the client. The client must respond with a new `message/send` using the same `context_id` to resume.
+
+### Where This Hooks In
+
+The changes are concentrated in three places:
+
+**1. `HubClient._resolve_task` (client.py)**
+
+Replace the current poll-or-return logic with a state machine dispatch:
+
+```python
+async def _resolve_task(self, agent_name: str, result: Any) -> Task:
+    match result:
+        case {"kind": "task"} if result["status"]["state"] in _TERMINAL_STATES:
+            return result
+        case {"kind": "task"} if result["status"]["state"] == "input-required":
+            raise InputRequiredError(task=result)
+        case {"kind": "task"}:
+            return await self._poll_task(agent_name, result["id"])
+        case _:
+            raise RuntimeError(...)
+```
+
+`_poll_task` also needs to raise `InputRequiredError` instead of spinning when it encounters that state. `InputRequiredError` carries the task (including the agent's message asking for input) so the caller can extract what the agent needs.
+
+**2. `run_chat_loop` (chat.py)**
+
+The chat loop already has the interactive prompt. It would catch `InputRequiredError`, display the agent's question (from `task.status.message`), prompt the user, and send the response via `send_message` with the existing `context_id`:
+
+```python
+try:
+    result = await send_message_fn(agent_name, user_input, ctx_id)
+except InputRequiredError as e:
+    # Display what the agent is asking
+    agent_question = extract_agent_question(e.task)
+    console.print(f"[yellow]{agent_question}[/yellow]")
+    # Get user's response and retry with same context
+    response = await fp.ask("[bold]>[/bold] ")
+    result = await send_message_fn(agent_name, response, ctx_id)
+```
+
+This may need to loop (agent could ask multiple follow-up questions), so in practice it becomes a nested state machine within the chat loop.
+
+**3. `_do_command` (main.py)**
+
+One-shot `do` commands don't have a chat loop to fall back on. Options:
+- Promote to an interactive prompt on `input-required` (breaks the "one-shot" contract)
+- Fail with a clear message: "Agent needs more input — use `talk` for interactive sessions"
+- The second option is cleaner and keeps `do` truly one-shot
+
+### New Types
+
+```python
+@dataclass
+class InputRequiredError(Exception):
+    """Raised when an agent returns input-required state."""
+    task: Task  # Carries the full task so caller can extract the agent's question
+
+def extract_agent_question(task: Task) -> str:
+    """Pull the agent's question from task.status.message or last history entry."""
+    ...
+```
+
+### What Needs to Exist First
+
+- **An agent that uses `input-required`** — without a server-side agent that actually returns this state, the client code can't be tested end-to-end. This likely comes from Phase 16 (additional agents) or Phase 15 (MCP integration where a tool needs user confirmation).
+- **Streaming (Phase 9)** — `input-required` is more natural with streaming, where the agent can progressively show its reasoning before pausing for input. Without streaming, the pause is abrupt.
+- **Chunks B-D passing** — the existing chat loop and approval flow need to be solid before adding a new interaction pattern on top.
+
+### `auth-required` (deferred)
+
+Same pattern as `input-required` but the client response is authentication rather than a text message. Deferred until there's a concrete need (e.g., an agent that calls an external API requiring OAuth). Would follow the same `AuthRequiredError` pattern.
 
 ---
 

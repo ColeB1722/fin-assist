@@ -134,24 +134,42 @@ class TestContext:
 
     @pytest.mark.asyncio
     async def test_update_and_load_context_roundtrip(self, in_memory_storage) -> None:
-        context_data = [{"role": "user", "content": "hello"}]
+        from pydantic_ai import ModelRequest, UserPromptPart
+
+        context_data = [ModelRequest(parts=[UserPromptPart(content="hello")])]
         await in_memory_storage.update_context("ctx-1", context_data)
         loaded = await in_memory_storage.load_context("ctx-1")
-        assert loaded == context_data
+        assert loaded is not None
+        assert len(loaded) == 1
+        assert isinstance(loaded[0], ModelRequest)
 
     @pytest.mark.asyncio
     async def test_update_context_overwrites_previous(self, in_memory_storage) -> None:
-        await in_memory_storage.update_context("ctx-1", ["first"])
-        await in_memory_storage.update_context("ctx-1", ["second"])
+        from pydantic_ai import ModelRequest, UserPromptPart
+
+        first = [ModelRequest(parts=[UserPromptPart(content="first")])]
+        second = [ModelRequest(parts=[UserPromptPart(content="second")])]
+        await in_memory_storage.update_context("ctx-1", first)
+        await in_memory_storage.update_context("ctx-1", second)
         loaded = await in_memory_storage.load_context("ctx-1")
-        assert loaded == ["second"]
+        assert loaded is not None
+        assert len(loaded) == 1
+        assert loaded[0].parts[0].content == "second"
 
     @pytest.mark.asyncio
     async def test_separate_context_ids_are_isolated(self, in_memory_storage) -> None:
-        await in_memory_storage.update_context("ctx-a", ["for a"])
-        await in_memory_storage.update_context("ctx-b", ["for b"])
-        assert await in_memory_storage.load_context("ctx-a") == ["for a"]
-        assert await in_memory_storage.load_context("ctx-b") == ["for b"]
+        from pydantic_ai import ModelRequest, UserPromptPart
+
+        ctx_a = [ModelRequest(parts=[UserPromptPart(content="for a")])]
+        ctx_b = [ModelRequest(parts=[UserPromptPart(content="for b")])]
+        await in_memory_storage.update_context("ctx-a", ctx_a)
+        await in_memory_storage.update_context("ctx-b", ctx_b)
+        loaded_a = await in_memory_storage.load_context("ctx-a")
+        loaded_b = await in_memory_storage.load_context("ctx-b")
+        assert loaded_a is not None
+        assert loaded_a[0].parts[0].content == "for a"
+        assert loaded_b is not None
+        assert loaded_b[0].parts[0].content == "for b"
 
 
 # ---------------------------------------------------------------------------
@@ -162,13 +180,18 @@ class TestContext:
 class TestPersistence:
     @pytest.mark.asyncio
     async def test_data_persists_across_instances(self, tmp_path) -> None:
+        from pydantic_ai import ModelRequest, UserPromptPart
+
         db = str(tmp_path / "persist.db")
         storage1 = SQLiteStorage(db_path=db)
-        await storage1.update_context("ctx-x", ["persisted"])
+        context = [ModelRequest(parts=[UserPromptPart(content="persisted")])]
+        await storage1.update_context("ctx-x", context)
 
         storage2 = SQLiteStorage(db_path=db)
         loaded = await storage2.load_context("ctx-x")
-        assert loaded == ["persisted"]
+        assert loaded is not None
+        assert len(loaded) == 1
+        assert loaded[0].parts[0].content == "persisted"
 
 
 # ---------------------------------------------------------------------------

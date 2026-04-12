@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 fin-assist = "fin_assist.__main__:main"
+fin = "fin_assist.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

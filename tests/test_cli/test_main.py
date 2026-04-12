@@ -17,7 +17,6 @@ from fin_assist.agents.base import AgentCardMeta
 from fin_assist.cli.client import AgentResult, DiscoveredAgent
 from fin_assist.cli.main import main
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -40,7 +39,6 @@ def _run_main(*argv: str) -> int:
 def _make_discovered(
     name: str = "shell",
     requires_approval: bool = False,
-    supports_regenerate: bool = False,
 ) -> DiscoveredAgent:
     return DiscoveredAgent(
         name=name,
@@ -48,7 +46,6 @@ def _make_discovered(
         url=f"http://localhost/agents/{name}/",
         card_meta=AgentCardMeta(
             requires_approval=requires_approval,
-            supports_regenerate=supports_regenerate,
         ),
     )
 
@@ -79,6 +76,7 @@ class TestServeCommand:
     def test_serve_starts_uvicorn(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             result = _run_main("serve")
@@ -89,6 +87,7 @@ class TestServeCommand:
     def test_serve_allows_host_override(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             _run_main("serve", "--host", "0.0.0.0")
@@ -100,6 +99,7 @@ class TestServeCommand:
     def test_serve_allows_port_override(self):
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
             patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
         ):
             _run_main("serve", "--port", "8080")
@@ -126,7 +126,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -144,7 +144,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -164,7 +164,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error"),
         ):
             mock_client = AsyncMock()
@@ -188,7 +188,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient") as mock_cls,
+            patch("fin_assist.cli.main.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error", side_effect=rendered.append),
         ):
             mock_client = AsyncMock()
@@ -238,7 +238,7 @@ class TestAgentsCommand:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_agents_list"),
         ):
             result = _run_main("agents")
@@ -283,8 +283,8 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
-            patch("fin_assist.cli.main.render_command"),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.main.render_response"),
         ):
             result = _run_main("do", "shell", "list files")
 
@@ -302,7 +302,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "nonexistent", "do something")
@@ -337,7 +337,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "shell", "do something")
@@ -352,7 +352,7 @@ class TestDoCommandNoApproval:
 
 class TestDoCommandApproval:
     def test_shows_approval_widget_when_requires_approval(self):
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
+        agent = _make_discovered("shell", requires_approval=True)
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
@@ -367,10 +367,10 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.CANCEL, None),
+                return_value=ApprovalAction.CANCEL,
             ) as mock_widget,
         ):
             result = _run_main("do", "shell", "remove temp")
@@ -394,10 +394,10 @@ class TestDoCommandApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
                 "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.EXECUTE, None),
+                return_value=ApprovalAction.EXECUTE,
             ),
             patch("fin_assist.cli.main.execute_command", return_value=0) as mock_exec,
         ):
@@ -405,76 +405,6 @@ class TestDoCommandApproval:
 
         mock_exec.assert_called_once_with("echo hi")
         assert result == 0
-
-    def test_reruns_with_edited_prompt_on_edit(self):
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
-        run_results = [
-            AgentResult(success=True, output="echo first"),
-            AgentResult(success=True, output="echo second"),
-        ]
-        mock_client = _mock_client(agents=[agent])
-        mock_client.run_agent = AsyncMock(side_effect=run_results)
-
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        approve_responses = [
-            (ApprovalAction.EDIT, "edited prompt"),
-            (ApprovalAction.EXECUTE, None),
-        ]
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.run_approve_widget",
-                side_effect=approve_responses,
-            ),
-            patch("fin_assist.cli.main.execute_command", return_value=0),
-        ):
-            result = _run_main("do", "shell", "original prompt")
-
-        assert result == 0
-        assert mock_client.run_agent.call_count == 2
-        # Second call uses the edited prompt
-        mock_client.run_agent.assert_called_with("shell", "edited prompt")
-
-    def test_approval_widget_receives_card_meta_flags(self):
-        """supports_regenerate comes from card_meta, not result.metadata."""
-        agent = _make_discovered("shell", requires_approval=True, supports_regenerate=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(
-                success=True,
-                output="ls",
-                metadata={"regenerate_prompt": "list files"},
-            ),
-        )
-
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.run_approve_widget",
-                return_value=(ApprovalAction.CANCEL, None),
-            ) as mock_widget,
-        ):
-            _run_main("do", "shell", "list files")
-
-        _, widget_kwargs = mock_widget.call_args
-        assert widget_kwargs["supports_regenerate"] is True
-        assert widget_kwargs["regenerate_prompt"] == "list files"
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +475,7 @@ class TestSessionIdFormat:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.A2AClient", return_value=mock_client),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main._save_session", side_effect=capture_save),
             patch(
                 "fin_assist.cli.main.run_chat_loop",
@@ -565,6 +495,54 @@ class TestSessionIdFormat:
 # ---------------------------------------------------------------------------
 # `stop` command
 # ---------------------------------------------------------------------------
+
+
+class TestStartCommand:
+    def test_start_calls_ensure_server_running(self):
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://127.0.0.1:4096",
+            ) as mock_ensure,
+            patch("fin_assist.cli.main.render_info"),
+        ):
+            result = _run_main("start")
+
+        mock_ensure.assert_called_once()
+        assert result == 0
+
+    def test_start_renders_info_with_url(self):
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://127.0.0.1:4096",
+            ),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            _run_main("start")
+
+        mock_info.assert_called_once_with("Hub running at http://127.0.0.1:4096")
+
+    def test_start_returns_1_on_startup_error(self):
+        from fin_assist.cli.server import ServerStartupError
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                side_effect=ServerStartupError("failed"),
+            ),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("start")
+
+        assert result == 1
+        mock_error.assert_called_once()
 
 
 class TestStopCommand:
@@ -596,6 +574,71 @@ class TestStopCommand:
             _run_main("stop")
 
         mock_stop.assert_called_once()
+
+    def test_stop_passes_port_to_stop_server(self):
+        with (
+            patch("fin_assist.cli.main.stop_server", return_value=True) as mock_stop,
+            patch("fin_assist.cli.main.render_info"),
+        ):
+            _run_main("stop")
+
+        _, kwargs = mock_stop.call_args
+        assert "port" in kwargs
+
+
+# ---------------------------------------------------------------------------
+# status command
+# ---------------------------------------------------------------------------
+
+
+class TestStatusCommand:
+    def test_status_returns_0_when_healthy(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=True, base_url="http://127.0.0.1:4096", pid=12345, pid_file_exists=True
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "running" in info_text.lower() or "12345" in info_text
+
+    def test_status_returns_0_when_not_running(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=False, base_url="http://127.0.0.1:4096", pid=None, pid_file_exists=False
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "not running" in info_text.lower()
+
+    def test_status_warns_about_orphaned_server(self):
+        from fin_assist.cli.server import HubStatus
+
+        mock_status = HubStatus(
+            healthy=True, base_url="http://127.0.0.1:4096", pid=12345, pid_file_exists=False
+        )
+        with (
+            patch("fin_assist.cli.main.check_status", return_value=mock_status),
+            patch("fin_assist.cli.main.render_info") as mock_info,
+        ):
+            result = _run_main("status")
+
+        assert result == 0
+        info_text = mock_info.call_args[0][0]
+        assert "orphan" in info_text.lower() or "PID file missing" in info_text
 
 
 # ---------------------------------------------------------------------------

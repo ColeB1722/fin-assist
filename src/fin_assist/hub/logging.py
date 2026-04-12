@@ -5,9 +5,9 @@ Uvicorn is invoked with ``log_config=None`` so it inherits this configuration
 rather than resetting it.
 
 All loggers (``uvicorn.*``, ``fin_assist.*``, root) share a single
-``RotatingFileHandler`` pointed at ``~/.local/share/fin/hub.log``.  This means
-future ``logging.getLogger(__name__)`` calls anywhere in the hub will
-automatically write to the same file without any additional setup.
+``RotatingFileHandler``.  This means future ``logging.getLogger(__name__)``
+calls anywhere in the hub will automatically write to the same file without
+any additional setup.
 """
 
 from __future__ import annotations
@@ -15,16 +15,17 @@ from __future__ import annotations
 import logging
 import logging.config
 import logging.handlers
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-LOG_FILE = Path("~/.local/share/fin/hub.log").expanduser()
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _DEFAULT_MAX_BYTES = 1_000_000  # 1 MB
 _DEFAULT_BACKUP_COUNT = 1  # hub.log + hub.log.1 → max 2 MB on disk
 
 
 def configure_logging(
-    log_file: Path = LOG_FILE,
+    log_file: Path,
     max_bytes: int = _DEFAULT_MAX_BYTES,
     backup_count: int = _DEFAULT_BACKUP_COUNT,
 ) -> None:
