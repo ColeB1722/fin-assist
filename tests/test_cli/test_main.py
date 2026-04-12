@@ -68,45 +68,106 @@ def _mock_client(
 
 
 # ---------------------------------------------------------------------------
-# `serve` command (synchronous — no asyncio.run)
+# `serve` command
 # ---------------------------------------------------------------------------
 
 
 class TestServeCommand:
     def test_serve_starts_uvicorn(self):
+        mock_server = MagicMock()
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
             patch("fin_assist.cli.main.configure_logging"),
-            patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
+            patch("fin_assist.hub.pidfile.acquire"),
+            patch("fin_assist.cli.main.uvicorn.Config"),
+            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("socket.socket", return_value=MagicMock()),
+            patch("fin_assist.cli.main.asyncio.run"),
         ):
             result = _run_main("serve")
 
-        mock_uvicorn.assert_called_once()
+        mock_server.serve.assert_called_once()
         assert result == 0
 
     def test_serve_allows_host_override(self):
+        mock_server = MagicMock()
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
             patch("fin_assist.cli.main.configure_logging"),
-            patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
+            patch("fin_assist.hub.pidfile.acquire"),
+            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
+            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("socket.socket", return_value=MagicMock()),
+            patch("fin_assist.cli.main.asyncio.run"),
         ):
             _run_main("serve", "--host", "0.0.0.0")
 
-        call_kwargs = mock_uvicorn.call_args
-        host_used = call_kwargs.kwargs.get("host") or call_kwargs.args[1]
-        assert host_used == "0.0.0.0"
+        call_kwargs = mock_config_cls.call_args
+        assert call_kwargs.kwargs.get("host") == "0.0.0.0"
 
     def test_serve_allows_port_override(self):
+        mock_server = MagicMock()
         with (
             patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
             patch("fin_assist.cli.main.configure_logging"),
-            patch("fin_assist.cli.main.uvicorn.run") as mock_uvicorn,
+            patch("fin_assist.hub.pidfile.acquire"),
+            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
+            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("socket.socket", return_value=MagicMock()),
+            patch("fin_assist.cli.main.asyncio.run"),
         ):
             _run_main("serve", "--port", "8080")
 
-        call_kwargs = mock_uvicorn.call_args
-        port_used = call_kwargs.kwargs.get("port") or call_kwargs.args[2]
-        assert port_used == 8080
+        call_kwargs = mock_config_cls.call_args
+        assert call_kwargs.kwargs.get("port") == 8080
+
+    def test_serve_returns_1_on_port_in_use(self):
+        import errno
+
+        with (
+            patch("socket.socket") as mock_sock_cls,
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            mock_sock = MagicMock()
+            mock_sock.bind.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
+            mock_sock_cls.return_value = mock_sock
+            result = _run_main("serve")
+
+        assert result == 1
+        assert "already in use" in mock_error.call_args[0][0]
+
+    def test_serve_returns_1_on_permission_denied(self):
+        import errno
+
+        with (
+            patch("socket.socket") as mock_sock_cls,
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            mock_sock = MagicMock()
+            mock_sock.bind.side_effect = OSError(errno.EACCES, "Permission denied")
+            mock_sock_cls.return_value = mock_sock
+            result = _run_main("serve")
+
+        assert result == 1
+        assert "Permission denied" in mock_error.call_args[0][0]
+
+    def test_serve_passes_prebound_socket_to_server(self):
+        mock_server = MagicMock()
+        mock_sock = MagicMock()
+        with (
+            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.pidfile.acquire"),
+            patch("fin_assist.cli.main.uvicorn.Config"),
+            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("socket.socket", return_value=mock_sock),
+            patch("fin_assist.cli.main.asyncio.run"),
+        ):
+            result = _run_main("serve")
+
+        serve_call_kwargs = mock_server.serve.call_args
+        assert serve_call_kwargs.kwargs.get("sockets") == [mock_sock]
+        assert result == 0
 
 
 # ---------------------------------------------------------------------------

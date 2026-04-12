@@ -11,12 +11,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import uvicorn
 from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-
-import uvicorn
 
 from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
@@ -124,6 +123,57 @@ async def _get_agent_or_error(
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+def _serve_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
+    """Handle `fin-assist serve` — start the hub server in the foreground."""
+    import errno
+    import socket
+
+    from fin_assist.agents import DefaultAgent, ShellAgent
+    from fin_assist.credentials.store import CredentialStore
+    from fin_assist.hub.pidfile import acquire as acquire_pidfile
+    from fin_assist.paths import PID_FILE
+
+    host = args.host or config.server.host
+    port = args.port or config.server.port
+    db_path = os.path.expanduser(args.db or config.server.db_path)
+    log_path = Path(os.path.expanduser(config.server.log_path))
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sock.listen(1)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            render_error(
+                f"Port {port} is already in use. "
+                f"Run [bold]fin stop[/bold] to stop the existing hub, "
+                f"or use [bold]--port[/bold] to bind a different port."
+            )
+        elif exc.errno == errno.EACCES:
+            render_error(
+                f"Permission denied binding to port {port}. "
+                f"Ports below 1024 require elevated privileges."
+            )
+        else:
+            render_error(f"Could not bind to {host}:{port}: {exc}")
+        return 1
+
+    credentials = CredentialStore()
+    configure_logging(log_file=log_path)
+
+    pid_file = Path(args.pid_file) if args.pid_file else PID_FILE
+    acquire_pidfile(pid_file)
+
+    console.print(f"[dim]Logging to {log_path}[/dim]")
+    agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
+    app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
+    uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
+    server = uvicorn.Server(uvicorn_config)
+    asyncio.run(server.serve(sockets=[sock]))
+    return 0
 
 
 async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
@@ -341,25 +391,7 @@ def main(argv: list[str] | None = None) -> int:
                 render_info("Hub is not running.")
             return 0
         case "serve":
-            from fin_assist.agents import DefaultAgent, ShellAgent
-            from fin_assist.credentials.store import CredentialStore
-            from fin_assist.hub.pidfile import acquire as acquire_pidfile
-
-            host = args.host or config.server.host
-            port = args.port or config.server.port
-            db_path = os.path.expanduser(args.db or config.server.db_path)
-            log_path = Path(os.path.expanduser(config.server.log_path))
-            credentials = CredentialStore()
-            configure_logging(log_file=log_path)
-
-            if args.pid_file:
-                acquire_pidfile(Path(args.pid_file))
-
-            console.print(f"[dim]Logging to {log_path}[/dim]")
-            agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
-            app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
-            uvicorn.run(app, host=host, port=port, log_config=None)
-            return 0
+            return _serve_command(args, config, config_path)
         case _:
             parser.print_help()
             return 1

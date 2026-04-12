@@ -28,6 +28,25 @@ def _print_help() -> None:
         console.print(f"  {cmd.name}  — {cmd.description}")
 
 
+def _print_sessions(agent_name: str) -> None:
+    sessions_dir = SESSIONS_DIR / agent_name
+    if not sessions_dir.exists():
+        console.print(f"  No saved sessions for {agent_name}")
+        return
+    files = list(sessions_dir.glob("*.json"))
+    if not files:
+        console.print(f"  No saved sessions for {agent_name}")
+        return
+    console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
+    for session_file in files:
+        session = json.loads(session_file.read_text())
+        sid = session.get("session_id", "unknown")
+        cid = session.get("context_id", "unknown")
+        cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid
+        console.print(f"  {sid}  (context: {cid_display})")
+    console.print(f"[dim]Resume with: fin talk {agent_name} --resume <slug>[/dim]")
+
+
 async def run_chat_loop(
     send_message_fn: Callable[[str, str, str | None], Awaitable[AgentResult]],
     agent_name: str,
@@ -84,24 +103,7 @@ async def run_chat_loop(
                     _print_help()
                     continue
                 case "/sessions":
-                    sessions_dir = SESSIONS_DIR / agent_name
-                    if sessions_dir.exists():
-                        files = list(sessions_dir.glob("*.json"))
-                        if files:
-                            console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
-                            for session_file in files:
-                                session = json.loads(session_file.read_text())
-                                sid = session.get("session_id", "unknown")
-                                cid = session.get("context_id", "unknown")
-                                cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid
-                                console.print(f"  {sid}  (context: {cid_display})")
-                            console.print(
-                                f"[dim]Resume with: fin talk {agent_name} --resume <slug>[/dim]"
-                            )
-                        else:
-                            console.print(f"  No saved sessions for {agent_name}")
-                    else:
-                        console.print(f"  No saved sessions for {agent_name}")
+                    _print_sessions(agent_name)
                     continue
                 case _:
                     console.print(f"[yellow]Command {matched.name} is not yet implemented[/yellow]")

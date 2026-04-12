@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 import httpx
-from fasta2a.client import A2AClient as _A2AClient
+from fasta2a.client import A2AClient
 
 from fin_assist.agents.base import AgentCardMeta
 
@@ -73,18 +73,18 @@ class HubClient:
         self.timeout = timeout
         self.poll_interval = poll_interval
         self._http: httpx.AsyncClient | None = None
-        self._a2a_clients: dict[str, _A2AClient] = {}
+        self._a2a_clients: dict[str, A2AClient] = {}
 
     def _get_http(self) -> httpx.AsyncClient:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=self.timeout)
         return self._http
 
-    def _get_a2a(self, agent_name: str) -> _A2AClient:
+    def _get_a2a(self, agent_name: str) -> A2AClient:
         """Return (or create) a fasta2a A2AClient for the given agent."""
         if agent_name not in self._a2a_clients:
             agent_url = f"{self.base_url}/agents/{agent_name}/"
-            self._a2a_clients[agent_name] = _A2AClient(
+            self._a2a_clients[agent_name] = A2AClient(
                 base_url=agent_url,
                 http_client=self._get_http(),
             )
@@ -162,38 +162,21 @@ class HubClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_result(task: Task) -> AgentResult:
-        """Extract ``AgentResult`` from a completed ``Task``.
-
-        Artifacts are checked first (they contain the agent's response).
-        History is the fallback — it includes the user's input message,
-        so scanning it first would return the prompt instead of the reply.
+    def _extract_from_artifacts(task: Task) -> tuple[str, list[str], dict[str, Any]]:
+        """Extract output, warnings, and metadata from task artifacts.
 
         pydantic-ai wraps structured ``output_type`` values in a
         ``{"result": ...}`` envelope inside data parts; we unwrap that.
-
-        For ``auth-required`` tasks, the worker adds an agent message to
-        history explaining which credentials are missing.  We extract that
-        and flag the result so the display layer can render it distinctly.
+        Artifacts are checked in reverse order (latest wins for output).
         """
-        state = task["status"]["state"]
-        success = state == "completed"
-        context_id = task["context_id"]
-
         output = ""
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
 
-        # Flag auth-required so the display layer can render it distinctly
-        if state == "auth-required":
-            metadata["auth_required"] = True
-
-        # Artifacts contain the agent's response
         for item in reversed(task.get("artifacts") or []):
             for part in item.get("parts", []):
                 match part:
                     case {"kind": "data", "data": data}:
-                        # pydantic-ai wraps structured output in a "result" key
                         inner = data.get("result", data)
                         if not output:
                             output = inner.get("command", "")
@@ -205,19 +188,47 @@ class HubClient:
                         if not output:
                             output = text
 
-        # Fall back to history only if artifacts had no output
+        return output, warnings, metadata
+
+    @staticmethod
+    def _extract_from_history(task: Task) -> str:
+        """Extract the last agent text from task history.
+
+        History includes the user's input message, so this is only used
+        as a fallback when artifacts yield no output.
+        """
+        for item in reversed(task.get("history") or []):
+            for part in item.get("parts", []):
+                match part:
+                    case {"kind": "text", "text": text}:
+                        return text
+        return ""
+
+    @staticmethod
+    def _extract_result(task: Task) -> AgentResult:
+        """Extract ``AgentResult`` from a completed ``Task``.
+
+        Artifacts are checked first (they contain the agent's response).
+        History is the fallback — it includes the user's input message,
+        so scanning it first would return the prompt instead of the reply.
+
+        For ``auth-required`` tasks, the worker adds an agent message to
+        history explaining which credentials are missing.  We flag the
+        result so the display layer can render it distinctly.
+        """
+        state = task["status"]["state"]
+        context_id = task["context_id"]
+
+        output, warnings, metadata = HubClient._extract_from_artifacts(task)
+
         if not output:
-            for item in reversed(task.get("history") or []):
-                for part in item.get("parts", []):
-                    match part:
-                        case {"kind": "text", "text": text}:
-                            output = text
-                            break
-                if output:
-                    break
+            output = HubClient._extract_from_history(task)
+
+        if state == "auth-required":
+            metadata["auth_required"] = True
 
         return AgentResult(
-            success=success,
+            success=state == "completed",
             output=output,
             warnings=warnings,
             metadata=metadata,
