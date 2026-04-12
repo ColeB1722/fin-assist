@@ -36,6 +36,8 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
+# TECH DEBT: importing from a private module. See #68 for context
+# and migration plan. Pin pydantic-ai to prevent silent breakage.
 from pydantic_ai._a2a import AgentWorker
 
 from fin_assist.agents.base import MissingCredentialsError
