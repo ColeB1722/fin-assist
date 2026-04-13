@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -21,6 +21,8 @@ from pydantic_settings import (
 )
 
 ThinkingEffort = Literal["off", "low", "medium", "high"] | None
+
+ServingMode = Literal["do", "talk"]
 
 
 class GeneralSettings(BaseModel):
@@ -58,6 +60,49 @@ class ServerSettings(BaseModel):
     log_path: str = "~/.local/share/fin/hub.log"
 
 
+class AgentConfig(BaseModel):
+    """Per-agent configuration.
+
+    Each key in ``Config.agents`` maps to an agent name (e.g. ``default``,
+    ``shell``).  The values control that agent's behavior at the hub level.
+    """
+
+    enabled: bool = True
+    description: str = ""
+    system_prompt: str = "chain-of-thought"
+    output_type: str = "text"
+    thinking: ThinkingEffort = "medium"
+    serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
+    requires_approval: bool = False
+    tags: list[str] = Field(default_factory=list)
+
+
+_DEFAULT_AGENTS: dict[str, AgentConfig] = {
+    "default": AgentConfig(
+        description=(
+            "General-purpose assistant. Helps with questions, "
+            "shell commands, brainstorming, and more."
+        ),
+        system_prompt="chain-of-thought",
+        output_type="text",
+        thinking="medium",
+        serving_modes=["do", "talk"],
+    ),
+    "shell": AgentConfig(
+        description=(
+            "One-shot shell command generator. Give it a natural-language "
+            "request and get back a ready-to-run command."
+        ),
+        system_prompt="shell",
+        output_type="command",
+        thinking="off",
+        serving_modes=["do"],
+        requires_approval=True,
+        tags=["shell", "one-shot"],
+    ),
+}
+
+
 class Config(BaseSettings):
     """Root configuration model.
 
@@ -70,13 +115,14 @@ class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FIN_",
         env_nested_delimiter="__",
-        toml_file=None,  # set dynamically by load_config() via _toml_file
+        toml_file=None,
     )
 
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()
     server: ServerSettings = ServerSettings()
     providers: dict[str, ProviderConfig] = {}
+    agents: dict[str, AgentConfig] = Field(default_factory=lambda: _DEFAULT_AGENTS)
 
     @classmethod
     def settings_customise_sources(

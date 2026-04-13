@@ -130,7 +130,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     import errno
     import socket
 
-    from fin_assist.agents import DefaultAgent, ShellAgent
+    from fin_assist.agents.agent import ConfigAgent
     from fin_assist.credentials.store import CredentialStore
     from fin_assist.hub.pidfile import acquire as acquire_pidfile
     from fin_assist.paths import PID_FILE
@@ -168,7 +168,11 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     acquire_pidfile(pid_file)
 
     console.print(f"[dim]Logging to {log_path}[/dim]")
-    agents = [DefaultAgent(config, credentials), ShellAgent(config, credentials)]
+    agents = [
+        ConfigAgent(name=name, agent_config=ac, config=config, credentials=credentials)
+        for name, ac in config.agents.items()
+        if ac.enabled
+    ]
     app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
     uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(uvicorn_config)
@@ -182,6 +186,13 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
         async with _hub_client(config, config_path) as client:
             discovered, agents = await _get_agent_or_error(client, args.agent)
             if discovered is None:
+                return 1
+
+            if "do" not in discovered.card_meta.serving_modes:
+                render_error(
+                    f"Agent '{discovered.name}' does not support one-shot (do) mode. "
+                    f"Available modes: {', '.join(discovered.card_meta.serving_modes)}"
+                )
                 return 1
 
             prompt = " ".join(args.prompt)
@@ -216,9 +227,6 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
 async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
     if args.list_sessions:
-        if not args.agent:
-            render_error("Agent name required for --list")
-            return 1
         sessions_dir = SESSIONS_DIR / args.agent
         if sessions_dir.exists():
             for session_file in sessions_dir.glob("*.json"):
@@ -232,9 +240,6 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
 
     context_id: str | None = None
     if args.resume:
-        if not args.agent:
-            render_error("Agent name required for --resume")
-            return 1
         session = _load_session(args.agent, args.resume)
         if session is None:
             render_error(f"Session {args.resume} not found")
@@ -242,13 +247,19 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
         context_id = session.get("context_id")
         render_info(f"Resuming session {args.resume}")
 
-    if not args.agent:
-        render_error("Agent name required for talk command")
-        return 1
-
     try:
         async with _hub_client(config, config_path) as client:
-            agents = await client.discover_agents()
+            discovered, agents = await _get_agent_or_error(client, args.agent)
+            if discovered is None:
+                return 1
+
+            if "talk" not in discovered.card_meta.serving_modes:
+                render_error(
+                    f"Agent '{discovered.name}' does not support multi-turn (talk) mode. "
+                    f"Available modes: {', '.join(discovered.card_meta.serving_modes)}"
+                )
+                return 1
+
             fp = FinPrompt(agents=[a.name for a in agents])
             initial_message = " ".join(args.message) if args.message else None
             final_context_id = await run_chat_loop(
@@ -302,14 +313,18 @@ def main(argv: list[str] | None = None) -> int:
         "do",
         help="Run a one-shot query to an agent (no memory).",
     )
-    do_parser.add_argument("agent", help="Name of the agent to use.")
+    do_parser.add_argument(
+        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+    )
     do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
 
     talk_parser = subparsers.add_parser(
         "talk",
         help="Start a multi-turn chat session with an agent.",
     )
-    talk_parser.add_argument("agent", nargs="?", help="Name of the agent to use.")
+    talk_parser.add_argument(
+        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+    )
     talk_parser.add_argument(
         "message",
         nargs="*",

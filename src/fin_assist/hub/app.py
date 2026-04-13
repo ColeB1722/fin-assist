@@ -36,18 +36,18 @@ if TYPE_CHECKING:
     from fasta2a.applications import FastA2A
     from starlette.requests import Request
 
-    from fin_assist.agents.base import BaseAgent
+    from fin_assist.agents.agent import ConfigAgent
 
 
 def create_hub_app(
-    agents: Sequence[BaseAgent] | None = None,
+    agents: Sequence[ConfigAgent] | None = None,
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
 ) -> Starlette:
     """Build and return the parent Starlette hub application.
 
     Args:
-        agents:   List of initialised ``BaseAgent`` instances to mount.
+        agents:   List of initialised ``ConfigAgent`` instances to mount.
                   If ``None`` an empty hub is created.
         db_path:  SQLite database path.  Defaults to ``":memory:"`` (tests);
                   production should pass ``~/.local/share/fin/hub.db``.

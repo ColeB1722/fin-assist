@@ -16,7 +16,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 
 ## Design Principles
 
-1. **Agents as code** — Custom specialized agents, not declarative configurations. The fun is in the implementation.
+1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
 2. **Protocol-native** — Built on A2A via fasta2a for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **pydantic-ai foundation** — Unified interface for all LLM providers with structured output validation.
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
@@ -28,7 +28,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 - Network-accessible deployment (personal use only, local-first)
 - Real-time command suggestions (on-demand only)
 - IDE/editor integration (beyond future MCP)
-- Declarative agent configuration (agents are code, not YAML/TOML)
+- TOML-based agent *creation* (agents defined via TOML config, but the `Agent` class is the only implementation — no `fin ingest` to create new agent classes from TOML)
 
 ---
 
@@ -63,6 +63,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  │  Multi-Path Agent Routing (each agent = separate A2A sub-app)        │    │
 │  │                                                                       │    │
 │  │  /agents/default/                    /agents/shell/                   │    │
+│  │  (ConfigAgent, [agents.default])    (ConfigAgent, [agents.shell])    │    │
 │  │  ├── /.well-known/agent-card.json    ├── /.well-known/agent-card.json│    │
 │  │  └── / (JSON-RPC endpoint)           └── / (JSON-RPC endpoint)      │    │
 │  │                                                                       │    │
@@ -133,7 +134,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Agent Factory (hub/factory.py)                                       │   │
-│  │  • BaseAgent → pydantic-ai Agent → .to_a2a() sub-app                │   │
+│  │  • ConfigAgent → pydantic-ai Agent → FastA2A() direct construction     │   │
 │  │  • Maps AgentCardMeta → fasta2a Skill + agent card extensions       │   │
 │  │  • Injects shared storage + broker                                   │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
@@ -158,13 +159,12 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Agent System                                                         │   │
 │  │  ┌────────────────────────────────────────────────────────────────┐  │   │
-│  │  │  BaseAgent ABC + AgentCardMeta                                  │  │   │
-│  │  │  • name, description, system_prompt, output_type               │  │   │
-│  │  │  • agent_card_metadata → AgentCardMeta (static UI hints)       │  │   │
-│  │  │  • supports_context(context_type) -> bool                      │  │   │
-│  │  │  • run(prompt, context) -> AgentResult[T]                       │  │   │
+│  │  │  ConfigAgent + AgentConfig (config-driven, single class)     │  │   │
+│  │  │  • name, system_prompt (from registry), output_type (from registry)│  │   │
+│  │  │  • agent_card_metadata → AgentCardMeta (from config fields)    │  │   │
+│  │  │  • serving_modes, thinking, requires_approval — all from TOML  │  │   │
 │  │  └────────────────────────────────────────────────────────────────┘  │   │
-│  │  Agent instances passed directly to create_hub_app()                │   │
+│  │  ConfigAgent instances created from config.agents (TOML sections)    │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -202,9 +202,10 @@ fin-assist/
 │       ├── hub/                     # Agent Hub server
 │       │   ├── __init__.py
 │       │   ├── app.py               # Parent Starlette app, mounts agent sub-apps
-│       │   ├── factory.py           # BaseAgent → pydantic-ai Agent → .to_a2a()
+│       │   ├── factory.py           # Agent → FastA2A() with direct Worker (no to_a2a())
 │       │   ├── storage.py           # SQLite-backed fasta2a Storage implementation
-│       │   ├── worker.py            # FinAssistWorker — maps MissingCredentialsError → auth-required
+│       │   ├── worker.py            # FinAssistWorker(Worker[list[ModelMessage]]) — public API only
+│       │   ├── pidfile.py           # PID file management with fcntl locking
 │       │   └── logging.py           # Hub logging configuration (RotatingFileHandler)
 │       │
 │       ├── cli/                     # CLI client (primary client)
@@ -213,21 +214,18 @@ fin-assist/
 │       │   ├── client.py            # A2A client wrapper (httpx + fasta2a TypeAdapters)
 │       │   ├── display.py           # Rich-based output formatting
 │       │   ├── server.py            # Auto-start hub, health polling, PID management
-│       │   ├── repl.py              # Interactive REPL mode (future — Phase 8b)
 │       │   └── interaction/         # Interactive CLI components
 │       │       ├── __init__.py
-│       │       ├── approve.py       # Approval widget (execute/cancel/regenerate)
+│       │       ├── approve.py       # Approval widget (execute/cancel/add context)
 │       │       ├── chat.py          # Multi-turn chat loop (talk command)
-│       │       └── prompt.py        # FinPrompt — prompt-toolkit wrapper with completions
+│       │       └── prompt.py        # FinPrompt — prompt-toolkit with @-completion
 │       │
 │       ├── agents/
 │       │   ├── __init__.py
-│       │   ├── base.py             # BaseAgent ABC, AgentResult, AgentCardMeta
-│       │   ├── results.py          # CommandResult and other result models
-│       │   ├── default.py          # DefaultAgent (multi-turn chain-of-thought)
-│       │   ├── shell.py            # ShellAgent (one-shot command generation)
-│       │   ├── sdd.py              # Future: SDDAgent (design)
-│       │   └── tdd.py              # Future: TDDAgent (test-driven)
+│       │   ├── agent.py             # ConfigAgent (config-driven, single class, no ABC)
+│       │   ├── results.py           # CommandResult and other result models
+│       │   ├── registries.py        # OUTPUT_TYPE_REGISTRY, PROMPT_REGISTRY
+│       │   ├── metadata.py          # AgentCardMeta, ServingMode, AgentResult
 │       │
 │       ├── llm/
 │       │   ├── __init__.py
@@ -310,28 +308,32 @@ fin-assist/
 Static metadata declared by each agent and published in the A2A agent card as an extension. Clients read this to adapt their UI without knowing about specific agent types.
 
 ```python
-from dataclasses import dataclass, field
+from typing import Literal
+from pydantic import BaseModel
 
-@dataclass
-class AgentCardMeta:
+ServingMode = Literal["do", "talk", "do_talk"]
+
+class AgentCardMeta(BaseModel):
     """Static UI/capability metadata published in the agent card.
 
     Clients read these fields to determine which UI elements to show/hide.
     """
-    multi_turn: bool = True              # Show chat history? Use context_id?
+    serving_modes: list[ServingMode] = ["do", "talk"]  # Which CLI modes this agent supports
     supports_thinking: bool = True       # Show thinking effort selector?
     supports_model_selection: bool = True # Show model/provider selector?
     supported_providers: list[str] | None = None  # None = all providers
+    requires_approval: bool = False      # Does this agent require user approval before action?
     color_scheme: str | None = None      # Optional theming hint for client
-    tags: list[str] = field(default_factory=list)  # Categorization tags
+    tags: list[str] = Field(default_factory=list)  # Categorization tags
 ```
 
-> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `BaseAgent.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
+> **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk", "do_talk"]` covers all modes.
+
+> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `ConfigAgent.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
 
 ### Agent Protocol
 
 ```python
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -345,39 +347,53 @@ class AgentResult:
     warnings: list[str]
     metadata: dict[str, Any]  # Dynamic per-response hints (e.g. accept_action)
 
-class BaseAgent(ABC, Generic[T]):
-    """Protocol that all specialized agents must implement."""
+class ConfigAgent(Generic[T]):
+    """Config-driven agent. Behavior is defined by AgentConfig from TOML.
+
+    No ABC, no subclasses — different agents are different configs.
+    If a type bound is needed for DI/mocking, use typing.Protocol.
+    """
+
+    def __init__(self, name: str, config: AgentConfig, app_config: Config, credentials: CredentialStore):
+        self._name = name
+        self._config = config
+        self._app_config = app_config
+        self._credentials = credentials
 
     @property
-    @abstractmethod
     def name(self) -> str:
         """Agent identifier (used for routing path: /agents/{name}/)."""
-        ...
+        return self._name
 
     @property
-    @abstractmethod
     def description(self) -> str:
-        """Human-readable description for agent discovery."""
-        ...
+        """Human-readable description from config."""
+        return self._config.description
 
     @property
-    @abstractmethod
     def system_prompt(self) -> str:
-        """Agent-specific system instructions."""
-        ...
+        """System prompt resolved from registry by config name."""
+        return PROMPT_REGISTRY[self._config.system_prompt]
 
     @property
-    @abstractmethod
     def output_type(self) -> type[T]:
-        """Pydantic model for structured output."""
-        ...
+        """Output type resolved from registry by config name."""
+        return OUTPUT_TYPE_REGISTRY[self._config.output_type]
 
-    @abstractmethod
+    @property
+    def agent_card_metadata(self) -> AgentCardMeta:
+        """Static UI/capability metadata derived from config."""
+        return AgentCardMeta(
+            serving_modes=self._config.serving_modes,
+            supports_thinking=self._config.thinking is not None,
+            requires_approval=self._config.requires_approval,
+            tags=self._config.tags,
+        )
+
     def supports_context(self, context_type: str) -> bool:
         """Check if agent can use a given context type."""
-        ...
+        return context_type in self._config.supported_context_types
 
-    @abstractmethod
     async def run(
         self,
         prompt: str,
@@ -385,52 +401,89 @@ class BaseAgent(ABC, Generic[T]):
     ) -> AgentResult:
         """Execute the agent."""
         ...
-
-    @property
-    def agent_card_metadata(self) -> AgentCardMeta:
-        """Static UI/capability metadata published in the agent card.
-
-        Override in subclasses to customize client UI behavior.
-        """
-        return AgentCardMeta()  # sensible defaults
 ```
 
-### Specialized Agents
+> **Why no ABC?** The config-driven design means there's only one implementation — `ConfigAgent`. An ABC with a single impl is ceremony. If we ever need a type bound for DI/mocking, `typing.Protocol` supports structural subtyping (duck typing) without requiring inheritance. A Rust/Gleam agent wouldn't subclass a Python ABC — it would serve its own A2A endpoint over HTTP. The interop boundary is the A2A protocol, not Python inheritance.
+```
 
-#### DefaultAgent (chain-of-thought base)
+### Agent Variants (Config-Driven)
+
+Agents are defined in TOML config, not as separate Python classes. A single `Agent` class reads its behavior from `AgentConfig`.
+
+#### Default Agent (`[agents.default]`)
 
 - **Purpose**: General-purpose natural language interaction with chain-of-thought reasoning
-- **Mode**: Multi-turn capable (uses message history via pydantic-ai + A2A context_id)
+- **Config**: `system_prompt = "chain-of-thought"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = true`
 - **Context**: Files, git, history, environment (all context types)
 - **Output**: `str` (free-form text response)
-- **Tools**: None by default; extensible via skills/MCP (future)
-- **Card Metadata**: `multi_turn=True, supports_thinking=True, supports_model_selection=True`
+- **Card Metadata**: `serving_modes=["do", "talk"], supports_thinking=True, requires_approval=False`
 
-#### ShellAgent (one-shot command generation)
+#### Shell Agent (`[agents.shell]`)
 
 - **Purpose**: Shell command generation from natural language
-- **Mode**: One-shot (`multi_turn=False`)
+- **Config**: `system_prompt = "shell"`, `output_type = "command"`, `serving_modes = ["do"]`, `thinking = false`, `requires_approval = true`
 - **Context**: Files, git, history, environment
 - **Output**: `CommandResult(command: str, warnings: list[str])`
-- **Tools**: None (stateless prompt -> command)
-- **Card Metadata**: `multi_turn=False, supports_thinking=False`
+- **Card Metadata**: `serving_modes=["do"], supports_thinking=False, requires_approval=True`
 - **Dynamic Metadata**: `{"accept_action": "insert_command"}` in AgentResult.metadata
 
-#### SDDAgent (future — sketch-driven design)
+#### SDD Agent (`[agents.sdd]`) — future
 
 - **Purpose**: Architectural brainstorming and design
-- **Mode**: Multi-turn conversation
+- **Config**: `enabled = false`, `system_prompt = "sdd"`, `output_type = "text"`, `serving_modes = ["talk"]`
 - **Context**: Docs only (`docs/`)
-- **Output**: `SketchResult(diagram: str, decisions: list[Decision], next_steps: list[str])`
-- **Tools**: `read_file`, `write_file`, `list_docs`
+- **Output**: Free-form text (SketchResult structured output in future)
 
-#### TDDAgent (future — test-driven development)
+#### TDD Agent (`[agents.tdd]`) — future
 
 - **Purpose**: Directed implementation with test generation
-- **Mode**: Multi-turn (test -> impl -> verify)
+- **Config**: `enabled = false`, `system_prompt = "tdd"`, `output_type = "text"`, `serving_modes = ["talk"]`
 - **Context**: Code files, test files, project structure
-- **Output**: `TDDResult(impl_code: str, test_code: str, verified: bool)`
-- **Tools**: `read_file`, `write_file`, `run_command`, `list_files`
+- **Output**: Free-form text (TDDResult structured output in future)
+
+### Agent Config (TOML)
+
+```toml
+[agents.default]
+enabled = true
+system_prompt = "chain-of-thought"    # Resolved via PROMPT_REGISTRY
+output_type = "text"                   # Resolved via OUTPUT_TYPE_REGISTRY
+thinking = "medium"                    # ThinkingEffort: "low", "medium", "high", or null
+serving_modes = ["do", "talk"]         # Which CLI modes this agent supports
+requires_approval = false
+tags = ["general", "chain-of-thought"]
+
+[agents.shell]
+enabled = true
+system_prompt = "shell"
+output_type = "command"                # Maps to CommandResult
+thinking = null                        # No thinking for shell agent
+serving_modes = ["do"]                 # One-shot only
+requires_approval = true
+tags = ["shell", "one-shot"]
+```
+
+### Output Type Registry
+
+Maps config names to Python types, enabling TOML to reference types by name:
+
+```python
+OUTPUT_TYPE_REGISTRY: dict[str, type] = {
+    "text": str,
+    "command": CommandResult,
+}
+```
+
+### Prompt Registry
+
+Maps config names to prompt constants:
+
+```python
+PROMPT_REGISTRY: dict[str, str] = {
+    "chain-of-thought": CHAIN_OF_THOUGHT_INSTRUCTIONS,
+    "shell": SHELL_INSTRUCTIONS,
+}
+```
 
 ### Agent Hub
 
@@ -457,11 +510,20 @@ class AgentHub:
             routes.append(Mount(f"/agents/{agent.name}", app=a2a_app))
         return Starlette(routes=routes)
 
-    def _agent_to_a2a(self, agent: BaseAgent) -> FastA2A:
-        """Convert a BaseAgent to a fasta2a ASGI sub-app.
+    def _create_agents(self) -> list[ConfigAgent]:
+        """Create agents from TOML config, not hardcoded list."""
+        agents = []
+        for name, agent_config in self.config.agents.items():
+            if agent_config.enabled:
+                agents.append(ConfigAgent(name, agent_config, self.config, self.credentials))
+        return agents
 
-        Maps AgentCardMeta -> fasta2a Skills + agent card extensions.
-        Uses shared SQLite storage and InMemoryBroker.
+    def _agent_to_a2a(self, agent: ConfigAgent) -> FastA2A:
+        """Convert an Agent to a fasta2a ASGI sub-app.
+
+        Uses direct FastA2A() construction with FinAssistWorker,
+        not pydantic_agent.to_a2a(). Maps AgentCardMeta to
+        fasta2a Skills + agent card extensions.
         """
         ...
 ```
@@ -470,19 +532,22 @@ class AgentHub:
 
 ```python
 class AgentFactory:
-    """Translates BaseAgent into pydantic-ai Agent and then into A2A sub-app."""
+    """Translates Agent into a fasta2a ASGI sub-app with custom Worker."""
 
     def create_a2a_app(
         self,
-        agent: BaseAgent,
+        agent: ConfigAgent,
         storage: Storage,
         broker: Broker,
     ) -> FastA2A:
         """Build a fasta2a sub-app for a single agent.
 
-        1. Create pydantic-ai Agent with agent's system_prompt, output_type, model
-        2. Call pydantic_agent.to_a2a() with shared storage/broker
+        1. Create pydantic-ai Agent with config-driven system_prompt,
+           output_type, and thinking settings
+        2. Construct FastA2A() directly with custom lifespan that
+           creates FinAssistWorker(Worker[list[ModelMessage]])
         3. Inject AgentCardMeta as agent card skills/extensions
+        4. No pydantic_agent.to_a2a() — eliminates wasted default AgentWorker
         """
         ...
 ```
@@ -500,10 +565,11 @@ Static (discovery time):                    Dynamic (per-response):
 │ • skills[]           │                    │ • metadata: {            │
 │ • extensions: {      │                    │     accept_action: ...,  │
 │     fin_assist: {    │                    │     suggested_next: ..., │
-│       multi_turn,    │                    │   }                      │
+│       serving_modes, │                    │   }                      │
 │       thinking,      │                    │                          │
 │       model_select,  │                    └──────────────────────────┘
-│       color_scheme   │
+│       color_scheme,  │
+│       requires_approval │
 │     }                │
 │   }                  │
 └──────────────────────┘
@@ -572,10 +638,10 @@ The A2A protocol maps 1:1 between a server and an agent card. To host N agents o
 Parent Starlette App (127.0.0.1:4096)
 ├── GET  /agents                                    → discovery (list all agents)
 ├── GET  /health                                    → health check
-├── Mount /agents/default/                          → DefaultAgent A2A sub-app
+├── Mount /agents/default/                    → ConfigAgent([agents.default]) A2A sub-app
 │   ├── GET  /.well-known/agent-card.json           → agent card
 │   └── POST /                                      → JSON-RPC (message/send, tasks/get)
-├── Mount /agents/shell/                            → ShellAgent A2A sub-app
+├── Mount /agents/shell/                      → ConfigAgent([agents.shell]) A2A sub-app
 │   ├── GET  /.well-known/agent-card.json           → agent card
 │   └── POST /                                      → JSON-RPC
 └── Mount /agents/{future}/                         → future agents
@@ -616,8 +682,11 @@ which defaults to blocking mode.
 ```
 fin-assist serve                        → start agent hub on 127.0.0.1:4096
 fin-assist agents                       → list available agents (GET /agents)
-fin-assist do <agent> "prompt"          → one-shot query (auto-starts server)
-fin-assist talk <agent>                 → multi-turn session (uses context_id)
+fin-assist do "prompt"                  → one-shot query to [agents.default]
+fin-assist do <agent> "prompt"          → one-shot query to named agent
+fin-assist do <agent> "prompt" --file path --git-diff --git-log  → with context
+fin-assist talk                          → multi-turn session with [agents.default]
+fin-assist talk <agent>                 → multi-turn session with named agent
 fin-assist talk <agent> --resume <id>   → resume a saved session
 fin-assist talk <agent> --list          → list saved sessions for agent
 fin-assist                              → enter interactive REPL (future)
@@ -661,15 +730,21 @@ include_env_vars = ["PATH", "HOME", "USER", "PWD"]
 
 [agents.default]
 enabled = true
+system_prompt = "chain-of-thought"     # Resolved via PROMPT_REGISTRY
+output_type = "text"                    # Resolved via OUTPUT_TYPE_REGISTRY
+thinking = "medium"                     # ThinkingEffort: "low", "medium", "high", or null
+serving_modes = ["do", "talk"]          # Which CLI modes this agent supports
+requires_approval = false
+tags = ["general", "chain-of-thought"]
 
 [agents.shell]
 enabled = true
-
-[agents.sdd]
-enabled = false  # future
-
-[agents.tdd]
-enabled = false  # future
+system_prompt = "shell"
+output_type = "command"                  # Maps to CommandResult
+thinking = null                          # No thinking for shell agent
+serving_modes = ["do"]                   # One-shot only
+requires_approval = true
+tags = ["shell", "one-shot"]
 
 [providers.anthropic]
 # API key stored separately in credentials
@@ -759,6 +834,17 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] `prompt-toolkit>=3.0` added as explicit dependency
 - [x] Tests — 8 new tests for `FinPrompt`
 
+### Config-Driven Redesign 📐
+- [x] Step 1: `ServingMode` enum + `serving_modes` field on `AgentCardMeta`
+- [x] Step 2: Output type + prompt registries (`OUTPUT_TYPE_REGISTRY`, `PROMPT_REGISTRY`)
+- [x] Step 3: Per-agent TOML config sections (`AgentConfig` in `config/schema.py`)
+- [x] Step 4: Collapse to single `ConfigAgent` class (remove `BaseAgent` ABC, `DefaultAgent`, `ShellAgent`)
+- [x] Step 5: Direct `Worker[Context]` implementation (close #68)
+- [x] Step 6: Default agent shortcut (`fin do "prompt"` → `[agents.default]`)
+- [ ] Step 7: Context injection for `do` (`--file`, `--git-diff`, `--git-log` flags)
+- [ ] Step 8: Context injection for `talk` (`@`-completion in FinPrompt)
+- [ ] Step 9: Approval "add context" option for structured output in talk mode
+
 ### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
@@ -792,7 +878,7 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Set up deep evals framework (pytest-compatible)
 - [ ] Define must/must-not/should criteria per agent
 - [ ] Implement LLM-as-judge evaluator (default, configurable per agent)
-- [ ] Create eval suite for DefaultAgent and ShellAgent
+- [ ] Create eval suite for ConfigAgent (default and shell configs)
 - [ ] Per-agent eval configuration
 
 ### Phase 15: Skills + MCP Integration ⬜
@@ -834,8 +920,16 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | UI metadata transport | Phase 7 | **Resolved** | Split: static in agent card, dynamic in task artifact metadata |
 | Parent ASGI framework | Phase 7 | **Resolved** | Starlette (stays in pydantic/fasta2a ecosystem) |
 | Agent card extensions format | Phase 7 | **Resolved** | `AgentCardMeta` encoded as `fin_assist:meta` Skill until fasta2a extensions land |
-| `to_a2a()` customization | Phase 7 | **Resolved** | `to_a2a()` accepts skills, name, description via `FastA2A` kwargs |
+| `to_a2a()` customization | Phase 7 | **Resolved** | Direct `FastA2A()` construction with custom lifespan — no `pydantic_agent.to_a2a()` |
 | SQLite file location | Phase 7 | **Resolved** | Configurable via `[server] db_path`, defaults to `~/.local/share/fin/hub.db` |
+| Agent architecture | Redesign | **Resolved** | Config-driven: single `Agent` class, behavior from `AgentConfig` in TOML |
+| ShellAgent vs DefaultAgent | Redesign | **Resolved** | Merged into single `ConfigAgent` class; `ShellAgent` behavior is `[agents.shell]` config |
+| `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk", "do_talk"]` — more expressive |
+| Private `AgentWorker` import (#68) | Redesign | **Resolved** | Direct `Worker[list[ModelMessage]]` implementation using public APIs |
+| Thinking configuration | Redesign | **Resolved** | Per-agent `thinking` field in `AgentConfig`, not `DefaultAgent` override |
+| Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[agents.default]`; agent arg optional |
+| Context injection for `do` | Redesign | **Resolved** | CLI flags (`--file`, `--git-diff`, `--git-log`) |
+| Context injection for `talk` | Redesign | **Resolved** | `@`-completion in FinPrompt via `ContextProvider.search()` |
 | gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
 | Non-blocking agents | Phase 10 | Open | `message/send` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
@@ -891,12 +985,16 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | A2A over custom REST | fasta2a | Protocol-native multi-client, agent discovery, task lifecycle built-in |
 | Multi-path routing | N agents, N agent cards, one server | True A2A compliance, enables agent-to-agent workflows |
 | Parent ASGI framework | Starlette | Lighter than FastAPI, stays in pydantic/fasta2a ecosystem |
-| Agents as code | Custom classes | Learning vehicle; the fun is in the implementation |
+| Config-driven agents | TOML config defines agent behavior | Enables adding new agents without writing Python classes; `ConfigAgent` is the only implementation |
+| No ABC for agents | Single `ConfigAgent` class, no `BaseAgent` ABC | Only one implementation exists; `Protocol` for DI/mocking if needed later; multi-language agents use A2A protocol, not Python inheritance |
+| Direct Worker implementation | `Worker[list[ModelMessage]]` | Eliminates private `pydantic_ai._a2a` import (#68), removes wasted default AgentWorker, enables streaming |
+| `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk", "do_talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
+| Default agent shortcut | `fin do "prompt"` → `[agents.default]` | Reduces friction for common case; agent arg optional |
+| Context for `do` | CLI flags (`--file`, `--git-diff`) | No TUI required for one-shot mode |
+| Context for `talk` | `@`-completion in FinPrompt | Uses existing `ContextProvider.search()`, no TUI required |
 | Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
 | CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
 | Conversation storage | SQLite via fasta2a Storage ABC | A2A-native `context_id` for threading, shared across all agents |
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
-| Agent registration | Explicit list to `create_hub_app()` | Agents need config/credentials at init; no global registry |
-| DefaultAgent | Chain-of-thought base, multi-turn | General-purpose agent; specialized agents slot in as peers |
-| ShellAgent | Specialized one-shot | `multi_turn=False`, returns `CommandResult`, dynamic `accept_action` hint |
+| Agent creation | TOML config entries, not Python classes | `ShellAgent` behavior is a config variant; adding agents is editing TOML |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |

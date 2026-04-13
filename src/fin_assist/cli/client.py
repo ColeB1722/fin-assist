@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 import httpx
 from fasta2a.client import A2AClient
 
-from fin_assist.agents.base import AgentCardMeta
+from fin_assist.agents.metadata import AgentCardMeta
 
 if TYPE_CHECKING:
     from fasta2a.schema import Message, Task, TaskState

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from fin_assist.agents.base import AgentCardMeta
+from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.cli.client import DiscoveredAgent
 from fin_assist.cli.display import (
     render_agent_card,
