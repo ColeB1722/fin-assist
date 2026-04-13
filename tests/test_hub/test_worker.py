@@ -1,4 +1,4 @@
-"""Tests for FinAssistWorker — custom worker with auth-required support."""
+"""Tests for FinAssistWorker — custom Worker with auth-required support."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fasta2a.schema import Task
 
-from fin_assist.agents.base import MissingCredentialsError
+from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.hub.worker import FinAssistWorker
 
 
@@ -25,20 +25,20 @@ def _make_submitted_task(task_id: str = "task-1", context_id: str = "ctx-1") -> 
     )
 
 
-def _make_agent_def(*, build_model_side_effect=None, build_model_return=None):
-    """Create a mock BaseAgent (agent definition) with configurable build_model behaviour."""
-    agent_def = MagicMock()
+def _make_agent(*, build_model_side_effect=None, build_model_return=None):
+    """Create a mock BaseAgent with configurable build_model behaviour."""
+    agent = MagicMock()
     if build_model_side_effect:
-        agent_def.build_model.side_effect = build_model_side_effect
+        agent.build_model.side_effect = build_model_side_effect
     elif build_model_return is not None:
-        agent_def.build_model.return_value = build_model_return
+        agent.build_model.return_value = build_model_return
     else:
-        agent_def.build_model.return_value = MagicMock()  # a mock model
-    return agent_def
+        agent.build_model.return_value = MagicMock()
+    return agent
 
 
 class TestFinAssistWorkerAuthRequired:
-    """When agent_def.build_model() raises MissingCredentialsError,
+    """When agent.build_model() raises MissingCredentialsError,
     FinAssistWorker should set task state to 'auth-required' with a
     descriptive message — not 'failed'.
     """
@@ -49,18 +49,14 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_task.return_value = task
         storage.load_context.return_value = None
 
-        pydantic_agent = MagicMock()
-        agent_def = _make_agent_def(
+        agent = _make_agent(
             build_model_side_effect=MissingCredentialsError(providers=["anthropic"])
         )
         broker = MagicMock()
 
-        worker = FinAssistWorker(
-            pydantic_agent=pydantic_agent, broker=broker, storage=storage, agent_def=agent_def
-        )
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
         await worker.run_task({"id": "task-1", "context_id": "ctx-1"})
 
-        # Should have called update_task with auth-required, not failed
         update_calls = [
             c
             for c in storage.update_task.call_args_list
@@ -75,16 +71,12 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_task.return_value = task
         storage.load_context.return_value = None
 
-        pydantic_agent = MagicMock()
-        agent_def = _make_agent_def(
+        agent = _make_agent(
             build_model_side_effect=MissingCredentialsError(providers=["anthropic"])
         )
         broker = MagicMock()
 
-        worker = FinAssistWorker(
-            pydantic_agent=pydantic_agent, broker=broker, storage=storage, agent_def=agent_def
-        )
-        # Should not raise
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
         await worker.run_task({"id": "task-1", "context_id": "ctx-1"})
 
     async def test_auth_required_includes_message_in_history(self) -> None:
@@ -94,18 +86,14 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_task.return_value = task
         storage.load_context.return_value = None
 
-        pydantic_agent = MagicMock()
-        agent_def = _make_agent_def(
+        agent = _make_agent(
             build_model_side_effect=MissingCredentialsError(providers=["anthropic"])
         )
         broker = MagicMock()
 
-        worker = FinAssistWorker(
-            pydantic_agent=pydantic_agent, broker=broker, storage=storage, agent_def=agent_def
-        )
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
         await worker.run_task({"id": "task-1", "context_id": "ctx-1"})
 
-        # Find the update_task call with auth-required
         auth_call = next(
             c
             for c in storage.update_task.call_args_list
@@ -117,7 +105,6 @@ class TestFinAssistWorkerAuthRequired:
 
         msg = messages[0]
         assert msg["role"] == "agent"
-        # The text part should mention the missing provider
         text_parts = [p for p in msg["parts"] if p["kind"] == "text"]
         assert any("anthropic" in p["text"].lower() for p in text_parts)
 
@@ -128,19 +115,20 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_task.return_value = task
         storage.load_context.return_value = None
 
-        agent_def = _make_agent_def()
-        pydantic_agent = MagicMock()
-        pydantic_agent.run = AsyncMock(side_effect=RuntimeError("something broke"))
+        mock_model = MagicMock()
+        pydantic_agent_mock = MagicMock()
+        pydantic_agent_mock.__aenter__ = AsyncMock(return_value=pydantic_agent_mock)
+        pydantic_agent_mock.__aexit__ = AsyncMock(return_value=False)
+        pydantic_agent_mock.run = AsyncMock(side_effect=RuntimeError("something broke"))
 
+        agent = _make_agent(build_model_return=mock_model)
+        agent.build_pydantic_agent.return_value = pydantic_agent_mock
         broker = MagicMock()
 
-        worker = FinAssistWorker(
-            pydantic_agent=pydantic_agent, broker=broker, storage=storage, agent_def=agent_def
-        )
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
         with pytest.raises(RuntimeError, match="something broke"):
             await worker.run_task({"id": "task-1", "context_id": "ctx-1"})
 
-        # Should have set state to failed
         failed_calls = [
             c for c in storage.update_task.call_args_list if c.kwargs.get("state") == "failed"
         ]
@@ -158,18 +146,55 @@ class TestFinAssistWorkerAuthRequired:
         result_mock.new_messages.return_value = []
         result_mock.output = "hello"
 
-        agent_def = _make_agent_def()
-        pydantic_agent = MagicMock()
-        pydantic_agent.run = AsyncMock(return_value=result_mock)
+        mock_model = MagicMock()
+        pydantic_agent_mock = MagicMock()
+        pydantic_agent_mock.__aenter__ = AsyncMock(return_value=pydantic_agent_mock)
+        pydantic_agent_mock.__aexit__ = AsyncMock(return_value=False)
+        pydantic_agent_mock.run = AsyncMock(return_value=result_mock)
 
+        agent = _make_agent(build_model_return=mock_model)
+        agent.build_pydantic_agent.return_value = pydantic_agent_mock
         broker = MagicMock()
 
-        worker = FinAssistWorker(
-            pydantic_agent=pydantic_agent, broker=broker, storage=storage, agent_def=agent_def
-        )
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
         await worker.run_task({"id": "task-1", "context_id": "ctx-1"})
 
         completed_calls = [
             c for c in storage.update_task.call_args_list if c.kwargs.get("state") == "completed"
         ]
         assert len(completed_calls) >= 1
+
+
+class TestFinAssistWorkerCancelTask:
+    async def test_cancel_submitted_task(self) -> None:
+        task = _make_submitted_task()
+        storage = AsyncMock()
+        storage.load_task.return_value = task
+
+        agent = _make_agent()
+        broker = MagicMock()
+
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
+        await worker.cancel_task({"id": "task-1"})
+
+        storage.update_task.assert_called_once_with("task-1", state="canceled")
+
+    async def test_cancel_completed_task_is_noop(self) -> None:
+        completed_task = cast(
+            "Task",
+            {
+                "id": "task-1",
+                "kind": "task",
+                "status": {"state": "completed"},
+            },
+        )
+        storage = AsyncMock()
+        storage.load_task.return_value = completed_task
+
+        agent = _make_agent()
+        broker = MagicMock()
+
+        worker = FinAssistWorker(agent=agent, broker=broker, storage=storage)
+        await worker.cancel_task({"id": "task-1"})
+
+        storage.update_task.assert_not_called()

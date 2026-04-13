@@ -1,10 +1,12 @@
 # Manual Testing Checklist
 
-**When to run**: After changes to CLI commands, server lifecycle, approval widget, or chat loop.
+**When to run**: After changes to CLI commands, server lifecycle, approval widget, chat loop, or agent configuration.
 
 **Purpose**: Verify CLI integration end-to-end without automated tests. Designed for parallel testing + fixing.
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
+
+> **After the config-driven redesign**: `shell` and `default` are no longer separate Python classes — they're `[agents.shell]` and `[agents.default]` TOML config entries driving a single `ConfigAgent` class. The CLI commands and user experience are the same, but agent behavior is now config-driven.
 
 ---
 
@@ -20,12 +22,14 @@
 | A2 | List agents (reuse) | `fin agents` (while server still up) | No restart, same output |
 | A3 | Do shell | `fin do shell list files` | Generated command in panel, then approval widget (Execute/Cancel) |
 | A4 | Do default one-shot | `fin do default "hello"` | Text response printed |
-| A5 | Start server | `fin start` | "Hub running at http://..." |
-| A6 | Start when running | `fin start` (already up) | Same message, no restart (idempotent) |
-| A7 | Status when running | `fin status` (server up) | "Hub running at http://..., PID ..." |
-| A8 | Status when stopped | `fin status` (server down) | "Hub is not running." |
-| A9 | Stop server | `fin stop` | "Hub stopped." printed |
-| A10 | Stop when down | `fin stop` (already stopped) | Error message, exit code 1 |
+| A5 | Default agent shortcut | `fin do "hello"` (no agent arg) | Same as `fin do default "hello"` — resolves to `[agents.default]` |
+| A6 | Default talk shortcut | `fin talk` (no agent arg) | Same as `fin talk default` — resolves to `[agents.default]` |
+| A7 | Start server | `fin start` | "Hub running at http://..." |
+| A8 | Start when running | `fin start` (already up) | Same message, no restart (idempotent) |
+| A9 | Status when running | `fin status` (server up) | "Hub running at http://..., PID ..." |
+| A10 | Status when stopped | `fin status` (server down) | "Hub is not running." |
+| A11 | Stop server | `fin stop` | "Hub stopped." printed |
+| A12 | Stop when down | `fin stop` (already stopped) | Error message, exit code 1 |
 
 **If A fails**: server startup, client connectivity, or agent dispatch broken.
 
@@ -33,7 +37,7 @@
 
 ## Chunk B — Approval Widget (`fin do shell`)
 
-*Tests the arrow-key selection widget via `fin do shell` (requires approval).*
+*Tests the arrow-key selection widget via `fin do shell` (requires_approval=true in config).*
 
 The approval widget uses `ChoiceInput` — arrow-key navigation between Execute/Cancel, Enter to confirm. No text input, no slash commands.
 
@@ -55,7 +59,7 @@ The approval widget uses `ChoiceInput` — arrow-key navigation between Execute/
 
 ## Chunk C — REPL Loop (`fin talk <agent>`)
 
-*Tests the full `run_chat_loop` with FinPrompt. Start with `fin talk default`.*
+*Tests the full `run_chat_loop` with FinPrompt. Start with `fin talk default` or `fin talk` (shortcut).*
 
 > Run C in parallel with B if A passes.
 
@@ -100,16 +104,72 @@ The approval widget uses `ChoiceInput` — arrow-key navigation between Execute/
 
 ---
 
+## Chunk E — Serving Mode Validation
+
+*Tests that serving_modes config is enforced — agents can only be used in modes they declare.*
+
+> Run E after confirming A works (needs running server).
+
+| # | Test | Command | Expected |
+|---|------|---------|----------|
+| E1 | Shell supports do | `fin do shell list files` | Works — `serving_modes = ["do"]` includes "do" |
+| E2 | Shell rejects talk | `fin talk shell` | Error: shell agent doesn't support talk mode |
+| E3 | Default supports do | `fin do default "hello"` | Works — `serving_modes = ["do", "talk"]` includes "do" |
+| E4 | Default supports talk | `fin talk default` | Works — `serving_modes = ["do", "talk"]` includes "talk" |
+
+**If E fails**: Serving mode validation in CLI `do`/`talk` commands broken.
+
+---
+
+## Chunk F — Context Injection for `do` (NOT YET IMPLEMENTED)
+
+*Tests CLI flags for injecting context into one-shot commands. These flags don't exist yet — they're planned for Step 7 of the config-driven redesign.*
+
+> **Status**: Pending implementation. Do not run these tests until `--file`, `--git-diff`, and `--git-log` flags are added to the `do` command.
+
+| # | Test | Command | Expected |
+|---|------|---------|----------|
+| F1 | File context | `fin do shell "describe this file" --file pyproject.toml` | Agent response references file contents |
+| F2 | Git diff context | `fin do default "review these changes" --git-diff` | Agent response references git diff |
+| F3 | Git log context | `fin do default "summarize recent work" --git-log` | Agent response references recent commits |
+| F4 | Multiple flags | `fin do default "full context" --git-diff --git-log` | Both diff and log included in context |
+| F5 | Invalid file | `fin do default "describe" --file nonexistent.txt` | Warning about missing file, command still runs |
+
+**If F fails**: Context injection flags in `do` command broken (or not yet implemented).
+
+---
+
+## Chunk G — @-Completion in Talk (NOT YET IMPLEMENTED)
+
+*Tests @-triggered fuzzy completion in FinPrompt for context injection during chat. Not yet implemented — planned for Step 8 of the config-driven redesign.*
+
+> **Status**: Pending implementation. Do not run these tests until `@`-completion is added to FinPrompt.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| G1 | @-completion trigger | Type `@` | Shows context type options (`file:`, `git:`, `history:`) |
+| G2 | @file completion | Type `@file:` + partial path + Tab | Shows matching files |
+| G3 | @git completion | Type `@git:` + Tab | Shows git context options (diff, log, status) |
+| G4 | @history completion | Type `@history:` + Tab | Shows recent shell history |
+
+**If G fails**: `prompt.py` `@`-completion not yet implemented or broken.
+
+---
+
 ## Running Order
 
 ```
-A1-A10 →  Chunk A (blocks everything if broken)
-          │
-          ├── B1-B7  →  Chunk B
-          │
-          └── C1-C11 →  Chunk C  (run in parallel with B after A passes)
-                       │
-                       └── D1-D10 →  Chunk D (run after basic REPL loop works)
+A1-A12 →  Chunk A (blocks everything if broken)
+           │
+           ├── B1-B7  →  Chunk B
+           │
+           ├── C1-C11 →  Chunk C  (run in parallel with B after A passes)
+           │            │
+           │            └── D1-D10 →  Chunk D (run after basic REPL loop works)
+           │
+           └── E1-E4  →  Chunk E  (run in parallel with B/C after A passes)
+
+Chunks F and G are NOT YET IMPLEMENTED — skip until Steps 7-8 land.
 ```
 
 ## If a Chunk Fails
@@ -127,3 +187,8 @@ A1-A10 →  Chunk A (blocks everything if broken)
 - If `fin stop` fails but the server is running, it falls back to `/proc` scanning to find the orphaned process.
 - Session IDs are coolname slugs (e.g., `swift-harbor`) — not UUIDs.
 - History file is at `~/.local/share/fin/history` (used by `talk` sessions only).
+- `fin do "prompt"` (no agent arg) resolves to `[agents.default]` — this is the default agent shortcut.
+- `fin talk` (no agent arg) also resolves to `[agents.default]`.
+- `shell` agent has `serving_modes = ["do"]` — it does not support `talk` mode.
+- `default` agent has `serving_modes = ["do", "talk"]` — it supports both modes.
+- Agent behavior (system prompt, output type, thinking, approval) is driven by TOML config via a single `ConfigAgent` class — no Python subclasses, no ABC.

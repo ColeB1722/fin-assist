@@ -16,15 +16,41 @@ from fin_assist.hub.app import create_hub_app
 
 @pytest.fixture
 def mock_agents(mock_config, mock_credentials):
-    from fin_assist.agents.default import DefaultAgent
-    from fin_assist.agents.shell import ShellAgent
+    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.config.schema import AgentConfig
 
-    with patch.object(DefaultAgent, "build_model", return_value=TestModel()):
-        with patch.object(ShellAgent, "build_model", return_value=TestModel()):
-            yield [
-                ShellAgent(mock_config, mock_credentials),
-                DefaultAgent(mock_config, mock_credentials),
-            ]
+    shell_config = AgentConfig(
+        description="Shell agent",
+        system_prompt="shell",
+        output_type="command",
+        thinking="off",
+        serving_modes=["do"],
+        requires_approval=True,
+        tags=["shell", "one-shot"],
+    )
+    default_config = AgentConfig(
+        description="Default agent",
+        system_prompt="chain-of-thought",
+        output_type="text",
+        thinking="medium",
+        serving_modes=["do", "talk"],
+    )
+
+    with patch.object(ConfigAgent, "build_model", return_value=TestModel()):
+        yield [
+            ConfigAgent(
+                name="shell",
+                agent_config=shell_config,
+                config=mock_config,
+                credentials=mock_credentials,
+            ),
+            ConfigAgent(
+                name="default",
+                agent_config=default_config,
+                config=mock_config,
+                credentials=mock_credentials,
+            ),
+        ]
 
 
 @pytest.fixture

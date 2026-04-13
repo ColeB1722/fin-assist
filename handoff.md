@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-09)**: Phases 1-8b complete. Manual testing found Chunk B bugs (fixed), led to regenerate removal, and uncovered a PID file reliability issue (fixed with server-side locking). Resume manual testing from Chunk A6/B (re-verify stop + approval) and continue with Chunks C-D.
+**Current state (2026-04-12)**: Config-driven redesign Steps 1-6 complete. `ConfigAgent` replaces `BaseAgent`/`DefaultAgent`/`ShellAgent`. `FinAssistWorker(Worker[Context])` replaces private `AgentWorker` import. Manual testing Chunks A-E need re-verification. Next: Steps 7-9 (context injection + approval).
 
 ---
 
@@ -76,6 +76,140 @@ Total: 368 tests, all passing (was 344 before)
 ### Future: Interactive Recovery (Phase 10)
 
 The current implementation treats `auth-required` as terminal — the user fixes credentials out-of-band. The Phase 10 design sketch for `InputRequiredError` / `AuthRequiredError` (below) describes the interactive recovery pattern: move `auth-required` to a `_PAUSE_STATES` set, catch it in the client, prompt for credentials inline, write via `CredentialStore`, and resend on the same `context_id`. This builds naturally on top of the current implementation.
+
+---
+
+## Config-Driven Redesign (2026-04-11)
+
+**Status**: Steps 1-6 complete. Steps 7-9 pending.
+
+### Problem
+
+Three issues drove this redesign:
+
+1. **Issue #68**: `FinAssistWorker` imports from `pydantic_ai._a2a.AgentWorker` (private API). This breaks on any pydantic-ai upgrade.
+2. **Class hierarchy rigidity**: `DefaultAgent` and `ShellAgent` are separate subclasses that differ only in system prompt, output type, thinking support, and approval. Adding a new agent means writing a new class — even if it's just a config variant.
+3. **No agent configuration**: The architecture doc describes `[agents.default]` and `[agents.shell]` TOML sections, but `Config` has zero agent configuration. Agents are hardcoded in `_serve_command`.
+
+### Key Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agent architecture | Config-driven, not class-hierarchy | `ShellAgent` behavior becomes a TOML config variant of a single `ConfigAgent` class |
+| `DefaultAgent` → `ConfigAgent` | Rename, config-driven, no ABC | `system_prompt`, `output_type`, thinking, serving modes, approval all from `AgentConfig`. No `BaseAgent` ABC — single impl doesn't need it; `Protocol` for DI if needed later |
+| `ShellAgent` | Remove entirely | Its behavior is expressible as config: `[agents.shell]` with `output_type = "command"`, `serving_modes = ["do"]`, `requires_approval = true` |
+| `AgentWorker` private import | Replace with direct `Worker[list[ModelMessage]]` | Public fasta2a API, eliminates private import, removes wasted default worker construction |
+| `pydantic_agent.to_a2a()` | Replace with direct `FastA2A()` construction | Eliminates wasted default `AgentWorker`, enables custom lifespan without replacing it |
+| Thinking | Per-agent config field | Moves from `DefaultAgent` override into `AgentConfig`, driven by TOML |
+| `multi_turn: bool` | Replaced by `ServingMode` enum | `"do"`, `"talk"`, `"do_talk"` — declares which CLI modes an agent supports |
+| Default agent shortcut | `fin do "prompt"` / `fin talk` → `[agents.default]` | No agent arg required; resolves to default config |
+| Context for `do` | CLI flags (`--file`, `--git-diff`, `--git-log`) | No TUI required |
+| Context for `talk` | `@`-completion in FinPrompt via `ContextProvider.search()` | Uses existing search, no TUI required |
+| `@selection` context | Deferred to TUI/Phase 13+ | Requires richer interaction model |
+
+### What Was Accomplished
+
+**Steps 1-6 implemented (2026-04-12):**
+
+1. **`ServingMode` + `serving_modes`** — `ServingMode = Literal["do", "talk"]` in `metadata.py`. `AgentCardMeta.serving_modes` replaces `multi_turn: bool`. CLI validates in both `do` and `talk` commands.
+2. **Output type + prompt registries** — `OUTPUT_TYPES` and `SYSTEM_PROMPTS` dicts in `registry.py`. Unknown names fall through (passthrough for system_prompt, str for output_type).
+3. **Per-agent TOML config** — `AgentConfig` in `config/schema.py` with all fields. `_DEFAULT_AGENTS` dict. `_serve_command` creates `ConfigAgent` instances from `config.agents`.
+4. **ConfigAgent (no ABC)** — Removed `BaseAgent` ABC, `DefaultAgent`, `ShellAgent` classes. Single `ConfigAgent` in `agent.py`. Moved metadata types (`AgentCardMeta`, `AgentResult`, `MissingCredentialsError`, `ServingMode`) to `metadata.py`. No ABC, no subclasses — `typing.Protocol` for DI if needed later.
+5. **Direct Worker implementation** — `FinAssistWorker(Worker[Context])` using public `fasta2a.Worker` ABC. No private `pydantic_ai._a2a` import. Direct `FastA2A()` construction in factory. Closes #68.
+6. **Default agent shortcut** — `agent` arg is `nargs="?", default="default"` in both `do` and `talk` parsers.
+
+**Additional decision: No `AgentSpec`/`from_spec()` integration.**
+
+We investigated using `pydantic_ai.AgentSpec` + `Agent.from_spec()` as an internal construction helper in `ConfigAgent.build_pydantic_agent()`. Rejected because:
+
+- `from_spec()` requires a model immediately and calls `infer_model()` (needs API keys)
+- Our architecture defers model resolution to run time (`model=None` on `Agent()`) so the hub can start before credentials are configured
+- `Agent(model=None)` skips `infer_model()` — our current pattern already works
+- `from_spec()` doesn't pass `defer_model_check` through to the constructor
+- `AgentConfig` still owns everything `AgentSpec` doesn't (serving modes, approval, credential injection, agent card metadata)
+- If `from_spec()` gains `defer_model_check` support in the future, we can adopt it as an internal helper
+
+The full rationale is documented in `agents/agent.py` module docstring.
+
+**Files changed:**
+- `agents/metadata.py` — NEW (extracted from old `base.py`)
+- `agents/agent.py` — Rewritten as `ConfigAgent` (no ABC)
+- `agents/base.py` — DELETED
+- `agents/default.py` — DELETED
+- `agents/shell.py` — DELETED
+- `agents/__init__.py` — Updated exports
+- `hub/worker.py` — Updated imports
+- `hub/factory.py` — Updated imports
+- `hub/app.py` — Updated imports
+- `cli/client.py` — Updated imports
+- `cli/main.py` — Updated imports + `ConfigAgent` usage
+- All test files updated; `test_base.py`, `test_default.py`, `test_shell.py`, `test_credentials_check.py` deleted (merged into `test_agent.py`)
+
+### The 9-Step Implementation Plan
+
+**Step 1: `ServingMode` enum + `serving_modes` field** — Add `ServingMode = Literal["do", "talk", "do_talk"]` to `agents/metadata.py`. Add `serving_modes: list[ServingMode] = ["do", "talk"]` to `AgentCardMeta` (replaces `multi_turn: bool`). Update CLI `do`/`talk` commands to validate against `serving_modes` before sending.
+
+**Step 2: Output type + prompt registries** — Create registry mapping config names to types: `{"text": str, "command": CommandResult}`. Create registry mapping names to prompt constants: `{"chain-of-thought": CHAIN_OF_THOUGHT_INSTRUCTIONS, "shell": SHELL_INSTRUCTIONS}`. Enables TOML to reference types/prompts by name.
+
+**Step 3: Per-agent TOML config sections** — Add `AgentConfig` to `config/schema.py` with fields: `enabled`, `system_prompt` (name), `output_type` (name), `thinking` (ThinkingEffort), `serving_modes`, `requires_approval`, `tags`. Add `agents: dict[str, AgentConfig]` to `Config` with default entries for `default` and `shell`. `_serve_command` reads from config instead of hardcoding.
+
+**Step 4: Collapse to single `ConfigAgent` class** (depends on 1-3) — Remove `BaseAgent` ABC, `DefaultAgent`, and `ShellAgent` classes. Create `ConfigAgent` in `agents/agent.py` — a concrete class (no ABC) that takes `name: str`, `AgentConfig`, `Config`, `CredentialStore`. All behavior driven by config. `build_pydantic_agent()` uses config-driven thinking + output type. `agent_card_metadata` derives from config fields. If a type bound is needed for DI/mocking, use `typing.Protocol`.
+
+**Step 5: Direct `Worker` implementation** (#68 resolution) — Replace `FinAssistWorker(AgentWorker)` with `FinAssistWorker(Worker[list[ModelMessage]])`. No import from `pydantic_ai._a2a`. Own ~100 lines of message conversion using `pydantic_ai.messages` public types. Constructor takes `pydantic_agent`, `agent_config`, `broker`, `storage`. Update `factory.py`: construct `FastA2A()` directly with custom lifespan, no `pydantic_agent.to_a2a()`.
+
+**Step 6: Default agent shortcut in CLI** (depends on 4) — `fin do "prompt"` (no agent arg) → `[agents.default]`. `fin talk` (no agent arg) → `[agents.default]`. Agent arg becomes optional with default.
+
+**Step 7: Context injection for `do`** — Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
+
+**Step 8: Context injection for `talk`** — Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`. `@file:`, `@git:`, `@history:` prefixes.
+
+**Step 9: Approval "add context" option for structured output in talk** (depends on 4) — When `CommandResult` returns in talk mode: `[execute] [add context] [cancel]`. "Add context" drops back into REPL with previous generation in history.
+
+### Dependency graph
+
+```
+Step 1 (serving modes) ──────────────────────┐
+Step 2 (registries) ──────────────────────────┤
+Step 5 (Worker impl) ────────────────────────┤
+                                              ├──▶ Step 4 (collapse Agent) ──▶ Step 6 (default shortcut)
+Step 3 (TOML config) ────────────────────────┘
+Step 7 (context flags for do) ── independent
+Step 8 (@-completion for talk) ── independent
+Step 9 (approval in talk) ── depends on Step 4
+```
+
+### Discoveries
+
+- **Mental model vs implementation drift:** No agent config system exists (agents hardcoded in `_serve_command`), `AgentCardMeta` grew beyond the architecture doc (`requires_approval` added ad-hoc), context injection has no user-facing mechanism (auto-gathered only), and thinking is only modular inside `DefaultAgent`'s override.
+- **Structured output in multi-turn is valid:** `output_type` constrains what the agent returns per response, not the conversation shape. A `CommandResult` response in a talk session is coherent — generate → render → "add context" → back to REPL → regenerate with history.
+- **Issue #68 is partially addressed by the config-driven approach:** The unified `Agent` class eliminates the "two agents" problem, but doesn't fix the private import. That requires implementing `Worker` directly — Step 5.
+- **`AgentWorker` inherits ~200 lines of message conversion logic** that the direct `Worker` implementation needs to own (~100 lines) using public `pydantic_ai.messages` types.
+- **`AgentCardMeta` is encoded as a `Skill(id="fin_assist:meta")`** with JSON in the `description` field — a workaround until fasta2a PR #44 lands.
+- **`pydantic_agent.to_a2a()` creates a default `AgentWorker` that gets immediately discarded** — our custom lifespan replaces it. Direct `FastA2A()` construction eliminates this waste.
+
+### Relevant Files
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/agent.py` | Step 4 — New `ConfigAgent` class (replaces `base.py`, `default.py`, `shell.py`) |
+| `src/fin_assist/agents/metadata.py` | Steps 1, 4 — `ServingMode`, `AgentCardMeta`, `AgentResult` (extracted from old `base.py`) |
+| `src/fin_assist/agents/default.py` | Step 4 — Removed (absorbed into `ConfigAgent`) |
+| `src/fin_assist/agents/shell.py` | Step 4 — Removed (behavior is `[agents.shell]` config) |
+| `src/fin_assist/agents/results.py` | Step 2 — Referenced by output type registry |
+| `src/fin_assist/agents/__init__.py` | Steps 2, 4 — Updated exports |
+| `src/fin_assist/hub/worker.py` | Step 5 — Rewritten as `Worker[list[ModelMessage]]` |
+| `src/fin_assist/hub/factory.py` | Step 5 — Direct `FastA2A()` construction |
+| `src/fin_assist/hub/app.py` | Steps 3-5 — Config-driven agent creation |
+| `src/fin_assist/cli/main.py` | Steps 1, 3, 6, 7 — Config-driven agents, default shortcut, context flags |
+| `src/fin_assist/cli/client.py` | Step 1 — `AgentCardMeta` changes |
+| `src/fin_assist/cli/interaction/approve.py` | Step 9 — "add context" option |
+| `src/fin_assist/cli/interaction/chat.py` | Step 9 — `requires_approval` in talk |
+| `src/fin_assist/cli/interaction/prompt.py` | Step 8 — `@`-completion |
+| `src/fin_assist/config/schema.py` | Step 3 — `AgentConfig` |
+| `src/fin_assist/config/loader.py` | Step 3 — Load agent configs |
+| `src/fin_assist/llm/prompts.py` | Step 2 — Prompt registry |
+| `docs/architecture.md` | All steps — Reflect config-driven design |
+| `docs/manual-testing.md` | All steps — Update for config-driven agents |
 
 ---
 
@@ -775,13 +909,14 @@ Total: 368 tests, all passing
 
 ---
 
-## Next Session: Continue Manual Testing + Phase 9
+## Next Session: Steps 7-9 (Context Injection + Approval)
 
 ### Goals
 
-1. **Re-verify Chunks A-B** — confirm `fin stop` now works reliably, Ctrl+C/D and markup fixes work
-2. **Manual testing Chunks C-D** — chat loop and FinPrompt completions/history
-3. **Begin Phase 9** (Streaming + Integration Tests) once manual testing passes
+1. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
+2. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
+3. **Step 9**: Approval "add context" option for structured output in talk mode.
+4. **Manual testing**: Re-verify Chunks A-E after redesign.
 
 ---
 
@@ -864,7 +999,8 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 6 | Agent Protocol & Registry | ✅ Complete |
 | 7 | **Agent Hub Server** | ✅ Complete |
 | 8 | **CLI Client** | ✅ Complete |
-| 8b | **CLI REPL Mode** | ✅ Complete (manual testing next) |
+| 8b | **CLI REPL Mode** | ✅ Complete |
+| — | **Config-Driven Redesign** | ✅ Steps 1-6 complete, Steps 7-9 pending |
 | 9 | Streaming + Integration Tests | ⬜ Not Started |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |

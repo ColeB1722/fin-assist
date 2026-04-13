@@ -42,7 +42,7 @@ def _make_task(
 
 class TestDiscoveredAgent:
     def test_stores_fields(self):
-        from fin_assist.agents.base import AgentCardMeta
+        from fin_assist.agents.metadata import AgentCardMeta
 
         agent = DiscoveredAgent(
             name="shell",

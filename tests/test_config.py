@@ -10,6 +10,7 @@ import pytest
 from fin_assist.config import loader
 from fin_assist.config.loader import load_config
 from fin_assist.config.schema import (
+    AgentConfig,
     Config,
     ContextSettings,
     GeneralSettings,
@@ -421,3 +422,54 @@ port = 9000
         nonexistent = tmp_path / "nope.toml"
         _, config_path = load_config(nonexistent)
         assert config_path is None
+
+
+class TestAgentConfig:
+    def test_defaults(self) -> None:
+        ac = AgentConfig()
+        assert ac.enabled is True
+        assert ac.description == ""
+        assert ac.system_prompt == "chain-of-thought"
+        assert ac.output_type == "text"
+        assert ac.thinking == "medium"
+        assert ac.serving_modes == ["do", "talk"]
+        assert ac.requires_approval is False
+        assert ac.tags == []
+
+    def test_shell_config(self) -> None:
+        ac = AgentConfig(
+            description="Shell agent",
+            system_prompt="shell",
+            output_type="command",
+            thinking="off",
+            serving_modes=["do"],
+            requires_approval=True,
+            tags=["shell", "one-shot"],
+        )
+        assert ac.serving_modes == ["do"]
+        assert ac.output_type == "command"
+        assert ac.requires_approval is True
+
+    def test_config_has_default_agents(self) -> None:
+        config = Config()
+        assert "default" in config.agents
+        assert "shell" in config.agents
+        assert config.agents["default"].output_type == "text"
+        assert config.agents["shell"].output_type == "command"
+
+    def test_config_agents_from_toml(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[agents.default]\n"
+            'system_prompt = "chain-of-thought"\n'
+            'output_type = "text"\n'
+            "\n"
+            "[agents.shell]\n"
+            'system_prompt = "shell"\n'
+            'output_type = "command"\n'
+            'serving_modes = ["do"]\n'
+            "requires_approval = true\n"
+        )
+        config, _ = load_config(config_file)
+        assert config.agents["shell"].serving_modes == ["do"]
+        assert config.agents["shell"].requires_approval is True
