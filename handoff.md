@@ -167,7 +167,7 @@ The full rationale is documented in `agents/agent.py` module docstring.
 
 ### Dependency graph
 
-```
+```text
 Step 1 (serving modes) ──────────────────────┐
 Step 2 (registries) ──────────────────────────┤
 Step 5 (Worker impl) ────────────────────────┤

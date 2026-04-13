@@ -249,11 +249,8 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
 
     try:
         async with _hub_client(config, config_path) as client:
-            agents = await client.discover_agents()
-            discovered = next((a for a in agents if a.name == args.agent), None)
+            discovered, agents = await _get_agent_or_error(client, args.agent)
             if discovered is None:
-                known = ", ".join(a.name for a in agents) or "none"
-                render_error(f"Unknown agent '{args.agent}'. Available: {known}")
                 return 1
 
             if "talk" not in discovered.card_meta.serving_modes:

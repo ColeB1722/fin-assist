@@ -5,7 +5,7 @@
 **Purpose**: Verify CLI integration end-to-end without automated tests. Designed for parallel testing + fixing.
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
-
+>
 > **After the config-driven redesign**: `shell` and `default` are no longer separate Python classes — they're `[agents.shell]` and `[agents.default]` TOML config entries driving a single `ConfigAgent` class. The CLI commands and user experience are the same, but agent behavior is now config-driven.
 
 ---

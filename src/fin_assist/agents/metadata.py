@@ -52,7 +52,8 @@ class AgentCardMeta(BaseModel):
 
     multi_turn: bool = True
     """True if the agent supports multi-turn conversation (context_id threading).
-    Derived from serving_modes — True when "talk" is present."""
+    Computed from serving_modes at construction time (True when "talk" is present);
+    the default here is a fallback for direct instantiation."""
 
     supports_thinking: bool = True
     """True if the agent benefits from chain-of-thought / thinking effort selector."""

@@ -237,5 +237,6 @@ class FinAssistWorker(Worker[Context]):
                     )
                 )
             elif isinstance(part, ToolCallPart):
+                # Tool calls are internal pydantic-ai mechanics; not surfaced to A2A
                 pass
         return a2a_parts

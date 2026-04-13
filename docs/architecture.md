@@ -324,7 +324,7 @@ class AgentCardMeta(BaseModel):
     supported_providers: list[str] | None = None  # None = all providers
     requires_approval: bool = False      # Does this agent require user approval before action?
     color_scheme: str | None = None      # Optional theming hint for client
-    tags: list[str] = field(default_factory=list)  # Categorization tags
+    tags: list[str] = Field(default_factory=list)  # Categorization tags
 ```
 
 > **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk", "do_talk"]` covers all modes.
