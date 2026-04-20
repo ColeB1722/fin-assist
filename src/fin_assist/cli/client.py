@@ -277,6 +277,12 @@ class HubClient:
                 if state in _TERMINAL_STATES:
                     if task_dict:
                         task_dict["status"]["state"] = _task_state_to_str(state)
+                    else:
+                        task_dict = {
+                            "status": {"state": _task_state_to_str(state)},
+                            "artifacts": [],
+                            "history": [],
+                        }
                     break
 
         if task_dict is not None:
@@ -310,7 +316,7 @@ class HubClient:
 
         request = SendMessageRequest(message=msg)
 
-        task_dict = None
+        task_dict: dict[str, Any] | None = None
         async for response in client.send_message(request):
             if response.HasField("task"):
                 task_dict = _task_to_dict(response.task)
@@ -322,6 +328,12 @@ class HubClient:
                 if state in _TERMINAL_STATES:
                     if task_dict:
                         task_dict["status"]["state"] = _task_state_to_str(state)
+                    else:
+                        task_dict = {
+                            "status": {"state": _task_state_to_str(state)},
+                            "artifacts": [],
+                            "history": [],
+                        }
                     break
             elif response.HasField("artifact_update"):
                 if task_dict is None:
@@ -338,7 +350,7 @@ class HubClient:
 
 
 def _task_state_to_str(state: int) -> str:
-    mapping = {
+    mapping: dict[int, str] = {
         TaskState.TASK_STATE_SUBMITTED: "submitted",
         TaskState.TASK_STATE_WORKING: "working",
         TaskState.TASK_STATE_COMPLETED: "completed",
@@ -348,7 +360,7 @@ def _task_state_to_str(state: int) -> str:
         TaskState.TASK_STATE_AUTH_REQUIRED: "auth-required",
         TaskState.TASK_STATE_REJECTED: "rejected",
     }
-    return mapping.get(state, "unknown")  # type: ignore[arg-type]
+    return mapping.get(state, "unknown")
 
 
 def _task_to_dict(task) -> dict:

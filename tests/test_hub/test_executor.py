@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from a2a.types import TaskState
+
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.hub.executor import FinAssistExecutor
 
@@ -37,7 +39,7 @@ def _make_stream_mock(
     stream_mock = MagicMock()
     stream_mock.all_messages.return_value = all_messages or []
     stream_mock.new_messages.return_value = new_messages or []
-    stream_mock.get_output.return_value = result_output
+    stream_mock.get_output = AsyncMock(return_value=result_output)
     stream_mock.stream_text.return_value = _stream_text_deltas(result_output)
 
     pydantic_agent = MagicMock()
@@ -80,7 +82,8 @@ class TestFinAssistExecutorAuthRequired:
         status_updates = [
             call
             for call in event_queue.enqueue_event.call_args_list
-            if hasattr(call.args[0], "status") and call.args[0].status.state == 8
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_AUTH_REQUIRED
         ]
         assert len(status_updates) >= 1
         msg = status_updates[0].args[0].status.message
@@ -109,7 +112,8 @@ class TestFinAssistExecutorAuthRequired:
         failed_updates = [
             call
             for call in event_queue.enqueue_event.call_args_list
-            if hasattr(call.args[0], "status") and call.args[0].status.state == 4
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_FAILED
         ]
         assert len(failed_updates) >= 1
 
@@ -133,7 +137,8 @@ class TestFinAssistExecutorAuthRequired:
         completed_updates = [
             call
             for call in event_queue.enqueue_event.call_args_list
-            if hasattr(call.args[0], "status") and call.args[0].status.state == 3
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_COMPLETED
         ]
         assert len(completed_updates) >= 1
 
@@ -198,6 +203,7 @@ class TestFinAssistExecutorCancel:
         cancel_updates = [
             call
             for call in event_queue.enqueue_event.call_args_list
-            if hasattr(call.args[0], "status") and call.args[0].status.state == 5
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_CANCELED
         ]
         assert len(cancel_updates) == 1

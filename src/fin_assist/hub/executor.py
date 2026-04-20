@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Artifact, Message, Part, Role, TaskState
-from google.protobuf.struct_pb2 import Struct, Value
+from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
+from google.protobuf.struct_pb2 import Struct, Value  # noqa: TC002
 from pydantic import TypeAdapter
 from pydantic_ai.messages import (
     ModelRequest,
@@ -74,11 +74,21 @@ class FinAssistExecutor(AgentExecutor):
         self._context_store = context_store
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        task_id = context.task_id or str(uuid.uuid4())
+        context_id = context.context_id or str(uuid.uuid4())
         updater = TaskUpdater(
             event_queue=event_queue,
-            task_id=context.task_id,  # type: ignore[arg-type]
-            context_id=context.context_id,  # type: ignore[arg-type]
+            task_id=task_id,
+            context_id=context_id,
         )
+
+        initial_task = Task(
+            id=task_id,
+            context_id=context_id,
+            status=TaskStatus(state=TaskState.TASK_STATE_SUBMITTED),
+            history=[context.message] if context.message else [],
+        )
+        await event_queue.enqueue_event(initial_task)
         await updater.start_work()
 
         # 1. Build model (catch MissingCredentialsError early)
@@ -90,9 +100,9 @@ class FinAssistExecutor(AgentExecutor):
             return
 
         # 2. Load conversation history
-        context_id = context.context_id
+        raw_context_id = context.context_id
         message_history: list[ModelMessage] = (
-            await self._context_store.load(context_id) if context_id else []
+            await self._context_store.load(raw_context_id) if raw_context_id else []
         ) or []
 
         # 3. Convert A2A message → pydantic-ai message history
@@ -126,7 +136,7 @@ class FinAssistExecutor(AgentExecutor):
                     append=True,
                     last_chunk=True,
                 )
-                result_output = stream.get_output()
+                result_output = await stream.get_output()
                 all_msgs = stream.all_messages()
                 new_msgs = stream.new_messages()
         except Exception:
@@ -134,7 +144,8 @@ class FinAssistExecutor(AgentExecutor):
             raise
 
         # 5. Save updated conversation history
-        await self._context_store.save(context_id, all_msgs)  # type: ignore[arg-type]
+        if raw_context_id:
+            await self._context_store.save(raw_context_id, all_msgs)
 
         # 6. Send agent messages (thinking, etc.)
         a2a_messages: list[Message] = []
@@ -163,8 +174,8 @@ class FinAssistExecutor(AgentExecutor):
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(
             event_queue=event_queue,
-            task_id=context.task_id,  # type: ignore[arg-type]
-            context_id=context.context_id,  # type: ignore[arg-type]
+            task_id=context.task_id or str(uuid.uuid4()),
+            context_id=context.context_id or str(uuid.uuid4()),
         )
         await updater.cancel()
 
@@ -185,12 +196,12 @@ class FinAssistExecutor(AgentExecutor):
                 )
         return model_messages
 
-    def _request_parts_from_a2a(self, parts: list[Part]) -> list[ModelRequestPart]:
+    def _request_parts_from_a2a(self, parts: Sequence[Part]) -> list[ModelRequestPart]:
         model_parts: list[ModelRequestPart] = []
         for part in parts:
             if part.text:
                 model_parts.append(UserPromptPart(content=part.text))
-            elif part.HasField("data") or len(part.data.struct_value) > 0:
+            elif part.HasField("data"):
                 raise NotImplementedError("Data parts in requests are not supported yet.")
             elif part.url:
                 from pydantic_ai.messages import DocumentUrl, ImageUrl
@@ -216,12 +227,12 @@ class FinAssistExecutor(AgentExecutor):
                 model_parts.append(UserPromptPart(content=[content]))
         return model_parts
 
-    def _response_parts_from_a2a(self, parts: list[Part]) -> list[ModelResponsePart]:
+    def _response_parts_from_a2a(self, parts: Sequence[Part]) -> list[ModelResponsePart]:
         model_parts: list[ModelResponsePart] = []
         for part in parts:
             if part.text:
                 model_parts.append(PydanticTextPart(content=part.text))
-            elif part.HasField("data") or len(part.data.struct_value) > 0:
+            elif part.HasField("data"):
                 raise NotImplementedError("Data parts in responses are not supported yet.")
         return model_parts
 
@@ -252,9 +263,8 @@ class FinAssistExecutor(AgentExecutor):
 
         meta_struct = Struct()
         meta_struct.update({"json_schema": json_schema})
-        meta_value = Value(struct_value=meta_struct)
 
-        return Part(data=result_value, metadata=meta_value)
+        return Part(data=result_value, metadata=meta_struct)
 
     def _response_parts_to_a2a(self, parts: Sequence[ModelResponsePart]) -> list[Part]:
         a2a_parts: list[Part] = []
@@ -272,5 +282,7 @@ class FinAssistExecutor(AgentExecutor):
                 )
                 a2a_parts.append(Part(text=part.content, metadata=thinking_meta))
             elif isinstance(part, ToolCallPart):
+                # Tool calls are internal to pydantic-ai execution and not
+                # surfaced in A2A message history (tool results appear in output)
                 pass
         return a2a_parts

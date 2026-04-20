@@ -41,6 +41,8 @@
   git-hooks.hooks = {
     treefmt = {
       enable = true;
+      # Disabled to reduce commit friction during active development;
+      # CI should still enforce formatting.
       settings.fail-on-change = false;
     };
 
