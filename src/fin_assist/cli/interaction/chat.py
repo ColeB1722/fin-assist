@@ -10,7 +10,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
 
-from fin_assist.cli.client import AgentResult
+from fin_assist.agents.metadata import AgentResult
 from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
 from fin_assist.cli.interaction.response import PostResponseAction, handle_post_response
 from fin_assist.paths import SESSIONS_DIR

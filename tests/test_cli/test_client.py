@@ -2,31 +2,50 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fin_assist.cli.client import AgentResult, DiscoveredAgent, HubClient
+from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
+from google.protobuf.struct_pb2 import Struct, Value
+
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.cli.client import DiscoveredAgent, HubClient
+
+
+def _make_struct(d: dict) -> Struct:
+    s = Struct()
+    s.update(d)
+    return s
 
 
 def _make_task(
-    state: str = "completed",
-    artifacts: list[dict[str, Any]] | None = None,
-    history: list[dict[str, Any]] | None = None,
+    state: int = TaskState.TASK_STATE_COMPLETED,
+    artifacts: list[Artifact] | None = None,
+    history: list[Message] | None = None,
     context_id: str = "ctx-1",
-) -> dict:
-    return {
-        "id": "task-1",
-        "context_id": context_id,
-        "status": {"state": state},
-        "artifacts": artifacts or [],
-        "history": history or [],
-    }
+) -> Task:
+    return Task(
+        id="task-1",
+        context_id=context_id,
+        status=TaskStatus(state=state),
+        artifacts=artifacts or [],
+        history=history or [],
+    )
+
+
+def _make_data_part(result_data: dict) -> Part:
+    result_struct = Struct()
+    result_struct.update({"result": result_data})
+    return Part(data=Value(struct_value=result_struct))
+
+
+def _make_text_part(text: str, metadata: dict | None = None) -> Part:
+    if metadata:
+        return Part(text=text, metadata=_make_struct(metadata))
+    return Part(text=text)
 
 
 class TestDiscoveredAgent:
     def test_stores_fields(self):
-        from fin_assist.agents.metadata import AgentCardMeta
-
         agent = DiscoveredAgent(
             name="shell",
             description="Runs shell commands",
@@ -44,6 +63,7 @@ class TestAgentResult:
         assert result.metadata == {}
         assert result.context_id is None
         assert result.thinking == []
+        assert result.auth_required is False
 
     def test_stores_context_id(self):
         result = AgentResult(success=True, output="x", context_id="ctx-42")
@@ -53,11 +73,21 @@ class TestAgentResult:
         result = AgentResult(success=True, output="x", thinking=["hmm", "let me see"])
         assert result.thinking == ["hmm", "let me see"]
 
+    def test_stores_auth_required(self):
+        result = AgentResult(success=False, output="missing key", auth_required=True)
+        assert result.auth_required is True
+
 
 class TestExtractResult:
     def test_extracts_data_part_command(self):
         task = _make_task(
-            artifacts=[{"parts": [{"data": {"result": {"command": "ls -la", "warnings": []}}}]}]
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_data_part({"command": "ls -la", "warnings": []})],
+                )
+            ]
         )
         result = HubClient._extract_result(task)
 
@@ -66,7 +96,11 @@ class TestExtractResult:
         assert result.warnings == []
 
     def test_extracts_text_part(self):
-        task = _make_task(artifacts=[{"parts": [{"text": "Hello world"}]}])
+        task = _make_task(
+            artifacts=[
+                Artifact(artifact_id="a1", name="result", parts=[_make_text_part("Hello world")])
+            ]
+        )
         result = HubClient._extract_result(task)
 
         assert result.output == "Hello world"
@@ -74,18 +108,15 @@ class TestExtractResult:
     def test_extracts_warnings_from_data_part(self):
         task = _make_task(
             artifacts=[
-                {
-                    "parts": [
-                        {
-                            "data": {
-                                "result": {
-                                    "command": "rm -rf /",
-                                    "warnings": ["Dangerous!", "Be careful"],
-                                }
-                            }
-                        }
-                    ]
-                }
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_data_part(
+                            {"command": "rm -rf /", "warnings": ["Dangerous!", "Be careful"]}
+                        )
+                    ],
+                )
             ]
         )
         result = HubClient._extract_result(task)
@@ -95,18 +126,15 @@ class TestExtractResult:
     def test_extracts_metadata_from_data_part(self):
         task = _make_task(
             artifacts=[
-                {
-                    "parts": [
-                        {
-                            "data": {
-                                "result": {
-                                    "command": "ls",
-                                    "metadata": {"accept_action": "insert_command"},
-                                }
-                            }
-                        }
-                    ]
-                }
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_data_part(
+                            {"command": "ls", "metadata": {"accept_action": "insert_command"}}
+                        )
+                    ],
+                )
             ]
         )
         result = HubClient._extract_result(task)
@@ -114,44 +142,49 @@ class TestExtractResult:
         assert result.metadata == {"accept_action": "insert_command"}
 
     def test_success_false_when_task_failed(self):
-        task = _make_task(state="failed")
+        task = _make_task(state=TaskState.TASK_STATE_FAILED)
         result = HubClient._extract_result(task)
 
         assert result.success is False
 
     def test_success_false_for_all_terminal_failure_states(self):
-        for state in ("failed", "canceled", "rejected"):
+        for state in (
+            TaskState.TASK_STATE_FAILED,
+            TaskState.TASK_STATE_CANCELED,
+            TaskState.TASK_STATE_REJECTED,
+        ):
             task = _make_task(state=state)
             result = HubClient._extract_result(task)
             assert result.success is False, f"expected failure for state={state}"
 
     def test_auth_required_is_not_successful(self):
-        task = _make_task(state="auth-required")
+        task = _make_task(state=TaskState.TASK_STATE_AUTH_REQUIRED)
         result = HubClient._extract_result(task)
         assert result.success is False
 
     def test_auth_required_extracts_status_message_from_history(self):
         task = _make_task(
-            state="auth-required",
+            state=TaskState.TASK_STATE_AUTH_REQUIRED,
             artifacts=[],
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {
-                            "text": "Missing API key for anthropic. Set ANTHROPIC_API_KEY or use `fin connect anthropic`.",
-                        }
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[
+                        _make_text_part(
+                            "Missing API key for anthropic. Set ANTHROPIC_API_KEY or use `fin connect anthropic`."
+                        )
                     ],
-                }
+                )
             ],
         )
         result = HubClient._extract_result(task)
         assert "anthropic" in result.output.lower()
 
-    def test_auth_required_sets_auth_required_flag_in_metadata(self):
-        task = _make_task(state="auth-required")
+    def test_auth_required_sets_auth_required_flag(self):
+        task = _make_task(state=TaskState.TASK_STATE_AUTH_REQUIRED)
         result = HubClient._extract_result(task)
-        assert result.metadata.get("auth_required") is True
+        assert result.auth_required is True
 
     def test_propagates_context_id(self):
         task = _make_task(context_id="ctx-xyz")
@@ -169,7 +202,9 @@ class TestExtractResult:
         task = _make_task(
             artifacts=[],
             history=[
-                {"role": "agent", "parts": [{"text": "from history"}]},
+                Message(
+                    message_id="m1", role=Role.ROLE_AGENT, parts=[_make_text_part("from history")]
+                ),
             ],
         )
         result = HubClient._extract_result(task)
@@ -178,8 +213,14 @@ class TestExtractResult:
 
     def test_artifacts_take_precedence_over_history(self):
         task = _make_task(
-            artifacts=[{"parts": [{"text": "artifact text"}]}],
-            history=[{"role": "agent", "parts": [{"text": "history text"}]}],
+            artifacts=[
+                Artifact(artifact_id="a1", name="result", parts=[_make_text_part("artifact text")])
+            ],
+            history=[
+                Message(
+                    message_id="m1", role=Role.ROLE_AGENT, parts=[_make_text_part("history text")]
+                ),
+            ],
         )
         result = HubClient._extract_result(task)
 
@@ -190,16 +231,14 @@ class TestExtractThinking:
     def test_extracts_thinking_from_agent_history(self):
         task = _make_task(
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {
-                            "text": "Let me reason...",
-                            "metadata": {"type": "thinking"},
-                        },
-                        {"text": "Here is the answer."},
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[
+                        _make_text_part("Let me reason...", metadata={"type": "thinking"}),
+                        _make_text_part("Here is the answer."),
                     ],
-                }
+                )
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -208,21 +247,16 @@ class TestExtractThinking:
     def test_extracts_multiple_thinking_blocks(self):
         task = _make_task(
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "First thought", "metadata": {"type": "thinking"}},
-                    ],
-                },
-                {
-                    "role": "agent",
-                    "parts": [
-                        {
-                            "text": "Second thought",
-                            "metadata": {"type": "thinking"},
-                        },
-                    ],
-                },
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("First thought", metadata={"type": "thinking"})],
+                ),
+                Message(
+                    message_id="m2",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("Second thought", metadata={"type": "thinking"})],
+                ),
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -231,12 +265,11 @@ class TestExtractThinking:
     def test_skips_user_messages(self):
         task = _make_task(
             history=[
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": "my thoughts", "metadata": {"type": "thinking"}},
-                    ],
-                }
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_USER,
+                    parts=[_make_text_part("my thoughts", metadata={"type": "thinking"})],
+                )
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -245,13 +278,14 @@ class TestExtractThinking:
     def test_skips_non_thinking_parts(self):
         task = _make_task(
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "regular text"},
-                        {"text": "thinking text", "metadata": {"type": "thinking"}},
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[
+                        _make_text_part("regular text"),
+                        _make_text_part("thinking text", metadata={"type": "thinking"}),
                     ],
-                }
+                )
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -265,10 +299,11 @@ class TestExtractThinking:
     def test_empty_when_no_thinking_metadata(self):
         task = _make_task(
             history=[
-                {
-                    "role": "agent",
-                    "parts": [{"text": "just a response"}],
-                }
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("just a response")],
+                )
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -277,13 +312,14 @@ class TestExtractThinking:
     def test_skips_empty_thinking_text(self):
         task = _make_task(
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "", "metadata": {"type": "thinking"}},
-                        {"text": "real thinking", "metadata": {"type": "thinking"}},
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[
+                        _make_text_part("", metadata={"type": "thinking"}),
+                        _make_text_part("real thinking", metadata={"type": "thinking"}),
                     ],
-                }
+                )
             ]
         )
         thinking = HubClient._extract_thinking(task)
@@ -295,13 +331,14 @@ class TestExtractFromHistorySkipsThinking:
         task = _make_task(
             artifacts=[],
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "reasoning...", "metadata": {"type": "thinking"}},
-                        {"text": "actual answer"},
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[
+                        _make_text_part("reasoning...", metadata={"type": "thinking"}),
+                        _make_text_part("actual answer"),
                     ],
-                }
+                )
             ],
         )
         result = HubClient._extract_result(task)
@@ -311,12 +348,11 @@ class TestExtractFromHistorySkipsThinking:
         task = _make_task(
             artifacts=[],
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "only thinking", "metadata": {"type": "thinking"}},
-                    ],
-                }
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("only thinking", metadata={"type": "thinking"})],
+                )
             ],
         )
         result = HubClient._extract_result(task)
@@ -324,14 +360,15 @@ class TestExtractFromHistorySkipsThinking:
 
     def test_extract_result_includes_thinking(self):
         task = _make_task(
-            artifacts=[{"parts": [{"text": "answer"}]}],
+            artifacts=[
+                Artifact(artifact_id="a1", name="result", parts=[_make_text_part("answer")])
+            ],
             history=[
-                {
-                    "role": "agent",
-                    "parts": [
-                        {"text": "hmm...", "metadata": {"type": "thinking"}},
-                    ],
-                }
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("hmm...", metadata={"type": "thinking"})],
+                )
             ],
         )
         result = HubClient._extract_result(task)

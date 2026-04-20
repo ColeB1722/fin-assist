@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from google.protobuf.json_format import MessageToDict
 
 from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
@@ -30,8 +31,6 @@ if TYPE_CHECKING:
 
 def _extract_card_meta(sub_app: FastAPI) -> dict:
     """Extract AgentCardMeta from the agent card's extensions."""
-    from google.protobuf.json_format import MessageToDict
-
     card = getattr(sub_app.state, "agent_card", None)
     if card is None:
         return {}

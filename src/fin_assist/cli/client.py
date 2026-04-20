@@ -13,8 +13,7 @@ The client supports two modes:
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from a2a.client.client import ClientConfig
@@ -24,11 +23,13 @@ from a2a.types import (
     Part,
     Role,
     SendMessageRequest,
+    Task,
     TaskState,
 )
 from google.protobuf.json_format import MessageToDict
+from pydantic import BaseModel
 
-from fin_assist.agents.metadata import AgentCardMeta
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -44,40 +45,28 @@ _TERMINAL_STATES: frozenset[int] = frozenset(
 )
 
 
-@dataclass
-class DiscoveredAgent:
+class DiscoveredAgent(BaseModel):
     """An agent discovered from the hub's ``/agents`` endpoint."""
 
     name: str
     description: str
     url: str
-    card_meta: AgentCardMeta
+    card_meta: AgentCardMeta = AgentCardMeta()
 
 
-@dataclass
-class AgentResult:
-    """Result from an agent run."""
-
-    success: bool
-    output: str
-    warnings: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
-    context_id: str | None = None
-    thinking: list[str] = field(default_factory=list)
-
-
-@dataclass
-class StreamEvent:
+class StreamEvent(BaseModel):
     """A single event from a streaming agent response."""
 
-    kind: str
-    """Event type: 'text_delta', 'completed', 'failed', 'auth_required'."""
-
+    kind: Literal["text_delta", "completed", "failed", "auth_required"]
     text: str = ""
-    """Text content for 'text_delta' events."""
-
     result: AgentResult | None = None
-    """Final result for 'completed'/'failed'/'auth_required' events."""
+
+
+def _struct_to_dict(struct) -> dict[str, Any]:
+    """Convert a protobuf Struct to a plain Python dict."""
+    if not struct or not struct.fields:
+        return {}
+    return MessageToDict(struct, preserving_proto_field_name=True)
 
 
 class HubClient:
@@ -152,16 +141,16 @@ class HubClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_from_artifacts(task_dict: dict) -> tuple[str, list[str], dict[str, Any]]:
+    def _extract_from_artifacts(task: Task) -> tuple[str, list[str], dict[str, Any]]:
         output = ""
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
 
-        for artifact in reversed(task_dict.get("artifacts", [])):
-            for part in artifact.get("parts", []):
-                text = part.get("text", "")
-                data = part.get("data", {})
-                if data:
+        for artifact in reversed(task.artifacts):
+            for part in artifact.parts:
+                text = part.text
+                if part.HasField("data") and part.data.HasField("struct_value"):
+                    data = _struct_to_dict(part.data.struct_value)
                     inner = data.get("result", data)
                     if not output:
                         output = inner.get("command", "")
@@ -175,48 +164,46 @@ class HubClient:
         return output, warnings, metadata
 
     @staticmethod
-    def _extract_from_history(task_dict: dict) -> str:
-        for item in reversed(task_dict.get("history", [])):
-            if item.get("role") != "agent":
+    def _extract_from_history(task: Task) -> str:
+        for item in reversed(task.history):
+            if item.role != Role.ROLE_AGENT:
                 continue
-            for part in item.get("parts", []):
-                if part.get("text") and part.get("metadata", {}).get("type") != "thinking":
-                    return part["text"]
+            for part in item.parts:
+                if part.text and _struct_to_dict(part.metadata).get("type") != "thinking":
+                    return part.text
         return ""
 
     @staticmethod
-    def _extract_thinking(task_dict: dict) -> list[str]:
+    def _extract_thinking(task: Task) -> list[str]:
         thinking: list[str] = []
-        for item in task_dict.get("history", []):
-            if item.get("role") != "agent":
+        for item in task.history:
+            if item.role != Role.ROLE_AGENT:
                 continue
-            for part in item.get("parts", []):
-                if part.get("metadata", {}).get("type") == "thinking" and part.get("text"):
-                    thinking.append(part["text"])
+            for part in item.parts:
+                if _struct_to_dict(part.metadata).get("type") == "thinking" and part.text:
+                    thinking.append(part.text)
         return thinking
 
     @staticmethod
-    def _extract_result(task_dict: dict) -> AgentResult:
-        state = task_dict.get("status", {}).get("state", "")
-        context_id = task_dict.get("context_id")
+    def _extract_result(task: Task) -> AgentResult:
+        state = task.status.state
+        context_id = task.context_id or None
 
-        output, warnings, metadata = HubClient._extract_from_artifacts(task_dict)
+        output, warnings, metadata = HubClient._extract_from_artifacts(task)
 
         if not output:
-            output = HubClient._extract_from_history(task_dict)
+            output = HubClient._extract_from_history(task)
 
-        thinking = HubClient._extract_thinking(task_dict)
-
-        if state == "auth-required":
-            metadata["auth_required"] = True
+        thinking = HubClient._extract_thinking(task)
 
         return AgentResult(
-            success=state == "completed",
+            success=state == TaskState.TASK_STATE_COMPLETED,
             output=output,
             warnings=warnings,
             metadata=metadata,
             context_id=context_id,
             thinking=thinking,
+            auth_required=state == TaskState.TASK_STATE_AUTH_REQUIRED,
         )
 
     # ------------------------------------------------------------------
@@ -258,7 +245,7 @@ class HubClient:
 
         request = SendMessageRequest(message=msg)
 
-        task_dict: dict[str, Any] | None = None
+        task: Task | None = None
 
         async for response in client.send_message(request):
             if response.HasField("artifact_update"):
@@ -268,26 +255,18 @@ class HubClient:
                         yield StreamEvent(kind="text_delta", text=part.text)
 
             if response.HasField("task"):
-                task_dict = _task_to_dict(response.task)
+                task = response.task
                 state = response.task.status.state
                 if state in _TERMINAL_STATES:
                     break
             elif response.HasField("status_update"):
                 state = response.status_update.status.state
                 if state in _TERMINAL_STATES:
-                    if task_dict:
-                        task_dict["status"]["state"] = _task_state_to_str(state)
-                    else:
-                        task_dict = {
-                            "status": {"state": _task_state_to_str(state)},
-                            "artifacts": [],
-                            "history": [],
-                        }
                     break
 
-        if task_dict is not None:
-            result = self._extract_result(task_dict)
-            if result.metadata.get("auth_required"):
+        if task is not None:
+            result = self._extract_result(task)
+            if result.auth_required:
                 yield StreamEvent(kind="auth_required", result=result)
             elif result.success:
                 yield StreamEvent(kind="completed", result=result)
@@ -316,59 +295,27 @@ class HubClient:
 
         request = SendMessageRequest(message=msg)
 
-        task_dict: dict[str, Any] | None = None
+        task: Task | None = None
+        artifacts: list[Any] = []
+
         async for response in client.send_message(request):
             if response.HasField("task"):
-                task_dict = _task_to_dict(response.task)
+                task = response.task
                 state = response.task.status.state
                 if state in _TERMINAL_STATES:
                     break
             elif response.HasField("status_update"):
                 state = response.status_update.status.state
                 if state in _TERMINAL_STATES:
-                    if task_dict:
-                        task_dict["status"]["state"] = _task_state_to_str(state)
-                    else:
-                        task_dict = {
-                            "status": {"state": _task_state_to_str(state)},
-                            "artifacts": [],
-                            "history": [],
-                        }
                     break
             elif response.HasField("artifact_update"):
-                if task_dict is None:
-                    task_dict = {"status": {"state": "working"}, "artifacts": [], "history": []}
-                artifact_dict = MessageToDict(
-                    response.artifact_update.artifact, preserving_proto_field_name=True
-                )
-                task_dict.setdefault("artifacts", []).append(artifact_dict)
+                artifacts.append(response.artifact_update.artifact)
 
-        if task_dict is None:
+        if task is None:
             return AgentResult(success=False, output="No response from agent")
 
-        return self._extract_result(task_dict)
+        if artifacts and not task.artifacts:
+            for artifact in artifacts:
+                task.artifacts.append(artifact)
 
-
-def _task_state_to_str(state: int) -> str:
-    mapping: dict[int, str] = {
-        TaskState.TASK_STATE_SUBMITTED: "submitted",
-        TaskState.TASK_STATE_WORKING: "working",
-        TaskState.TASK_STATE_COMPLETED: "completed",
-        TaskState.TASK_STATE_FAILED: "failed",
-        TaskState.TASK_STATE_CANCELED: "canceled",
-        TaskState.TASK_STATE_INPUT_REQUIRED: "input-required",
-        TaskState.TASK_STATE_AUTH_REQUIRED: "auth-required",
-        TaskState.TASK_STATE_REJECTED: "rejected",
-    }
-    return mapping.get(state, "unknown")
-
-
-def _task_to_dict(task) -> dict:
-    d = MessageToDict(task, preserving_proto_field_name=True)
-    state_int = task.status.state
-    d["status"]["state"] = _task_state_to_str(state_int)
-    for msg in d.get("history", []):
-        role = msg.get("role", "")
-        if role.startswith("ROLE_"):
-            msg["role"] = role.removeprefix("ROLE_").lower()
-    return d
+        return self._extract_result(task)

@@ -31,8 +31,7 @@ from fin_assist.cli.display import (
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 
 if TYPE_CHECKING:
-    from fin_assist.agents.metadata import AgentCardMeta
-    from fin_assist.cli.client import AgentResult
+    from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 
 console = Console()
 
@@ -77,7 +76,7 @@ async def handle_post_response(
             a "Cancelled" info message is printed on approval rejection.
     """
     # 1. Auth required — always takes priority
-    if result.metadata.get("auth_required"):
+    if result.auth_required:
         render_auth_required(result.output)
         return PostResponseResult(action=PostResponseAction.AUTH_REQUIRED, exit_code=1)
 

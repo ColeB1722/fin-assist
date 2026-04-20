@@ -13,8 +13,8 @@ from rich.text import Text
 from fin_assist.paths import CREDENTIALS_FILE
 
 if TYPE_CHECKING:
-    from fin_assist.agents.metadata import AgentCardMeta
-    from fin_assist.cli.client import AgentResult, DiscoveredAgent
+    from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+    from fin_assist.cli.client import DiscoveredAgent
 
 
 console = Console()
@@ -158,7 +158,7 @@ def render_agent_output(
     (do) with standard warning panels — the same output as the card_meta
     path when ``requires_approval`` is ``False``.
     """
-    if result.metadata.get("auth_required"):
+    if result.auth_required:
         render_auth_required(result.output)
         return
 

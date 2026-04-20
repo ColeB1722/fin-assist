@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.cli.client import AgentResult
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 from fin_assist.cli.interaction.chat import run_chat_loop
 
 

@@ -7,7 +7,6 @@ circular imports.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -31,12 +30,14 @@ class MissingCredentialsError(Exception):
         )
 
 
-@dataclass
-class AgentResult:
+class AgentResult(BaseModel):
     success: bool
-    output: str
-    warnings: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    output: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    context_id: str | None = None
+    thinking: list[str] = Field(default_factory=list)
+    auth_required: bool = False
 
 
 class AgentCardMeta(BaseModel):
