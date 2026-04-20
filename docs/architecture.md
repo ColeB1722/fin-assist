@@ -669,7 +669,7 @@ only.
 | Modality | Transport | Status | Notes |
 |---|---|---|---|
 | Blocking `message/send` | JSON-RPC | ✅ Implemented | Hub responds inline when agent finishes |
-| Streaming `message/stream` | JSON-RPC SSE | Phase 9 | Progressive output; fasta2a has `stream_message_response_ta` ready |
+| Streaming `message/stream` | JSON-RPC SSE | Blocked | Merged to fasta2a main (PR #51, Mar 2026) but unreleased; blocked on fasta2a v0.7+ |
 | Non-blocking + polling | JSON-RPC | Later phase | `message/send` with `blocking: false`; `_poll_task` fallback exists |
 | gRPC | gRPC | Issue | Protocol-native; wait for fasta2a support or evaluate `a2a-python` |
 
@@ -845,8 +845,13 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Step 8: Context injection for `talk` (`@`-completion in FinPrompt)
 - [ ] Step 9: Approval "add context" option for structured output in talk mode
 
-### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
+### Phase 9: Streaming + Integration Tests ⬜ **BLOCKED**
+> **Blocked on fasta2a v0.7+** — SSE streaming was merged to fasta2a main (PR #51, Mar 2026) but no release has been cut. The schema types (`StreamMessageRequest`, `StreamMessageResponse`, `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`) exist in v0.6.0, but all runtime components (EventBus, SSE routing, `stream_message()` on TaskManager, client streaming) are on main only. See handoff.md "Streaming Research" for full findings.
+
+- [ ] Upgrade `fasta2a>=0.7` (or git ref if pre-release)
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
+- [ ] Update `FinAssistWorker` to emit `StreamResponse` events via `broker.event_bus.emit()` during `run_task()`
+- [ ] Use `pydantic_agent.run_stream()` / `agent.iter()` for token-level streaming in worker
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
 - [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
 - [ ] Wire to `talk` command — streaming as default if agent card supports it

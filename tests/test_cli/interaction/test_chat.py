@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.cli.client import AgentResult
 from fin_assist.cli.interaction.chat import run_chat_loop
 
@@ -210,3 +211,145 @@ class TestRunChatLoop:
             mock_init.assert_called_once()
 
         send_fn.assert_called_once_with("default", "hello", None)
+
+
+class TestChatLoopThinking:
+    async def test_thinking_not_shown_by_default(self):
+        result_with_thinking = AgentResult(
+            success=True, output="answer", thinking=["hmm"], context_id="ctx-1"
+        )
+        send_fn = AsyncMock(return_value=result_with_thinking)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["hello", "/exit"])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.response.console", test_console),
+            patch("fin_assist.cli.display.console", test_console),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp)
+
+        output = buf.getvalue()
+        assert "hmm" not in output
+        assert "answer" in output
+
+    async def test_thinking_shown_when_flag_set(self):
+        result_with_thinking = AgentResult(
+            success=True, output="answer", thinking=["hmm", "let me see"], context_id="ctx-1"
+        )
+        send_fn = AsyncMock(return_value=result_with_thinking)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["hello", "/exit"])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=True, legacy_windows=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.response.console", test_console),
+            patch("fin_assist.cli.display.console", test_console),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp, show_thinking=True)
+
+        output = buf.getvalue()
+        assert "hmm" in output
+        assert "let me see" in output
+        assert "answer" in output
+
+    async def test_thinking_shown_before_response(self):
+        result_with_thinking = AgentResult(
+            success=True, output="answer", thinking=["reasoning"], context_id="ctx-1"
+        )
+        send_fn = AsyncMock(return_value=result_with_thinking)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["hello", "/exit"])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=True, legacy_windows=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.response.console", test_console),
+            patch("fin_assist.cli.display.console", test_console),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp, show_thinking=True)
+
+        output = buf.getvalue()
+        reasoning_pos = output.find("reasoning")
+        answer_pos = output.find("answer")
+        assert reasoning_pos < answer_pos
+
+    async def test_no_thinking_rendered_when_empty(self):
+        result = AgentResult(success=True, output="answer", thinking=[], context_id="ctx-1")
+        send_fn = AsyncMock(return_value=result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["hello", "/exit"])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch("fin_assist.cli.interaction.response.console", test_console),
+            patch("fin_assist.cli.display.console", test_console),
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp, show_thinking=True)
+
+        output = buf.getvalue()
+        assert "Thinking" not in output
+        assert "answer" in output
+
+
+class TestChatLoopCardMeta:
+    async def test_requires_approval_shows_widget_in_talk(self):
+        result = AgentResult(success=True, output="rm -rf /tmp", context_id="ctx-1")
+        send_fn = AsyncMock(return_value=result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["delete temp", "/exit"])
+        card_meta = AgentCardMeta(requires_approval=True)
+
+        from fin_assist.cli.interaction.approve import ApprovalAction
+
+        with (
+            patch(
+                "fin_assist.cli.interaction.response.run_approve_widget",
+                new_callable=AsyncMock,
+                return_value=ApprovalAction.CANCEL,
+            ) as mock_widget,
+        ):
+            await run_chat_loop(send_fn, "shell", prompt=mock_fp, card_meta=card_meta)
+
+        mock_widget.assert_called_once()
+
+    async def test_no_approval_widget_when_not_required(self):
+        result = AgentResult(success=True, output="hello", context_id="ctx-1")
+        send_fn = AsyncMock(return_value=result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["hi", "/exit"])
+        card_meta = AgentCardMeta(requires_approval=False)
+
+        with (
+            patch("fin_assist.cli.interaction.response.run_approve_widget") as mock_widget,
+        ):
+            await run_chat_loop(send_fn, "default", prompt=mock_fp, card_meta=card_meta)
+
+        mock_widget.assert_not_called()

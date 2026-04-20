@@ -8,16 +8,21 @@ from unittest.mock import MagicMock, patch
 from rich.console import Console
 
 from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.cli.client import DiscoveredAgent
+from fin_assist.cli.client import AgentResult, DiscoveredAgent
 from fin_assist.cli.display import (
+    ProgressiveDisplay,
     render_agent_card,
+    render_agent_output,
     render_agents_list,
     render_auth_required,
+    render_collapsed_thinking,
     render_command,
     render_error,
     render_info,
+    render_markdown,
     render_response,
     render_success,
+    render_thinking,
     render_warnings,
 )
 
@@ -164,3 +169,164 @@ class TestRenderAgentsList:
     def test_renders_header(self):
         output = _capture_output(render_agents_list, [])
         assert "Available agents" in output
+
+
+class TestRenderThinking:
+    def test_renders_thinking_content(self):
+        output = _capture_output(render_thinking, ["Let me think about this..."])
+        assert "Let me think about this..." in output
+
+    def test_includes_thinking_label(self):
+        output = _capture_output(render_thinking, ["hmm"])
+        assert "Thinking" in output
+
+    def test_no_output_for_empty_list(self):
+        output = _capture_output(render_thinking, [])
+        assert output == ""
+
+    def test_renders_multiple_blocks(self):
+        output = _capture_output(render_thinking, ["first", "second"])
+        assert "first" in output
+        assert "second" in output
+
+
+class TestRenderMarkdown:
+    def test_renders_markdown_text(self):
+        output = _capture_output(render_markdown, "Hello **world**")
+        assert "world" in output
+
+    def test_no_panel_wrapper(self):
+        output = _capture_output(render_markdown, "plain text")
+        assert "──" not in output
+
+
+class TestRenderAgentOutput:
+    def _make_meta(self, **kwargs) -> AgentCardMeta:
+        return AgentCardMeta(**kwargs)
+
+    def test_auth_required_renders_auth_panel(self):
+        result = AgentResult(success=False, output="anthropic", metadata={"auth_required": True})
+        meta = self._make_meta()
+        output = _capture_output(render_agent_output, result, meta)
+        assert "auth" in output.lower()
+
+    def test_failed_result_renders_error(self):
+        result = AgentResult(success=False, output="something went wrong")
+        meta = self._make_meta()
+        output = _capture_output(render_agent_output, result, meta)
+        assert "something went wrong" in output
+
+    def test_text_do_mode_uses_panel(self):
+        result = AgentResult(success=True, output="Here is my answer")
+        meta = self._make_meta(requires_approval=False)
+        output = _capture_output(render_agent_output, result, meta, mode="do")
+        assert "Here is my answer" in output
+
+    def test_text_talk_mode_uses_markdown(self):
+        result = AgentResult(success=True, output="Here is my answer")
+        meta = self._make_meta(requires_approval=False)
+        output = _capture_output(render_agent_output, result, meta, mode="talk")
+        assert "Here is my answer" in output
+
+    def test_command_renders_syntax_panel(self):
+        result = AgentResult(success=True, output="ls -la", warnings=[], metadata={})
+        meta = self._make_meta(requires_approval=True)
+        output = _capture_output(render_agent_output, result, meta)
+        assert "ls -la" in output
+        assert "Generated Command" in output
+
+    def test_thinking_shown_when_flag_set(self):
+        result = AgentResult(success=True, output="answer", thinking=["hmm"])
+        meta = self._make_meta()
+        output = _capture_output(render_agent_output, result, meta, show_thinking=True)
+        assert "hmm" in output
+
+    def test_thinking_not_shown_by_default(self):
+        result = AgentResult(success=True, output="answer", thinking=["hmm"])
+        meta = self._make_meta()
+        output = _capture_output(render_agent_output, result, meta)
+        assert "hmm" not in output
+
+    def test_warnings_shown_for_text_response(self):
+        result = AgentResult(success=True, output="answer", warnings=["be careful"])
+        meta = self._make_meta(requires_approval=False)
+        output = _capture_output(render_agent_output, result, meta)
+        assert "be careful" in output
+
+
+# ---------------------------------------------------------------------------
+# ProgressiveDisplay
+# ---------------------------------------------------------------------------
+
+
+class TestProgressiveDisplay:
+    def test_update_with_thinking_partial(self):
+        """Partial result with thinking updates token count."""
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False, highlight=False)
+        display = ProgressiveDisplay(test_console)
+
+        partial = AgentResult(
+            success=False,
+            output="",
+            partial=True,
+            thinking=["let me think about this"],
+            thinking_token_count=5,
+        )
+        # Don't start live display — just test the state update logic
+        display.update(partial)
+        assert display._thinking_tokens == 5
+        assert display._thinking_done is False
+
+    def test_update_with_text_partial_marks_thinking_done(self):
+        """When partial has output text, thinking is marked done."""
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False, highlight=False)
+        display = ProgressiveDisplay(test_console)
+
+        partial = AgentResult(
+            success=False,
+            output="The answer is",
+            partial=True,
+            thinking_token_count=10,
+        )
+        display.update(partial)
+        assert display._thinking_done is True
+        assert display._output_text == "The answer is"
+
+    def test_update_with_final_result(self):
+        """Final result sets output and marks thinking done."""
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False, highlight=False)
+        display = ProgressiveDisplay(test_console)
+
+        final = AgentResult(
+            success=True,
+            output="Paris is the capital of France.",
+            thinking=["Let me recall geography facts"],
+        )
+        display.update(final)
+        assert display._thinking_done is True
+        assert display._output_text == "Paris is the capital of France."
+        assert display._thinking_tokens > 0
+
+    def test_context_manager_start_stop(self):
+        """Entering and exiting the context manager starts/stops Live."""
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False, highlight=False)
+        display = ProgressiveDisplay(test_console)
+
+        with display:
+            assert display._live is not None
+        assert display._live is None
+
+
+class TestRenderCollapsedThinking:
+    def test_renders_token_count(self):
+        output = _capture_output(render_collapsed_thinking, 1247)
+        assert "1247" in output
+        assert "thinking" in output
+
+    def test_zero_tokens_no_output(self):
+        output = _capture_output(render_collapsed_thinking, 0)
+        assert output == ""

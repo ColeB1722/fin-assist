@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-12)**: Config-driven redesign Steps 1-6 complete. `ConfigAgent` replaces `BaseAgent`/`DefaultAgent`/`ShellAgent`. `FinAssistWorker(Worker[Context])` replaces private `AgentWorker` import. Manual testing Chunks A-E need re-verification. Next: Steps 7-9 (context injection + approval).
+**Current state (2026-04-14)**: Progressive output (streaming middle-ground) implemented. Worker uses `agent.iter()` + `node.stream()` for token-level iteration with intermediate storage updates. Client `stream_message()` async generator drives `ProgressiveDisplay` (Rich Live) in talk mode. 458 tests passing. GitHub issue #72. Next: Steps 7-9 (context injection + approval), manual testing re-verification.
 
 ---
 
@@ -909,6 +909,213 @@ Total: 368 tests, all passing
 
 ---
 
+## Streaming Research (2026-04-12)
+
+**Status**: Research complete. Phase 9 blocked on fasta2a release.
+
+### Question
+
+Can we implement streaming (SSE `message/stream`) from the hub back to the client via fasta2a?
+
+### Findings
+
+**fasta2a v0.6.0 (current, released Oct 2025):**
+- Schema types exist: `StreamMessageRequest`, `StreamMessageResponse`, `TaskStatusUpdateEvent`, `TaskArtifactUpdateEvent`, `stream_message_request_ta`, `stream_message_response_ta`
+- `TaskManager.stream_message()` is a stub raising `NotImplementedError`
+- No `EventBus`, no SSE routing, no `StreamingResponse`, no client streaming
+- `AgentCapabilities.streaming` hardcoded to `False`
+- `message/stream` requests hit `else` branch and raise `NotImplementedError`
+
+**fasta2a main branch (post PR #51, merged Mar 8, 2026):**
+Full SSE streaming was implemented and merged but **no release has been cut**. PR #51 adds:
+
+| Component | What it provides |
+|-----------|-----------------|
+| `EventBus` / `InMemoryEventBus` | Pub/sub using anyio memory streams; workers `emit()` events, clients `subscribe()` |
+| `stream_message()` on `TaskManager` | Yields `data: {json}\n\n` SSE events |
+| `resubscribe_task()` on `TaskManager` | Re-attach to running task stream |
+| `message/stream` + `tasks/resubscribe` routes | Returns `StreamingResponse` with `text/event-stream` |
+| `streaming=True` on agent card | Advertises capability |
+| `A2AClient` streaming | Client-side SSE consumption |
+| `StreamResponse` wrapper type | Wraps `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` for event bus |
+
+Workers emit events via `self.broker.event_bus.emit(task_id, StreamResponse(...))` and signal completion with `self.broker.event_bus.close(task_id)`. The `InMemoryBroker` now carries an `event_bus` attribute shared across all workers.
+
+**pydantic-ai (current):**
+- `agent.run_stream()` — async context manager yielding `AgentStream` with `stream_text()` and `stream_text(delta=True)`
+- `agent.iter()` — node-by-node async iteration with `PartStartEvent`, `PartDeltaEvent` (`TextPartDelta`, `ThinkingPartDelta`, `ToolCallPartDelta`), `FinalResultEvent`
+- Both are ready for wiring into `FinAssistWorker.run_task()` when fasta2a catches up
+
+**Community context:**
+- Fork at `physicsrob/fasta2a:feature/sse-streaming` was an earlier community attempt that informed the final implementation
+- Issue #53 on fasta2a asks for release timeline (filed Apr 9, 2026)
+- PR #43 (another streaming approach from datalayer-externals) was also in progress
+
+### Implementation Path (when unblocked)
+
+1. **Upgrade fasta2a** to v0.7+ (or pin to git main ref)
+2. **Update `InMemoryBroker` usage** — broker now has `.event_bus` attribute
+3. **Update `FinAssistWorker.run_task()`** — use `pydantic_agent.run_stream()` / `iter()` to get token deltas, emit `StreamResponse(status_update=...)` and `StreamResponse(artifact_update=...)` events via `self.broker.event_bus.emit()`, close with `self.broker.event_bus.close()`
+4. **Update `FastA2A` construction** — `streaming=True` now configurable
+5. **Implement `stream_agent()` in `cli/client.py`** — use `A2AClient.stream_message()` or manual SSE parsing with httpx `stream()`
+6. **Update `cli/interaction/chat.py`** — progressive rendering from SSE events
+7. **Tests** — streaming output, partial artifact rendering, SSE lifecycle
+
+### Key References
+
+| Resource | URL |
+|----------|-----|
+| fasta2a PR #51 (SSE streaming) | https://github.com/pydantic/fasta2a/pull/51 |
+| fasta2a Issue #53 (release timeline) | https://github.com/pydantic/fasta2a/issues/53 |
+| fasta2a Issue #27 (original streaming request) | https://github.com/pydantic/fasta2a/issues/27 |
+| pydantic-ai streaming docs | https://ai.pydantic.dev/output/#streaming |
+
+---
+
+## Progressive Output Implementation (2026-04-14)
+
+**Status**: Complete. GitHub issue #72.
+
+### Problem
+
+In `fin talk` mode, LLM responses (thinking tokens + final output) are returned all at once after the full generation completes. For models with extended thinking (Claude), this means 10-30+ seconds staring at a blank terminal with no feedback.
+
+### What Was Implemented
+
+Polling-based progressive output that works with fasta2a v0.6.0 (no SSE dependency). Six layers, bottom-up:
+
+1. **`pyproject.toml`** — Added `rich>=13.0` as explicit dependency (was transitive only).
+
+2. **`AgentResult`** (`cli/client.py`) — Added `partial: bool = False` and `thinking_token_count: int = 0` fields. Partial results represent intermediate snapshots during working state.
+
+3. **`FinAssistWorker._run_with_streaming()`** (`hub/worker.py`) — Replaced `pydantic_agent.run()` with `agent.iter()` + `node.stream()`. Iterates the agent's execution graph node-by-node. For `ModelRequestNode` nodes, streams token deltas (`ThinkingPartDelta`, `TextPartDelta`). Flushes intermediate updates to storage via `update_task(state="working", new_messages=[...])` with tagged metadata (`type: "thinking_delta"` or `"text_delta"`, `partial: True`). Thinking flushes are batched at `_THINKING_FLUSH_INTERVAL = 64` tokens to keep polling overhead reasonable.
+
+4. **`HubClient.stream_message()`** (`cli/client.py`) — Async generator that sends a message then polls, yielding `AgentResult(partial=True)` when new intermediate messages appear in task history, then yielding the final `AgentResult(partial=False)`. Also added `_extract_partial_result()` static method.
+
+5. **`ProgressiveDisplay`** (`cli/display.py`) — Rich `Live` context manager that composites a thinking spinner (with token count) and incremental Markdown output. Transitions: spinner phase → collapsed thinking summary + streaming text → stopped.
+
+6. **`run_chat_loop`** (`cli/interaction/chat.py`) — Added `stream_message_fn` parameter. When provided, uses `_send_with_progressive_display()` which drives `ProgressiveDisplay` with each yielded partial result. Falls back to legacy batch rendering when `stream_message_fn` is `None`. `_talk_command` in `main.py` passes `client.stream_message` as the stream function.
+
+### Forward Compatibility (~70/30 split)
+
+| Carries forward (SSE lands) | Gets replaced |
+|------------------------------|---------------|
+| `agent.iter()` + `node.stream()` in worker | Polling loop in `stream_message()` |
+| `ProgressiveDisplay` + Rich Live | Intermediate `update_task` calls |
+| `AgentResult.partial` / `thinking_token_count` | — |
+| `stream_message()` generator interface | Transport glue only |
+| Message tagging protocol | — |
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Transport | Polling + `update_task` | Only option with fasta2a v0.6.0 (SSE blocked on v0.7+) |
+| Thinking flush interval | 64 tokens | Balance between responsiveness and polling overhead |
+| Text flush | Every delta | Text deltas are less frequent; output should appear ASAP |
+| Display | Rich `Live` + `Spinner` + `Group` | Already a transitive dependency; `Live` handles terminal refresh |
+| Token counting | Whitespace-split word count | Rough proxy; accurate token counting requires tokenizer |
+| Backward compat | `stream_message_fn` optional | `send_message_fn` still works when streaming not provided |
+
+### Test Summary
+
+```text
+tests/test_hub/test_worker.py: +2 tests (TestFinAssistWorkerStreaming), 2 existing updated
+tests/test_cli/test_client.py: +10 tests (TestAgentResult partial, TestExtractPartialResult, TestStreamMessage)
+tests/test_cli/test_display.py: +6 tests (TestProgressiveDisplay, TestRenderCollapsedThinking)
+Total: 458 tests, all passing (was 440)
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Added `rich>=13.0` to dependencies |
+| `src/fin_assist/hub/worker.py` | `agent.iter()` + `node.stream()`, `_run_with_streaming()`, `_flush_thinking()`, `_flush_text()`, updated imports |
+| `src/fin_assist/cli/client.py` | `AgentResult.partial` + `thinking_token_count`, `_extract_partial_result()`, `stream_message()` async generator |
+| `src/fin_assist/cli/display.py` | `ProgressiveDisplay` class, `render_collapsed_thinking()`, updated imports |
+| `src/fin_assist/cli/interaction/chat.py` | `stream_message_fn` param, `_send_with_progressive_display()` |
+| `src/fin_assist/cli/main.py` | Pass `stream_message_fn=client.stream_message` to chat loop |
+| `tests/test_hub/test_worker.py` | `_make_iter_mock()` fixture, `TestFinAssistWorkerStreaming`, updated 2 existing tests |
+| `tests/test_cli/test_client.py` | `TestExtractPartialResult`, `TestStreamMessage`, `TestAgentResult` partial tests |
+| `tests/test_cli/test_display.py` | `TestProgressiveDisplay`, `TestRenderCollapsedThinking` |
+
+---
+
+## Design Sketch: Shared Render Pipeline (Option B)
+
+**Status**: Complete
+
+### Problem
+
+Rendering is coupled to serving mode, not response type. Same `AgentResult` renders differently in `do` (Panel via `render_response`/`render_command`) vs `talk` (raw `console.print`). Widgets (thinking, warnings, approval) are bolted into specific code paths with inline if/else rather than composable. Approval widget doesn't work in `talk` at all.
+
+### Design
+
+**One entry point**: `render_agent_output(result, card_meta, *, show_thinking, mode)` composes existing widget functions. Both modes call the same function. `mode` only affects the text wrapper (Panel for `do`, Markdown for `talk`), not which widgets render.
+
+Widget dispatch (driven by `AgentResult` + `AgentCardMeta`):
+
+```text
+auth_required?  → render_auth_required()
+!result.success? → render_error()
+requires_approval? → render_command()  (syntax panel + inline warnings + hint)
+else (text)     → do: render_response() / talk: render_markdown()
+show_thinking?  → render_thinking()
+warnings?       → render_warnings()  (only when not already inside render_command)
+```
+
+Approval interaction stays in the caller (it's interaction, not display), but now works in both modes.
+
+### Implementation Steps
+
+1. **`display.py`** — Add `render_markdown(text)` (Rich `Markdown` class, no panel) + `render_agent_output(result, card_meta, *, show_thinking=False, mode="do")` composing all widget functions per dispatch table.
+2. **`main.py`** — Replace inline rendering in `_do_command()` with `render_agent_output()`. Add `--show-thinking` flag to `do` subparser. Keep approval widget as separate interaction step after rendering.
+3. **`chat.py`** — Add `card_meta: AgentCardMeta` param to `run_chat_loop()`. Replace inline rendering with `render_agent_output()`. Add approval widget support: after rendering, if `card_meta.requires_approval`, show `run_approve_widget()`.
+4. **`main.py`** — Pass `card_meta` to `run_chat_loop()` in `_talk_command()`.
+5. **Tests** — `TestRenderMarkdown`, `TestRenderAgentOutput` (matrix), update chat tests for `card_meta` param, add approval-in-talk test.
+
+### Scope Limits
+
+- No "add context" option in talk approval (Step 9 from config redesign)
+- No `render_agent_output` return value / event system
+- No streaming integration
+- No new `AgentResult` fields
+
+### What Was Accomplished
+
+- Added `render_markdown()` and `render_agent_output()` to `display.py` — shared pipeline composes all widget functions based on `AgentResult` + `AgentCardMeta`
+- Refactored `_do_command()` to use `render_agent_output()` instead of inline rendering
+- Added `--show-thinking` flag to `do` subparser
+- Refactored `run_chat_loop()` to accept `card_meta` param and use `render_agent_output()` with `mode="talk"`
+- Added approval widget support in talk mode — when `card_meta.requires_approval`, shows `run_approve_widget()` after rendering
+- Backward-compatible: when `card_meta` is `None`, chat loop falls back to legacy inline rendering
+- Passed `card_meta=discovered.card_meta` from `_talk_command()` to `run_chat_loop()`
+- Removed unused imports from `main.py` (`render_command`, `render_response`, `render_warnings`)
+- Moved `AgentCardMeta` import to `TYPE_CHECKING` block in `chat.py`
+
+### Test Summary
+
+```text
+tests/test_cli/test_display.py: +10 tests (TestRenderMarkdown: 2, TestRenderAgentOutput: 8)
+tests/test_cli/interaction/test_chat.py: +2 tests (TestChatLoopCardMeta: 2)
+tests/test_cli/test_main.py: 1 test updated (render_response → render_agent_output patch)
+Total: 440 tests, all passing
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/display.py` | Added `render_markdown()`, `render_agent_output()`, `Markdown` import |
+| `src/fin_assist/cli/main.py` | Refactored `_do_command()` to use `render_agent_output()`, added `--show-thinking` to `do`, passed `card_meta` to `run_chat_loop()`, removed unused imports |
+| `src/fin_assist/cli/interaction/chat.py` | Added `card_meta` param to `run_chat_loop()`, uses `render_agent_output()` + approval widget when `card_meta` provided |
+| `tests/test_cli/test_display.py` | Added `TestRenderMarkdown`, `TestRenderAgentOutput` |
+| `tests/test_cli/interaction/test_chat.py` | Added `TestChatLoopCardMeta` (approval in talk, no approval when not required) |
+| `tests/test_cli/test_main.py` | Updated `render_response` → `render_agent_output` patch |
+
+---
+
 ## Next Session: Steps 7-9 (Context Injection + Approval)
 
 ### Goals
@@ -917,6 +1124,7 @@ Total: 368 tests, all passing
 2. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
 3. **Step 9**: Approval "add context" option for structured output in talk mode.
 4. **Manual testing**: Re-verify Chunks A-E after redesign.
+5. **Progressive output manual testing**: Verify talk mode shows spinner → collapsed thinking → streamed text with a real LLM.
 
 ---
 
@@ -1001,7 +1209,8 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | **CLI REPL Mode** | ✅ Complete |
 | — | **Config-Driven Redesign** | ✅ Steps 1-6 complete, Steps 7-9 pending |
-| 9 | Streaming + Integration Tests | ⬜ Not Started |
+| 9a | **Progressive Output (middle-ground)** | ✅ Complete (polling-based, issue #72) |
+| 9b | Full SSE Streaming | ⬜ **Blocked** (fasta2a v0.7+ unreleased) |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |

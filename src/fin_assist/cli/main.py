@@ -21,16 +21,12 @@ from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
     console,
     render_agents_list,
-    render_auth_required,
-    render_command,
     render_error,
     render_info,
-    render_response,
-    render_warnings,
 )
-from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 from fin_assist.cli.interaction.chat import run_chat_loop
 from fin_assist.cli.interaction.prompt import FinPrompt
+from fin_assist.cli.interaction.response import handle_post_response
 from fin_assist.cli.server import (
     ServerStartupError,
     check_status,
@@ -198,28 +194,13 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             prompt = " ".join(args.prompt)
             result = await client.run_agent(args.agent, prompt)
 
-            if result.metadata.get("auth_required"):
-                render_auth_required(result.output)
-                return 1
-
-            if not discovered.card_meta.requires_approval:
-                render_response(result.output, agent_name=discovered.name)
-                if result.warnings:
-                    render_warnings(result.warnings)
-                return 0
-
-            render_command(result.output, result.warnings, result.metadata)
-
-            action = await run_approve_widget(
-                command=result.output,
-                warnings=result.warnings,
+            response = await handle_post_response(
+                result,
+                discovered.card_meta,
+                show_thinking=args.show_thinking,
+                mode="do",
             )
-
-            if action == ApprovalAction.EXECUTE:
-                return execute_command(result.output)
-            else:
-                render_info("Cancelled")
-                return 0
+            return response.exit_code
     except Exception:
         return 1
 
@@ -268,6 +249,9 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 context_id,
                 fp,
                 initial_message=initial_message,
+                show_thinking=args.show_thinking,
+                card_meta=discovered.card_meta,
+                stream_message_fn=client.stream_message,
             )
     except Exception:
         return 1
@@ -317,6 +301,12 @@ def main(argv: list[str] | None = None) -> int:
         "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
     )
     do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
+    do_parser.add_argument(
+        "--show-thinking",
+        dest="show_thinking",
+        action="store_true",
+        help="Show agent thinking/reasoning in the output.",
+    )
 
     talk_parser = subparsers.add_parser(
         "talk",
@@ -341,6 +331,12 @@ def main(argv: list[str] | None = None) -> int:
         dest="resume",
         metavar="SESSION_ID",
         help="Resume a saved session.",
+    )
+    talk_parser.add_argument(
+        "--show-thinking",
+        dest="show_thinking",
+        action="store_true",
+        help="Show agent thinking/reasoning in the chat output.",
     )
 
     subparsers.add_parser("start", help="Start the agent hub server in the background.")

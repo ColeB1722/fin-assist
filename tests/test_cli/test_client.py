@@ -60,10 +60,30 @@ class TestAgentResult:
         assert result.warnings == []
         assert result.metadata == {}
         assert result.context_id is None
+        assert result.thinking == []
 
     def test_stores_context_id(self):
         result = AgentResult(success=True, output="x", context_id="ctx-42")
         assert result.context_id == "ctx-42"
+
+    def test_stores_thinking(self):
+        result = AgentResult(success=True, output="x", thinking=["hmm", "let me see"])
+        assert result.thinking == ["hmm", "let me see"]
+
+    def test_partial_defaults_false(self):
+        result = AgentResult(success=True, output="x")
+        assert result.partial is False
+        assert result.thinking_token_count == 0
+
+    def test_partial_fields(self):
+        result = AgentResult(
+            success=False,
+            output="partial text",
+            partial=True,
+            thinking_token_count=42,
+        )
+        assert result.partial is True
+        assert result.thinking_token_count == 42
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +223,378 @@ class TestExtractResult:
         result = HubClient._extract_result(task)
 
         assert result.output == "artifact text"
+
+
+class TestExtractThinking:
+    def test_extracts_thinking_from_agent_history(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "Let me reason...",
+                            "metadata": {"type": "thinking"},
+                        },
+                        {"kind": "text", "text": "Here is the answer."},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["Let me reason..."]
+
+    def test_extracts_multiple_thinking_blocks(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "First thought", "metadata": {"type": "thinking"}},
+                    ],
+                },
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "Second thought",
+                            "metadata": {"type": "thinking"},
+                        },
+                    ],
+                },
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["First thought", "Second thought"]
+
+    def test_skips_user_messages(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"kind": "text", "text": "my thoughts", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_skips_non_thinking_parts(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "regular text"},
+                        {"kind": "text", "text": "thinking text", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["thinking text"]
+
+    def test_empty_when_no_history(self):
+        task = _make_task(history=[])
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_empty_when_no_thinking_metadata(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": "just a response"}],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_skips_empty_thinking_text(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "", "metadata": {"type": "thinking"}},
+                        {"kind": "text", "text": "real thinking", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["real thinking"]
+
+
+class TestExtractFromHistorySkipsThinking:
+    def test_skips_thinking_parts(self):
+        task = _make_task(
+            artifacts=[],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "reasoning...", "metadata": {"type": "thinking"}},
+                        {"kind": "text", "text": "actual answer"},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "actual answer"
+
+    def test_returns_empty_when_only_thinking_in_history(self):
+        task = _make_task(
+            artifacts=[],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "only thinking", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == ""
+
+    def test_extract_result_includes_thinking(self):
+        task = _make_task(
+            artifacts=[{"parts": [{"kind": "text", "text": "answer"}]}],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "hmm...", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.thinking == ["hmm..."]
+        assert result.output == "answer"
+
+
+# ---------------------------------------------------------------------------
+# HubClient._extract_partial_result
+# ---------------------------------------------------------------------------
+
+
+class TestExtractPartialResult:
+    def test_returns_none_when_no_new_messages(self):
+        task = _make_task(
+            state="working",
+            history=[{"role": "user", "parts": [{"kind": "text", "text": "hello"}]}],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is None
+
+    def test_returns_none_when_new_messages_not_partial(self):
+        task = _make_task(
+            state="working",
+            history=[
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {"role": "agent", "parts": [{"kind": "text", "text": "answer"}]},
+            ],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is None
+
+    def test_extracts_thinking_delta(self):
+        task = _make_task(
+            state="working",
+            history=[
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "let me think about this carefully",
+                            "metadata": {"type": "thinking_delta", "partial": True},
+                        }
+                    ],
+                },
+            ],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is not None
+        assert result.partial is True
+        assert result.thinking == ["let me think about this carefully"]
+        assert result.thinking_token_count > 0
+        assert result.output == ""
+
+    def test_extracts_text_delta(self):
+        task = _make_task(
+            state="working",
+            history=[
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "The answer is",
+                            "metadata": {"type": "text_delta", "partial": True},
+                        }
+                    ],
+                },
+            ],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is not None
+        assert result.partial is True
+        assert result.output == "The answer is"
+        assert result.thinking == []
+
+    def test_uses_latest_snapshot(self):
+        """Multiple partial messages — uses the latest of each type."""
+        task = _make_task(
+            state="working",
+            history=[
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "old thinking",
+                            "metadata": {"type": "thinking_delta", "partial": True},
+                        }
+                    ],
+                },
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "newer thinking with more detail",
+                            "metadata": {"type": "thinking_delta", "partial": True},
+                        }
+                    ],
+                },
+            ],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is not None
+        assert result.thinking == ["newer thinking with more detail"]
+
+    def test_preserves_context_id(self):
+        task = _make_task(
+            state="working",
+            context_id="ctx-42",
+            history=[
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "thinking",
+                            "metadata": {"type": "thinking_delta", "partial": True},
+                        }
+                    ],
+                },
+            ],
+        )
+        result = HubClient._extract_partial_result(task, seen_message_count=1)
+        assert result is not None
+        assert result.context_id == "ctx-42"
+
+
+# ---------------------------------------------------------------------------
+# HubClient.stream_message
+# ---------------------------------------------------------------------------
+
+
+class TestStreamMessage:
+    async def test_yields_final_result_for_immediate_completion(self):
+        """When message/send returns an already-terminal task, yield it."""
+        client = HubClient("http://localhost")
+        mock_a2a = AsyncMock()
+        client._a2a_clients["shell"] = mock_a2a
+
+        terminal_task = {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "done"}]}],
+            "history": [],
+        }
+        mock_a2a.send_message.return_value = {"result": terminal_task}
+
+        results = []
+        async for r in client.stream_message("shell", "hello"):
+            results.append(r)
+
+        assert len(results) == 1
+        assert results[0].partial is False
+        assert results[0].success is True
+        assert results[0].output == "done"
+
+    async def test_yields_partial_then_final(self):
+        """When polling finds partial progress, yield partial then final."""
+        client = HubClient("http://localhost", poll_interval=0.01)
+        mock_a2a = AsyncMock()
+        client._a2a_clients["shell"] = mock_a2a
+
+        submitted_task = {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "submitted"},
+            "history": [{"role": "user", "parts": [{"kind": "text", "text": "hello"}]}],
+        }
+        mock_a2a.send_message.return_value = {"result": submitted_task}
+
+        working_task = {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "working"},
+            "history": [
+                {"role": "user", "parts": [{"kind": "text", "text": "hello"}]},
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "thinking about it",
+                            "metadata": {"type": "thinking_delta", "partial": True},
+                        }
+                    ],
+                },
+            ],
+        }
+        completed_task = {
+            "kind": "task",
+            "id": "task-1",
+            "context_id": "ctx-1",
+            "status": {"state": "completed"},
+            "artifacts": [{"parts": [{"kind": "text", "text": "final answer"}]}],
+            "history": working_task["history"],
+        }
+        mock_a2a.get_task.side_effect = [
+            {"result": working_task},
+            {"result": completed_task},
+        ]
+
+        results = []
+        async for r in client.stream_message("shell", "hello"):
+            results.append(r)
+
+        assert len(results) == 2
+        assert results[0].partial is True
+        assert results[0].thinking_token_count > 0
+        assert results[1].partial is False
+        assert results[1].success is True
+        assert results[1].output == "final answer"
 
 
 # ---------------------------------------------------------------------------

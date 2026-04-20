@@ -1,4 +1,10 @@
-"""Multi-turn chat widget for interactive conversations."""
+"""Multi-turn chat widget for interactive conversations.
+
+Supports progressive output when a ``stream_message_fn`` is provided.
+The streaming path uses ``ProgressiveDisplay`` (Rich ``Live``) to show
+a thinking spinner with token count, collapsing to a summary line once
+the agent starts producing output text.
+"""
 
 from __future__ import annotations
 
@@ -7,13 +13,15 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from fin_assist.cli.display import render_auth_required
+from fin_assist.cli.display import ProgressiveDisplay
 from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
+from fin_assist.cli.interaction.response import PostResponseAction, handle_post_response
 from fin_assist.paths import SESSIONS_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from fin_assist.agents.metadata import AgentCardMeta
     from fin_assist.cli.client import AgentResult
     from fin_assist.cli.interaction.prompt import SlashCommand
 
@@ -54,6 +62,9 @@ async def run_chat_loop(
     prompt: FinPrompt | None = None,
     *,
     initial_message: str | None = None,
+    show_thinking: bool = False,
+    card_meta: AgentCardMeta | None = None,
+    stream_message_fn: Callable[[str, str, str | None], AsyncIterator[AgentResult]] | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -65,6 +76,14 @@ async def run_chat_loop(
         prompt: Optional FinPrompt instance for input (created if not provided).
         initial_message: Optional message to send as the first turn before
                         entering the interactive prompt loop.
+        show_thinking: Whether to render agent thinking content.
+        card_meta: Agent capability metadata. When provided, drives widget
+                  selection (approval, warnings, etc.) via the shared pipeline.
+        stream_message_fn: Optional async generator function with the same
+                          ``(agent_name, prompt, context_id)`` signature that
+                          yields progressive ``AgentResult`` snapshots.  When
+                          provided, the chat loop uses ``ProgressiveDisplay``
+                          for real-time output rendering.
 
     Returns:
         The final context_id if the conversation had one.
@@ -114,27 +133,60 @@ async def run_chat_loop(
             console.print("Type /help for available commands")
             continue
 
+        # --- Send message and render response ---
         try:
-            result = await send_message_fn(agent_name, user_input, ctx_id)
+            if stream_message_fn is not None:
+                result = await _send_with_progressive_display(
+                    stream_message_fn, agent_name, user_input, ctx_id
+                )
+            else:
+                result = await send_message_fn(agent_name, user_input, ctx_id)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             continue
 
         ctx_id = result.context_id or ctx_id
 
-        if result.metadata.get("auth_required"):
-            render_auth_required(result.output)
+        response = await handle_post_response(
+            result,
+            card_meta,
+            show_thinking=show_thinking,
+            mode="talk",
+            output_already_rendered=(stream_message_fn is not None),
+        )
+
+        if response.action == PostResponseAction.AUTH_REQUIRED:
             console.print("[dim]Fix credentials and try again.[/dim]")
             break
-
-        if result.success:
-            console.print()
-            console.print(result.output)
-            if result.warnings:
-                console.print(f"[yellow]{' '.join(result.warnings)}[/yellow]")
-        else:
-            console.print(f"[red]Error: {result.output or 'Unknown error'}[/red]")
 
         console.print()
 
     return ctx_id
+
+
+async def _send_with_progressive_display(
+    stream_fn: Callable[[str, str, str | None], AsyncIterator[AgentResult]],
+    agent_name: str,
+    user_input: str,
+    ctx_id: str | None,
+) -> AgentResult:
+    """Send a message via the streaming path with live display.
+
+    Drives ``ProgressiveDisplay`` with each partial result from the
+    stream, then returns the final ``AgentResult``.
+    """
+    display = ProgressiveDisplay(console)
+    final_result: AgentResult | None = None
+
+    with display:
+        async for result in stream_fn(agent_name, user_input, ctx_id):
+            display.update(result)
+            final_result = result
+
+    if final_result is None:
+        # Should not happen — stream always yields at least the final result
+        from fin_assist.cli.client import AgentResult as _AR
+
+        return _AR(success=False, output="No response received from agent")
+
+    return final_result
