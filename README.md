@@ -4,36 +4,41 @@ Expandable personal AI agent platform for terminal workflows. An **Agent Hub** h
 
 ## System Architecture
 
+![System Architecture](docs/diagrams/system-architecture.png)
+
+<details>
+<summary>Mermaid source</summary>
+
 ```mermaid
 graph TD
     subgraph Clients
-        CLI["CLI Client<br/><small>Rich + httpx + prompt-toolkit</small>"]
-        TUI["TUI Client <em>(planned)</em><br/><small>Textual</small>"]
+        CLI["CLI Client\nRich + httpx + prompt-toolkit"]
+        TUI["TUI Client (planned)\nTextual"]
     end
 
     subgraph "A2A Protocol — HTTP + JSON-RPC"
-        RPC["SendMessage · SendStreamingMessage (SSE)<br/><small>Agent discovery via Agent Cards</small>"]
+        RPC["SendMessage · SendStreamingMessage (SSE)\nAgent discovery via Agent Cards"]
     end
 
     subgraph "Agent Hub — FastAPI on 127.0.0.1:4096"
-        HUB["Hub Router<br/><small>GET /agents · GET /health</small>"]
+        HUB["Hub Router\nGET /agents · GET /health"]
 
         subgraph "Per-Agent A2A Sub-Apps"
-            D["/default/<br/><small>do + talk · chain-of-thought</small>"]
-            S["/shell/<br/><small>do only · approval gate</small>"]
-            F["/{name}/<br/><small>future agents</small>"]
+            D["/default/\ndo + talk · chain-of-thought"]
+            S["/shell/\ndo only · approval gate"]
+            F["/{name}/\nfuture agents"]
         end
 
-        EXEC["FinAssistExecutor<br/><small>AgentExecutor + TaskUpdater</small>"]
-        TS["InMemoryTaskStore<br/><small>ephemeral (a2a-sdk)</small>"]
-        CS["ContextStore<br/><small>SQLite — conversation history</small>"]
+        EXEC["FinAssistExecutor\nAgentExecutor + TaskUpdater"]
+        TS["InMemoryTaskStore\nephemeral (a2a-sdk)"]
+        CS["ContextStore\nSQLite — conversation history"]
     end
 
     subgraph "Shared Services"
-        CREDS["CredentialStore<br/><small>env → file → keyring</small>"]
-        CONFIG["ConfigLoader<br/><small>TOML · 4-level priority</small>"]
-        CTXP["ContextProviders<br/><small>files · git · history · env</small>"]
-        REG["ProviderRegistry<br/><small>LLM providers</small>"]
+        CREDS["CredentialStore\nenv → file → keyring"]
+        CONFIG["ConfigLoader\nTOML · 4-level priority"]
+        CTXP["ContextProviders\nfiles · git · history · env"]
+        REG["ProviderRegistry\nLLM providers"]
     end
 
     LLM["pydantic-ai → LLM Providers"]
@@ -50,7 +55,14 @@ graph TD
     HUB -.-> CONFIG
 ```
 
+</details>
+
 ## Request Flow
+
+![Request Flow](docs/diagrams/request-flow.png)
+
+<details>
+<summary>Mermaid source</summary>
 
 ```mermaid
 sequenceDiagram
@@ -72,6 +84,8 @@ sequenceDiagram
     E->>E: updater.complete() → COMPLETED
     H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
 ```
+
+</details>
 
 ## Key Concepts
 

@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant C as CLI Client
+    participant H as Agent Hub
+    participant E as FinAssistExecutor
+    participant L as pydantic-ai / LLM
+
+    C->>H: SendStreamingMessage (JSON-RPC + SSE)
+    H->>E: execute(context, task_updater)
+    E->>E: Task enqueued (SUBMITTED)
+    E->>E: updater.start_work() → WORKING
+    E->>L: agent.run_stream(prompt, context)
+    loop Token-by-token
+        L-->>E: text delta
+        E-->>H: updater.add_artifact(append=true)
+        H-->>C: SSE: TaskArtifactUpdateEvent
+    end
+    E->>E: updater.complete() → COMPLETED
+    H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
