@@ -60,6 +60,20 @@ def client(mock_agents):
         yield client
 
 
+def _a2a_headers() -> dict[str, str]:
+    return {"Content-Type": "application/json", "A2A-Version": "1.0"}
+
+
+def _message_params(text: str) -> dict:
+    return {
+        "message": {
+            "role": "ROLE_USER",
+            "message_id": str(uuid.uuid4()),
+            "parts": [{"text": text}],
+        }
+    }
+
+
 class TestHealthEndpoint:
     def test_health_returns_200(self, client) -> None:
         resp = client.get("/health")
@@ -137,18 +151,12 @@ class TestMessageSendEndToEnd:
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
             "method": "SendMessage",
-            "params": {
-                "message": {
-                    "role": "ROLE_USER",
-                    "message_id": str(uuid.uuid4()),
-                    "parts": [{"text": text}],
-                }
-            },
+            "params": _message_params(text),
         }
         resp = client.post(
             f"/agents/{agent_name}/",
             content=json.dumps(payload),
-            headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+            headers=_a2a_headers(),
         )
         assert resp.status_code == 200
         return resp.json()
@@ -167,7 +175,7 @@ class TestMessageSendEndToEnd:
             resp = client.post(
                 f"/agents/{agent_name}/",
                 content=json.dumps(payload),
-                headers={"Content-Type": "application/json", "A2A-Version": "1.0"},
+                headers=_a2a_headers(),
             )
             assert resp.status_code == 200
             data = resp.json()
@@ -198,3 +206,126 @@ class TestMessageSendEndToEnd:
 
         artifacts = result_task.get("artifacts", [])
         assert len(artifacts) >= 0
+
+
+class TestSendStreamingMessageEndToEnd:
+    """End-to-end test: SendStreamingMessage returns SSE events through the a2a-sdk dispatcher."""
+
+    def _parse_sse_events(self, body: str) -> list[dict]:
+        events: list[dict] = []
+        current_data: list[str] = []
+        for line in body.splitlines():
+            if line.startswith("data:"):
+                current_data.append(line[len("data:") :].strip())
+            elif line == "" and current_data:
+                raw = "\n".join(current_data)
+                current_data = []
+                try:
+                    events.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    pass
+        if current_data:
+            raw = "\n".join(current_data)
+            try:
+                events.append(json.loads(raw))
+            except json.JSONDecodeError:
+                pass
+        return events
+
+    def test_streaming_returns_sse_events(self, client) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "SendStreamingMessage",
+            "params": _message_params("hello"),
+        }
+
+        with client.stream(
+            "POST",
+            "/agents/default/",
+            content=json.dumps(payload),
+            headers=_a2a_headers(),
+        ) as response:
+            assert response.status_code == 200
+            body = "".join(chunk.decode() for chunk in response.iter_bytes())
+
+        events = self._parse_sse_events(body)
+        assert len(events) >= 1, f"Expected SSE events, got: {body!r}"
+
+    def test_streaming_first_event_has_task(self, client) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "SendStreamingMessage",
+            "params": _message_params("hello"),
+        }
+
+        with client.stream(
+            "POST",
+            "/agents/default/",
+            content=json.dumps(payload),
+            headers=_a2a_headers(),
+        ) as response:
+            body = "".join(chunk.decode() for chunk in response.iter_bytes())
+
+        events = self._parse_sse_events(body)
+        first_result = events[0].get("result", {})
+        assert (
+            "task" in first_result
+            or "statusUpdate" in first_result
+            or "artifactUpdate" in first_result
+        )
+
+    def test_streaming_completes_with_terminal_state(self, client) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "SendStreamingMessage",
+            "params": _message_params("hello"),
+        }
+
+        with client.stream(
+            "POST",
+            "/agents/default/",
+            content=json.dumps(payload),
+            headers=_a2a_headers(),
+        ) as response:
+            body = "".join(chunk.decode() for chunk in response.iter_bytes())
+
+        events = self._parse_sse_events(body)
+        terminal_states = {
+            "TASK_STATE_COMPLETED",
+            "TASK_STATE_FAILED",
+            "TASK_STATE_CANCELED",
+        }
+        seen_states: set[str] = set()
+        for event in events:
+            result = event.get("result", {})
+            status_update = result.get("statusUpdate")
+            if status_update:
+                state = status_update.get("status", {}).get("state")
+                if state:
+                    seen_states.add(state)
+        assert seen_states & terminal_states, (
+            f"Expected terminal state in streaming events, got states: {seen_states}"
+        )
+
+    def test_streaming_includes_artifact_updates(self, client) -> None:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "SendStreamingMessage",
+            "params": _message_params("hello"),
+        }
+
+        with client.stream(
+            "POST",
+            "/agents/default/",
+            content=json.dumps(payload),
+            headers=_a2a_headers(),
+        ) as response:
+            body = "".join(chunk.decode() for chunk in response.iter_bytes())
+
+        events = self._parse_sse_events(body)
+        artifact_events = [e for e in events if "artifactUpdate" in e.get("result", {})]
+        assert len(artifact_events) >= 1, "Expected artifact update events in streaming response"

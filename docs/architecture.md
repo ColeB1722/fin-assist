@@ -6,18 +6,18 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 
 ### Core Vision
 
-**Agent Hub** — A "turnstile" of specialized agents exposed via A2A protocol (fasta2a). Each agent is independently discoverable, has its own agent card, and can be swapped in/out of the server. The hub handles routing, conversation persistence, and agent lifecycle.
+**Agent Hub** — A "turnstile" of specialized agents exposed via A2A protocol (a2a-sdk v1.0). Each agent is independently discoverable, has its own agent card, and can be swapped in/out of the server. The hub handles routing, conversation persistence, and agent lifecycle.
 
-**Dynamic UI via Agent Metadata** — Clients adapt their interface based on agent capabilities. Static metadata (multi-turn, thinking support, model selection) is declared in the A2A agent card. Dynamic metadata (accept actions, rendering hints) is returned per-response in task artifacts. Clients don't need to know about specific agents — they read metadata and adapt.
+**Dynamic UI via Agent Metadata** — Clients adapt their interface based on agent capabilities. Static metadata (multi-turn, thinking support, model selection) is declared in the A2A agent card via `AgentExtension`. Dynamic metadata (accept actions, rendering hints) is returned per-response in task artifacts. Clients don't need to know about specific agents — they read metadata and adapt.
 
-**Protocol-Native** — Built on A2A (Agent-to-Agent) protocol via fasta2a. Any A2A-compatible client can communicate with the hub. This enables future agent-to-agent workflows (e.g., SDD agent handing off to TDD agent).
+**Protocol-Native** — Built on A2A (Agent-to-Agent) protocol via a2a-sdk v1.0 (Google's official Python SDK). Any A2A-compatible client can communicate with the hub. This enables future agent-to-agent workflows (e.g., SDD agent handing off to TDD agent).
 
 **CLI-First, TUI-Later** — Start with a simple CLI client for fast iteration and testing, then layer on a TUI and other clients. The server is the stable core; clients are interchangeable.
 
 ## Design Principles
 
 1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
-2. **Protocol-native** — Built on A2A via fasta2a for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
+2. **Protocol-native** — Built on A2A via a2a-sdk v1.0 for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **pydantic-ai foundation** — Unified interface for all LLM providers with structured output validation.
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
 5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
@@ -52,7 +52,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Agent Hub (Starlette / ASGI)                               │
+│                    Agent Hub (FastAPI / ASGI)                                │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │  GET /agents — discovery endpoint (lists all agent card URLs)        │    │
@@ -73,9 +73,9 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
-│  │  Shared Storage (SQLite, fasta2a Storage ABC)                        │    │
-│  │  • Task storage — A2A tasks, status, artifacts, messages             │    │
-│  │  • Context storage — conversation history per context_id             │    │
+│  │  Shared Storage                                                       │    │
+│  │  • Task storage — InMemoryTaskStore (a2a-sdk, ephemeral per process) │    │
+│  │  • Context storage — SQLite ContextStore (conversation history)      │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
@@ -114,16 +114,16 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  │  • /switch <agent>           — switch active agent                   │   │
 │  │  • Dynamic prompts from agent card metadata                          │   │
 │  ├──────────────────────────────────────────────────────────────────────┤   │
-│  │  A2A Client (httpx)                                                   │   │
-│  │  • Discovers agent cards, sends message/send, parses artifacts       │   │
-│  │  • Reads AgentCardMeta to adapt display (one-shot vs multi-turn)    │   │
-│  │  • Rich-based output formatting                                      │   │
+│  │  A2A Client (httpx + a2a-sdk ClientFactory)                           │   │
+│  │  • Discovers agent cards, sends SendMessage / SendStreamingMessage    │   │
+│  │  • Reads AgentCardMeta to adapt display (one-shot vs multi-turn)     │   │
+│  │  • Token-by-token streaming via SSE with Rich Live rendering          │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────┬───────────────────────────────────────────┘
                                   │  A2A Protocol (HTTP + JSON-RPC)
                                   ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Agent Hub (Starlette parent ASGI app)                      │
+│                    Agent Hub (FastAPI parent ASGI app)                       │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Hub App (hub/app.py)                                                 │   │
@@ -134,9 +134,9 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Agent Factory (hub/factory.py)                                       │   │
-│  │  • ConfigAgent → pydantic-ai Agent → FastA2A() direct construction     │   │
-│  │  • Maps AgentCardMeta → fasta2a Skill + agent card extensions       │   │
-│  │  • Injects shared storage + broker                                   │   │
+│  │  • ConfigAgent → FinAssistExecutor + DefaultRequestHandler            │   │
+│  │  • Maps AgentCardMeta → AgentExtension(uri="fin_assist:meta")        │   │
+│  │  • Creates InMemoryTaskStore per agent sub-app                       │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -150,10 +150,10 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  SQLite Storage (hub/storage.py — fasta2a Storage ABC)               │   │
-│  │  • Task storage: A2A tasks, status, artifacts, messages              │   │
-│  │  • Context storage: conversation history per context_id              │   │
-│  │  • Shared across all agents (context_id scoped per agent path)      │   │
+│  │  Storage                                                               │   │
+│  │  • Task storage: InMemoryTaskStore (a2a-sdk, ephemeral per process)   │   │
+│  │  • Context storage: SQLite ContextStore (hub/context_store.py)        │   │
+│  │  • Context shared across all agents (context_id scoped per agent)     │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -201,17 +201,17 @@ fin-assist/
 │       │
 │       ├── hub/                     # Agent Hub server
 │       │   ├── __init__.py
-│       │   ├── app.py               # Parent Starlette app, mounts agent sub-apps
-│       │   ├── factory.py           # Agent → FastA2A() with direct Worker (no to_a2a())
-│       │   ├── storage.py           # SQLite-backed fasta2a Storage implementation
-│       │   ├── worker.py            # FinAssistWorker(Worker[list[ModelMessage]]) — public API only
+│       │   ├── app.py               # Parent FastAPI app, mounts agent sub-apps
+│       │   ├── factory.py           # Agent → a2a-sdk route factories + DefaultRequestHandler
+│       │   ├── executor.py          # FinAssistExecutor (AgentExecutor) with streaming + auth-required
+│       │   ├── context_store.py     # SQLite-backed conversation history persistence
 │       │   ├── pidfile.py           # PID file management with fcntl locking
 │       │   └── logging.py           # Hub logging configuration (RotatingFileHandler)
 │       │
 │       ├── cli/                     # CLI client (primary client)
 │       │   ├── __init__.py
 │       │   ├── main.py              # Command dispatch (serve, agents, do, talk, stop)
-│       │   ├── client.py            # A2A client wrapper (httpx + fasta2a TypeAdapters)
+│       │   ├── client.py            # A2A client (httpx + a2a-sdk ClientFactory + streaming)
 │       │   ├── display.py           # Rich-based output formatting
 │       │   ├── server.py            # Auto-start hub, health polling, PID management
 │       │   └── interaction/         # Interactive CLI components
@@ -488,8 +488,7 @@ PROMPT_REGISTRY: dict[str, str] = {
 ### Agent Hub
 
 ```python
-from starlette.applications import Starlette
-from starlette.routing import Mount, Route
+from fastapi import FastAPI
 
 class AgentHub:
     """The 'turnstile' — hosts N agents as A2A sub-apps on one server."""
@@ -497,18 +496,24 @@ class AgentHub:
     def __init__(self, config: Config, credentials: CredentialStore):
         self.config = config
         self.credentials = credentials
-        self.storage = SQLiteStorage(...)  # shared across all agents
+        self.context_store = ContextStore(db_path=config.server.db_path)
 
-    def build_app(self) -> Starlette:
-        """Build the parent ASGI app with all agent sub-apps mounted."""
-        routes = [
-            Route("/agents", self._discovery_endpoint),
-            Route("/health", self._health_endpoint),
-        ]
+    def build_app(self) -> FastAPI:
+        """Build the parent FastAPI app with all agent sub-apps mounted."""
+        app = FastAPI(title="fin-assist Agent Hub")
+
+        @app.get("/agents")
+        async def discovery(): ...
+
+        @app.get("/health")
+        async def health(): ...
+
+        factory = AgentFactory(context_store=self.context_store)
         for agent in self._create_agents():
-            a2a_app = self._agent_to_a2a(agent)
-            routes.append(Mount(f"/agents/{agent.name}", app=a2a_app))
-        return Starlette(routes=routes)
+            sub_app = factory.create_a2a_app(agent)
+            app.mount(f"/agents/{agent.name}", sub_app)
+
+        return app
 
     def _create_agents(self) -> list[ConfigAgent]:
         """Create agents from TOML config, not hardcoded list."""
@@ -517,39 +522,39 @@ class AgentHub:
             if agent_config.enabled:
                 agents.append(ConfigAgent(name, agent_config, self.config, self.credentials))
         return agents
-
-    def _agent_to_a2a(self, agent: ConfigAgent) -> FastA2A:
-        """Convert an Agent to a fasta2a ASGI sub-app.
-
-        Uses direct FastA2A() construction with FinAssistWorker,
-        not pydantic_agent.to_a2a(). Maps AgentCardMeta to
-        fasta2a Skills + agent card extensions.
-        """
-        ...
 ```
 
 ### Agent Factory
 
 ```python
 class AgentFactory:
-    """Translates Agent into a fasta2a ASGI sub-app with custom Worker."""
+    """Translates ConfigAgent into a FastAPI sub-app with a2a-sdk route factories."""
 
     def create_a2a_app(
         self,
         agent: ConfigAgent,
-        storage: Storage,
-        broker: Broker,
-    ) -> FastA2A:
-        """Build a fasta2a sub-app for a single agent.
+        *,
+        base_url: str = "http://127.0.0.1:4096",
+    ) -> FastAPI:
+        """Build a FastAPI sub-app for a single agent.
 
-        1. Create pydantic-ai Agent with config-driven system_prompt,
-           output_type, and thinking settings
-        2. Construct FastA2A() directly with custom lifespan that
-           creates FinAssistWorker(Worker[list[ModelMessage]])
-        3. Inject AgentCardMeta as agent card skills/extensions
-        4. No pydantic_agent.to_a2a() — eliminates wasted default AgentWorker
+        1. Build AgentCard with AgentExtension for metadata
+        2. Create FinAssistExecutor + InMemoryTaskStore
+        3. Wire through DefaultRequestHandler
+        4. Mount a2a-sdk route factories (JSON-RPC + agent card)
         """
-        ...
+        executor = FinAssistExecutor(agent=agent, context_store=self._context_store)
+        task_store = InMemoryTaskStore()
+        request_handler = DefaultRequestHandler(
+            agent_executor=executor,
+            task_store=task_store,
+            agent_card=agent_card,
+        )
+
+        app = FastAPI(title=f"fin-assist: {agent.name}")
+        app.routes.extend(create_agent_card_routes(agent_card))
+        app.routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
+        return app
 ```
 
 ### UI Metadata Flow
@@ -563,8 +568,9 @@ Static (discovery time):                    Dynamic (per-response):
 │                       │                    │                          │
 │ • name, description  │                    │ • result data            │
 │ • skills[]           │                    │ • metadata: {            │
-│ • extensions: {      │                    │     accept_action: ...,  │
-│     fin_assist: {    │                    │     suggested_next: ..., │
+│ • extensions: [      │                    │     accept_action: ...,  │
+│   {uri: "fin_assist:│                    │     suggested_next: ..., │
+│    meta", params: {  │                    │   }                      │
 │       serving_modes, │                    │   }                      │
 │       thinking,      │                    │                          │
 │       model_select,  │                    └──────────────────────────┘
@@ -621,26 +627,28 @@ class Multiplexer(ABC):
 
 ### Background
 
-**A2A (Agent-to-Agent)** is an open protocol (originated by Google, adopted by pydantic) for standardized agent communication. **fasta2a** is pydantic's Python implementation, built on Starlette/ASGI.
+**A2A (Agent-to-Agent)** is an open protocol (originated by Google) for standardized agent communication. **a2a-sdk v1.0** is Google's official Python SDK, supporting JSON-RPC, REST, and gRPC transports from a single protobuf schema.
 
 Key benefits for fin-assist:
 - **Standardized interface** — any A2A-compatible client can talk to the server
 - **Agent discovery** — Agent Cards at `/.well-known/agent-card.json` per agent
-- **Task lifecycle** — built-in task state management (pending, working, completed, failed, auth-required)
+- **Task lifecycle** — built-in task state management (submitted, working, completed, failed, auth-required, canceled)
 - **Conversation context** — `context_id` links multi-turn conversations across tasks
-- **Structured artifacts** — pydantic models become `DataPart` artifacts with JSON schema metadata
+- **Structured artifacts** — pydantic models become protobuf `Part(data=...)` artifacts with JSON schema metadata
+- **Streaming** — `SendStreamingMessage` method delivers token-by-token SSE output
+- **Auth-required state** — first-class `TaskState.TASK_STATE_AUTH_REQUIRED` for credential-gated agents
 
 ### Multi-Path Routing
 
-The A2A protocol maps 1:1 between a server and an agent card. To host N agents on one server, we use **multi-path routing**: a parent Starlette app mounts each agent's A2A sub-app at a unique path.
+The A2A protocol maps 1:1 between a server and an agent card. To host N agents on one server, we use **multi-path routing**: a parent FastAPI app mounts each agent's A2A sub-app at a unique path.
 
 ```
-Parent Starlette App (127.0.0.1:4096)
+Parent FastAPI App (127.0.0.1:4096)
 ├── GET  /agents                                    → discovery (list all agents)
 ├── GET  /health                                    → health check
 ├── Mount /agents/default/                    → ConfigAgent([agents.default]) A2A sub-app
 │   ├── GET  /.well-known/agent-card.json           → agent card
-│   └── POST /                                      → JSON-RPC (message/send, tasks/get)
+│   └── POST /                                      → JSON-RPC (SendMessage, GetTask, SendStreamingMessage)
 ├── Mount /agents/shell/                      → ConfigAgent([agents.shell]) A2A sub-app
 │   ├── GET  /.well-known/agent-card.json           → agent card
 │   └── POST /                                      → JSON-RPC
@@ -649,32 +657,32 @@ Parent Starlette App (127.0.0.1:4096)
 
 Each agent maintains its own context and conversation state. Context IDs are naturally scoped per-agent because tasks are sent to different A2A endpoints.
 
-### fasta2a Components
+### a2a-sdk v1.0 Components
 
-- **Storage** — persists tasks and conversation context. We implement the `Storage` ABC with SQLite, shared across all agents.
-- **Broker** — schedules async task execution. `InMemoryBroker` for local use (single-process).
-- **Worker** — executes agent logic. pydantic-ai provides a default via `Agent.to_a2a()`. fin-assist overrides with `FinAssistWorker` (`hub/worker.py`) which maps `MissingCredentialsError` to `auth-required` task state instead of `failed`.
+- **DefaultRequestHandler** — routes JSON-RPC methods to the executor. Replaces the former `InMemoryBroker`.
+- **FinAssistExecutor** — implements `AgentExecutor` with `execute()` and `cancel()`. Handles model building, streaming, auth-required state, and context persistence. Replaces the former `FinAssistWorker`.
+- **TaskUpdater** — SDK helper for state transitions (`start_work`, `complete`, `failed`, `requires_auth`, `add_artifact`).
+- **InMemoryTaskStore** — ephemeral task storage managed by the SDK (tasks are lost on server restart).
+- **ContextStore** — our own SQLite-backed store for pydantic-ai conversation history, persisted across tasks within a conversation.
+- **AgentExtension** — publishes `AgentCardMeta` as a proper extension (`uri="fin_assist:meta"`) in the agent card's capabilities, replacing the former `Skill(id="fin_assist:meta")` hack.
 
 ### Transport Layer
 
-The A2A protocol defines transport as pluggable. The official `a2a-python` SDK
-(Google) ships `JsonRpcTransport`, `GrpcTransport`, and `RestTransport` all
-behind a common `ClientTransport` ABC. fasta2a currently implements JSON-RPC
-only.
+The A2A protocol defines transport as pluggable. a2a-sdk v1.0 supports JSON-RPC, REST, and gRPC transports from the same protobuf schema. The v1.0 JSON-RPC method names are PascalCase (`SendMessage`, `GetTask`, `CancelTask`, `SendStreamingMessage`) and require the `A2A-Version: 1.0` header.
 
-**Current:** JSON-RPC over HTTP (blocking `message/send`).
+**Current:** JSON-RPC over HTTP (blocking `SendMessage`) + SSE streaming (`SendStreamingMessage`).
 
 **Modality roadmap:**
 
 | Modality | Transport | Status | Notes |
 |---|---|---|---|
-| Blocking `message/send` | JSON-RPC | ✅ Implemented | Hub responds inline when agent finishes |
-| Streaming `message/stream` | JSON-RPC SSE | Phase 9 | Progressive output; fasta2a has `stream_message_response_ta` ready |
-| Non-blocking + polling | JSON-RPC | Later phase | `message/send` with `blocking: false`; `_poll_task` fallback exists |
-| gRPC | gRPC | Issue | Protocol-native; wait for fasta2a support or evaluate `a2a-python` |
+| Blocking `SendMessage` | JSON-RPC | ✅ Implemented | Hub responds inline when agent finishes |
+| Streaming `SendStreamingMessage` | JSON-RPC SSE | ✅ Implemented | Token-by-token via `TaskUpdater.add_artifact(append=True)` |
+| Non-blocking + polling | JSON-RPC | Later phase | `SendMessage` with `blocking: false`; `_poll_task` fallback exists |
+| gRPC | gRPC | Future | Protocol-native; a2a-sdk v1.0 supports it |
 
 The non-blocking polling path is implemented in `cli/client.py` (`_poll_task`)
-as a correct protocol fallback, but is not exercised by the current fasta2a hub
+as a correct protocol fallback, but is not exercised by the current hub
 which defaults to blocking mode.
 
 ### CLI Entry Points
@@ -816,11 +824,11 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD, worker auth-required
 
 ### Phase 8: CLI Client ✅
-- [x] Implement `cli/client.py` — A2A client using httpx + fasta2a TypeAdapters
+- [x] Implement `cli/client.py` — A2A client using httpx + a2a-sdk ClientFactory
 - [x] Implement `cli/display.py` — Rich-based output formatting
 - [x] Implement `cli/server.py` — auto-start server with health polling + backoff
 - [x] Implement `cli/interaction/approve.py` — approval widget (`ApprovalAction`)
-- [x] Implement `cli/interaction/chat.py` — multi-turn chat loop
+- [x] Implement `cli/interaction/chat.py` — multi-turn chat loop with streaming
 - [x] Implement `cli/main.py` — `serve`, `agents`, `do`, `talk` commands with `_hub_client` context manager
 - [x] Session persistence — `~/.local/share/fin/sessions/{agent}/{slug}.json` with coolname slugs
 - [x] Tests — CLI client, display, server, interaction modules
@@ -845,13 +853,28 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Step 8: Context injection for `talk` (`@`-completion in FinPrompt)
 - [ ] Step 9: Approval "add context" option for structured output in talk mode
 
-### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
+### a2a-sdk Migration ✅
+- [x] Replace fasta2a with a2a-sdk v1.0 (Google's official A2A Python SDK)
+- [x] Replace Starlette with FastAPI (sub-apps from a2a-sdk route factories)
+- [x] Replace `InMemoryBroker` + `FinAssistWorker` with `DefaultRequestHandler` + `FinAssistExecutor`
+- [x] Replace `Skill(id="fin_assist:meta")` with `AgentExtension(uri="fin_assist:meta")`
+- [x] Split `SQLiteStorage` into `InMemoryTaskStore` (SDK) + `ContextStore` (SQLite)
+- [x] Implement token-by-token streaming via `TaskUpdater.add_artifact(append=True)`
+- [x] Implement `stream_agent()` in `cli/client.py` with SSE + `StreamEvent` model
+- [x] Update `cli/interaction/chat.py` with Rich `Live` streaming rendering
+- [x] Fix all type errors (protobuf-native types: `Part`, `Struct`, `Sequence[Part]`)
+- [x] Fix runtime bugs (Task enqueue requirement, async `get_output()`, v1.0 protocol)
+- [x] Update e2e tests for v1.0 protocol (`SendMessage`, `A2A-Version: 1.0`)
+- [x] 446 tests passing, lint clean, typecheck clean
 
-- [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
-- [ ] Update `cli/interaction/chat.py` to render streaming output progressively
-- [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
-- [ ] Wire to `talk` command — streaming as default if agent card supports it
-- [ ] Tests — streaming output, partial artifact rendering
+### Phase 9: Streaming + Integration Tests 🔄
+
+- [x] Implement `stream_agent()` in `cli/client.py` using `SendStreamingMessage` + SSE
+- [x] Update `cli/interaction/chat.py` to render streaming output progressively
+- [x] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
+- [x] Wire to `talk` command — streaming as default if agent card supports it
+- [x] Executor unit tests — streaming artifact chunks
+- [ ] Streaming e2e test — `SendStreamingMessage` through full SDK dispatcher
 - [ ] Integration test harness — real uvicorn server, real HTTP (httpx), subprocess lifecycle
 - [ ] Integration tests for CLI commands (`do`, `talk`, `agents`, `stop`) against live hub
 - [ ] Integration tests for streaming SSE connection lifecycle and progressive rendering
@@ -915,14 +938,15 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 
 | Question | Phase | Status | Resolution |
 |----------|-------|--------|------------|
-| Conversation storage | Phase 7 | **Resolved** | SQLite via fasta2a `Storage` ABC, `context_id` for threading |
+| Conversation storage | Phase 7 | **Resolved** | SQLite `ContextStore` for conversation history; `InMemoryTaskStore` for A2A tasks |
 | Server lifecycle | Phase 8 | **Resolved** | `fin-assist serve` standalone; auto-start via `ensure_server_running` |
-| Multi-agent routing | Phase 7 | **Resolved** | Multi-path: one Starlette parent, N A2A sub-apps at `/agents/{name}/` |
+| Multi-agent routing | Phase 7 | **Resolved** | Multi-path: one FastAPI parent, N A2A sub-apps at `/agents/{name}/` |
 | UI metadata transport | Phase 7 | **Resolved** | Split: static in agent card, dynamic in task artifact metadata |
-| Parent ASGI framework | Phase 7 | **Resolved** | Starlette (stays in pydantic/fasta2a ecosystem) |
-| Agent card extensions format | Phase 7 | **Resolved** | `AgentCardMeta` encoded as `fin_assist:meta` Skill until fasta2a extensions land |
-| `to_a2a()` customization | Phase 7 | **Resolved** | Direct `FastA2A()` construction with custom lifespan — no `pydantic_agent.to_a2a()` |
-| SQLite file location | Phase 7 | **Resolved** | Configurable via `[server] db_path`, defaults to `~/.local/share/fin/hub.db` |
+| Parent ASGI framework | Phase 7 | **Resolved** | FastAPI (a2a-sdk sub-apps are FastAPI; consistent framework) |
+| Agent card extensions format | Phase 7 | **Resolved** | `AgentExtension(uri="fin_assist:meta", params=Struct)` — proper a2a-sdk extension |
+| Agent execution pattern | Migration | **Resolved** | `FinAssistExecutor(AgentExecutor)` + `DefaultRequestHandler` replaces broker/worker |
+| Streaming | Phase 9 | **Resolved** | Token-by-token via `TaskUpdater.add_artifact(append=True)` + `SendStreamingMessage` SSE |
+| gRPC transport | Future | Open | A2A protocol supports gRPC; a2a-sdk v1.0 supports it, not yet used by fin-assist |
 | Agent architecture | Redesign | **Resolved** | Config-driven: single `Agent` class, behavior from `AgentConfig` in TOML |
 | ShellAgent vs DefaultAgent | Redesign | **Resolved** | Merged into single `ConfigAgent` class; `ShellAgent` behavior is `[agents.shell]` config |
 | `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk", "do_talk"]` — more expressive |
@@ -932,7 +956,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | Context injection for `do` | Redesign | **Resolved** | CLI flags (`--file`, `--git-diff`, `--git-log`) |
 | Context injection for `talk` | Redesign | **Resolved** | `@`-completion in FinPrompt via `ContextProvider.search()` |
 | gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
-| Non-blocking agents | Phase 10 | Open | `message/send` with `blocking: false`; `_poll_task` fallback already implemented |
+| Non-blocking agents | Phase 10 | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
 | Hub server logging | Phase 9 | **Resolved** | Configurable via `[server] log_path` (default `~/.local/share/fin/hub.log`). Startup errors captured via subprocess stderr redirect. `configure_logging()` called before `create_hub_app()` to catch early import/initialization errors. Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
 
@@ -975,7 +999,8 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 - #45: Test quality: improve assertions and remove private state access
 - #58: display.py: derive credentials path from shared constant
 - #60: config/loader.py: warn when FIN_CONFIG_PATH points to non-existent file
-- #61: hub/factory.py: add type hints to _worker_lifespan parameters
+- #75: ContextStore: async I/O + close() method
+- #76: test_client.py: refactor _send_and_wait tests to use public API
 
 ---
 
@@ -983,19 +1008,22 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| A2A over custom REST | fasta2a | Protocol-native multi-client, agent discovery, task lifecycle built-in |
+| A2A SDK | a2a-sdk v1.0 (Google) | Official SDK; fasta2a abandoned; v1.0 supports JSON-RPC, REST, gRPC from protobuf schema |
 | Multi-path routing | N agents, N agent cards, one server | True A2A compliance, enables agent-to-agent workflows |
-| Parent ASGI framework | Starlette | Lighter than FastAPI, stays in pydantic/fasta2a ecosystem |
+| Parent ASGI framework | FastAPI | a2a-sdk route factories produce FastAPI-compatible routes; consistent framework across sub-apps |
 | Config-driven agents | TOML config defines agent behavior | Enables adding new agents without writing Python classes; `ConfigAgent` is the only implementation |
 | No ABC for agents | Single `ConfigAgent` class, no `BaseAgent` ABC | Only one implementation exists; `Protocol` for DI/mocking if needed later; multi-language agents use A2A protocol, not Python inheritance |
-| Direct Worker implementation | `Worker[list[ModelMessage]]` | Eliminates private `pydantic_ai._a2a` import (#68), removes wasted default AgentWorker, enables streaming |
+| Executor over Worker/Broker | `FinAssistExecutor(AgentExecutor)` + `DefaultRequestHandler` | a2a-sdk pattern; no broker needed; `TaskUpdater` for state transitions |
+| Agent card metadata | `AgentExtension(uri="fin_assist:meta", params=Struct)` | Proper a2a-sdk extension; replaces `Skill(id="fin_assist:meta")` hack |
+| Streaming | Token-by-token via `TaskUpdater.add_artifact(append=True)` + SSE | Progressive output via `SendStreamingMessage`; Rich `Live` rendering on client |
+| Task storage | `InMemoryTaskStore` (ephemeral) | a2a-sdk managed; tasks lost on server restart; acceptable for personal local-first tool |
+| Conversation storage | SQLite `ContextStore` | Persists pydantic-ai message history across tasks; `context_id` for threading |
 | `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk", "do_talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
 | Default agent shortcut | `fin do "prompt"` → `[agents.default]` | Reduces friction for common case; agent arg optional |
 | Context for `do` | CLI flags (`--file`, `--git-diff`) | No TUI required for one-shot mode |
 | Context for `talk` | `@`-completion in FinPrompt | Uses existing `ContextProvider.search()`, no TUI required |
 | Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
 | CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
-| Conversation storage | SQLite via fasta2a Storage ABC | A2A-native `context_id` for threading, shared across all agents |
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
 | Agent creation | TOML config entries, not Python classes | `ShellAgent` behavior is a config variant; adding agents is editing TOML |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |
