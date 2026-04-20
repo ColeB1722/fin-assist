@@ -1,8 +1,7 @@
 """Unified post-response pipeline: rendering, approval, and action dispatch.
 
-Every code path that receives an ``AgentResult`` — one-shot (``do``),
-multi-turn (``talk``), streaming and non-streaming — needs the same
-sequence of concerns handled:
+Every code path that receives an ``AgentResult`` — one-shot (``do``) or
+multi-turn (``talk``) — needs the same sequence of concerns handled:
 
 1. Auth-required detection
 2. Output rendering (thinking, command/text, warnings)
@@ -10,9 +9,9 @@ sequence of concerns handled:
 4. Approval widget (for agents that ``requires_approval``)
 
 Before this module, that logic was duplicated across ``main.py``
-(``_do_command``) and ``chat.py`` (streaming path + non-streaming path).
-``handle_post_response`` centralises it into a single async function that
-returns a typed action the caller can branch on.
+(``_do_command``) and ``chat.py``.  ``handle_post_response`` centralises
+it into a single async function that returns a typed action the caller
+can branch on.
 """
 
 from __future__ import annotations
@@ -28,7 +27,6 @@ from fin_assist.cli.display import (
     render_auth_required,
     render_error,
     render_info,
-    render_warnings,
 )
 from fin_assist.cli.interaction.approve import ApprovalAction, execute_command, run_approve_widget
 
@@ -67,7 +65,6 @@ async def handle_post_response(
     *,
     show_thinking: bool = False,
     mode: str = "talk",
-    output_already_rendered: bool = False,
 ) -> PostResponseResult:
     """Run the full post-response pipeline and return what happened.
 
@@ -78,32 +75,23 @@ async def handle_post_response(
         show_thinking: Whether to render thinking content.
         mode: ``"do"`` or ``"talk"`` — controls rendering style and whether
             a "Cancelled" info message is printed on approval rejection.
-        output_already_rendered: When ``True`` (e.g. after
-            ``ProgressiveDisplay``), skip the main output rendering but
-            still handle approval, warnings, and errors.
     """
     # 1. Auth required — always takes priority
     if result.metadata.get("auth_required"):
-        if not output_already_rendered:
-            render_auth_required(result.output)
+        render_auth_required(result.output)
         return PostResponseResult(action=PostResponseAction.AUTH_REQUIRED, exit_code=1)
 
-    # 2. Render output (unless the caller already did — e.g. ProgressiveDisplay)
-    if not output_already_rendered:
-        if not result.success:
-            render_error(result.output or "Unknown error")
-            return PostResponseResult(action=PostResponseAction.ERROR, exit_code=1)
-
-        console.print()
-        render_agent_output(result, card_meta, show_thinking=show_thinking, mode=mode)
-
-    # 3. Error on the streaming path (output was rendered but result failed)
-    if output_already_rendered and not result.success:
+    # 2. Error
+    if not result.success:
         render_error(result.output or "Unknown error")
         return PostResponseResult(action=PostResponseAction.ERROR, exit_code=1)
 
+    # 3. Render output
+    console.print()
+    render_agent_output(result, card_meta, show_thinking=show_thinking, mode=mode)
+
     # 4. Approval widget — only when the agent requires it and succeeded
-    if card_meta is not None and result.success and card_meta.requires_approval:
+    if card_meta is not None and card_meta.requires_approval:
         action = await run_approve_widget(
             command=result.output,
             warnings=result.warnings,
@@ -115,10 +103,5 @@ async def handle_post_response(
             if mode == "do":
                 render_info("Cancelled")
             return PostResponseResult(action=PostResponseAction.CANCELLED, exit_code=0)
-
-    # 5. Warnings that weren't already shown via render_agent_output
-    #    (streaming path: ProgressiveDisplay doesn't render warnings)
-    if output_already_rendered and result.warnings:
-        render_warnings(result.warnings)
 
     return PostResponseResult(action=PostResponseAction.CONTINUE, exit_code=0)

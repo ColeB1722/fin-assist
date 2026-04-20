@@ -156,28 +156,6 @@ The approval widget uses `ChoiceInput` — arrow-key navigation between Execute/
 
 ---
 
-## Chunk H — Progressive Output (`fin talk` streaming)
-
-*Tests the progressive output rendering during `fin talk` — thinking spinner, collapsed thinking summary, and incremental text output. Requires a provider with extended thinking enabled (e.g., Claude with `thinking.enabled = true` in agent config).*
-
-> Run H after confirming C1-C7 (basic chat loop) work. Requires a live LLM connection.
-
-| # | Test | Action | Expected |
-|---|------|--------|----------|
-| H1 | Spinner appears | `fin talk default`, send a message | Animated spinner with token count: `⠋ Thinking... (N tokens)` appears during generation |
-| H2 | Token count increments | Watch spinner during thinking | Token count updates as thinking progresses (not stuck at 0) |
-| H3 | Thinking collapses | Wait for output to start | Spinner replaced by dim italic line: `▸ N tokens thinking` |
-| H4 | Text streams incrementally | Watch after thinking collapses | Output text appears progressively, not all at once |
-| H5 | Final output complete | Wait for generation to finish | Full response rendered as Markdown below the collapsed thinking line |
-| H6 | Multi-turn streaming | Send a second message | Spinner → collapse → stream cycle repeats for each turn |
-| H7 | No thinking model | Use an agent without `thinking.enabled` | No spinner phase — output streams directly (no collapsed thinking line if no thinking tokens) |
-| H8 | Ctrl+C during generation | Press Ctrl+C while spinner is active | Live display stops cleanly, returns to prompt |
-| H9 | Fallback on error | Kill server during generation | Error message printed, chat loop continues |
-
-**If H fails**: `worker.py` streaming, `client.py` polling/partial extraction, or `display.py` ProgressiveDisplay broken. Check the `SSE-REPLACE` / `SSE-KEEP` comments in those files for the boundary between transport and presentation logic.
-
----
-
 ## Running Order
 
 ```
@@ -187,10 +165,7 @@ A1-A12 →  Chunk A (blocks everything if broken)
            │
            ├── C1-C11 →  Chunk C  (run in parallel with B after A passes)
            │            │
-           │            ├── D1-D10 →  Chunk D (run after basic REPL loop works)
-           │            │
-           │            └── H1-H9  →  Chunk H (run after basic chat loop works;
-           │                                    requires live LLM)
+           │            └── D1-D10 →  Chunk D (run after basic REPL loop works)
            │
            └── E1-E4  →  Chunk E  (run in parallel with B/C after A passes)
 
@@ -217,6 +192,3 @@ Chunks F and G are NOT YET IMPLEMENTED — skip until Steps 7-8 land.
 - `shell` agent has `serving_modes = ["do"]` — it does not support `talk` mode.
 - `default` agent has `serving_modes = ["do", "talk"]` — it supports both modes.
 - Agent behavior (system prompt, output type, thinking, approval) is driven by TOML config via a single `ConfigAgent` class — no Python subclasses, no ABC.
-- Progressive output uses polling-based transport (not SSE). Code annotated with `SSE-REPLACE` markers for future fasta2a v0.7+ migration. See `hub/worker.py`, `cli/client.py` for transport glue; `cli/display.py`, `cli/interaction/chat.py` for presentation (transport-agnostic, marked `SSE-KEEP`).
-- Thinking token counts in the spinner are word-count approximations, not true tokenizer counts.
-- The thinking flush interval (`_THINKING_FLUSH_INTERVAL = 64` in `worker.py`) controls how often intermediate updates hit storage during the thinking phase. Lower values = more responsive spinner but more SQLite writes.

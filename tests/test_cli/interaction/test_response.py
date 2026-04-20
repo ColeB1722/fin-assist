@@ -79,13 +79,6 @@ class TestHandlePostResponseAuth:
             await handle_post_response(result)
         mock_render.assert_called_once_with("openai")
 
-    async def test_auth_required_skips_render_when_already_rendered(self):
-        result = _make_result(output="openai", metadata={"auth_required": True})
-        with patch("fin_assist.cli.interaction.response.render_auth_required") as mock_render:
-            response = await handle_post_response(result, output_already_rendered=True)
-        mock_render.assert_not_called()
-        assert response.action == PostResponseAction.AUTH_REQUIRED
-
 
 # ---------------------------------------------------------------------------
 # handle_post_response — error
@@ -96,12 +89,6 @@ class TestHandlePostResponseError:
     async def test_error_returns_error_action(self):
         result = _make_result(success=False, output="something broke")
         response = await handle_post_response(result)
-        assert response.action == PostResponseAction.ERROR
-        assert response.exit_code == 1
-
-    async def test_error_with_output_already_rendered(self):
-        result = _make_result(success=False, output="stream failed")
-        response = await handle_post_response(result, output_already_rendered=True)
         assert response.action == PostResponseAction.ERROR
         assert response.exit_code == 1
 
@@ -259,14 +246,6 @@ class TestHandlePostResponseRendering:
 
         mock_render.assert_called_once_with(result, card_meta, show_thinking=True, mode="do")
 
-    async def test_skips_render_when_output_already_rendered(self):
-        result = _make_result()
-
-        with patch("fin_assist.cli.interaction.response.render_agent_output") as mock_render:
-            await handle_post_response(result, output_already_rendered=True)
-
-        mock_render.assert_not_called()
-
     async def test_renders_with_card_meta_none(self):
         result = _make_result()
 
@@ -274,30 +253,3 @@ class TestHandlePostResponseRendering:
             await handle_post_response(result, None, mode="talk")
 
         mock_render.assert_called_once_with(result, None, show_thinking=False, mode="talk")
-
-
-# ---------------------------------------------------------------------------
-# handle_post_response — warnings on streaming path
-# ---------------------------------------------------------------------------
-
-
-class TestHandlePostResponseWarnings:
-    async def test_warnings_rendered_when_output_already_rendered(self):
-        result = _make_result(warnings=["watch out"])
-
-        with patch("fin_assist.cli.interaction.response.render_warnings") as mock_warn:
-            response = await handle_post_response(result, output_already_rendered=True)
-
-        mock_warn.assert_called_once_with(["watch out"])
-        assert response.action == PostResponseAction.CONTINUE
-
-    async def test_no_extra_warnings_when_render_handled_them(self):
-        """When output was NOT already rendered, render_agent_output handles warnings."""
-        result = _make_result(warnings=["watch out"])
-
-        with patch("fin_assist.cli.interaction.response.render_warnings") as mock_warn:
-            await handle_post_response(result, output_already_rendered=False)
-
-        # render_warnings in handle_post_response should NOT be called —
-        # render_agent_output handles warnings internally.
-        mock_warn.assert_not_called()
