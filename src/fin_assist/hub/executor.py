@@ -1,17 +1,12 @@
 """FinAssistExecutor — a2a-sdk AgentExecutor for fin-assist agents.
 
-Replaces ``FinAssistWorker(Worker[Context])`` from the fasta2a integration.
 Uses ``TaskUpdater`` for all state transitions (start_work, complete, failed,
 requires_auth) and ``ContextStore`` for conversation history persistence.
 
-Key differences from FinAssistWorker:
-- No broker — the a2a-sdk ``DefaultRequestHandler`` routes tasks internally.
-- No ``Storage`` parameter — A2A task storage is handled by ``InMemoryTaskStore``
-  while conversation history lives in our ``ContextStore``.
-- ``TaskUpdater`` replaces manual ``storage.update_task()`` calls.
-- ``requires_auth()`` is a first-class ``TaskUpdater`` method.
-- Message conversion uses protobuf types (``Part(text=...)``) instead of
-  TypedDicts (``{"kind": "text", "text": ...}``).
+The a2a-sdk ``DefaultRequestHandler`` routes tasks internally — no broker
+needed.  A2A task storage is handled by ``InMemoryTaskStore`` while
+conversation history lives in our ``ContextStore``.  Message conversion uses
+protobuf types (``Part(text=...)``).
 """
 
 from __future__ import annotations

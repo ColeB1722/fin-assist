@@ -9,11 +9,8 @@ Each sub-app is a FastAPI application that handles:
 
 AgentCardMeta transport
 ~~~~~~~~~~~~~~~~~~~~~~~
-``AgentCardMeta`` is published as a proper ``AgentExtension`` in
-``AgentCapabilities.extensions`` — no more ``Skill(id="fin_assist:meta")``
-hack.  Clients read it from ``capabilities.extensions`` filtered by the
-``fin_assist:meta`` URI.
-
+``AgentCardMeta`` is published as an ``AgentExtension`` in
+``AgentCapabilities.extensions``, keyed by the ``fin_assist:meta`` URI.
 The extension ``params`` field carries the serialised ``AgentCardMeta``
 as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 """

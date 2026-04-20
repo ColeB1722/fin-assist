@@ -4,10 +4,9 @@ Stores per-context-id conversation history (``list[ModelMessage]``) in a
 local SQLite database.  Shared across all mounted agents on the hub, with
 ``context_id`` naturally scoping conversations per agent path.
 
-This is the conversation-history half of the former ``SQLiteStorage`` which
-combined both A2A task storage and context storage.  Task storage is now
-handled by ``a2a-sdk``'s ``InMemoryTaskStore``; this module owns only the
-pydantic-ai message history that persists across tasks within a conversation.
+A2A task storage is handled by ``a2a-sdk``'s ``InMemoryTaskStore``; this
+module owns the pydantic-ai message history that persists across tasks
+within a conversation.
 
 The ``ModelMessage`` objects are pydantic dataclass instances, not plain
 dicts, so we use pydantic's ``TypeAdapter`` for JSON serialisation instead

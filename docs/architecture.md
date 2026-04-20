@@ -955,7 +955,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[agents.default]`; agent arg optional |
 | Context injection for `do` | Redesign | **Resolved** | CLI flags (`--file`, `--git-diff`, `--git-log`) |
 | Context injection for `talk` | Redesign | **Resolved** | `@`-completion in FinPrompt via `ContextProvider.search()` |
-| gRPC transport | Future | Open | A2A protocol supports gRPC; wait for fasta2a support or evaluate `a2a-python` |
+| gRPC transport | Future | Open | A2A protocol supports gRPC; a2a-sdk v1.0 supports it, not yet used by fin-assist |
 | Non-blocking agents | Phase 10 | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
 | Hub server logging | Phase 9 | **Resolved** | Configurable via `[server] log_path` (default `~/.local/share/fin/hub.log`). Startup errors captured via subprocess stderr redirect. `configure_logging()` called before `create_hub_app()` to catch early import/initialization errors. Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
