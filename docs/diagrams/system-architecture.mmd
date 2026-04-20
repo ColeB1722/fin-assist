@@ -1,32 +1,32 @@
 graph TD
     subgraph Clients
-        CLI["CLI Client\nRich + httpx + prompt-toolkit"]
-        TUI["TUI Client (planned)\nTextual"]
+        CLI["CLI Client<br/>Rich + httpx + prompt-toolkit"]
+        TUI["TUI Client (planned)<br/>Textual"]
     end
 
     subgraph "A2A Protocol — HTTP + JSON-RPC"
-        RPC["SendMessage · SendStreamingMessage (SSE)\nAgent discovery via Agent Cards"]
+        RPC["SendMessage · SendStreamingMessage (SSE)<br/>Agent discovery via Agent Cards"]
     end
 
     subgraph "Agent Hub — FastAPI on 127.0.0.1:4096"
-        HUB["Hub Router\nGET /agents · GET /health"]
+        HUB["Hub Router<br/>GET /agents · GET /health"]
 
         subgraph "Per-Agent A2A Sub-Apps"
-            D["/default/\ndo + talk · chain-of-thought"]
-            S["/shell/\ndo only · approval gate"]
-            F["/{name}/\nfuture agents"]
+            D["/default/<br/>do + talk · chain-of-thought"]
+            S["/shell/<br/>do only · approval gate"]
+            F["/{name}/<br/>future agents"]
         end
 
-        EXEC["FinAssistExecutor\nAgentExecutor + TaskUpdater"]
-        TS["InMemoryTaskStore\nephemeral (a2a-sdk)"]
-        CS["ContextStore\nSQLite — conversation history"]
+        EXEC["FinAssistExecutor<br/>AgentExecutor + TaskUpdater"]
+        TS["InMemoryTaskStore<br/>ephemeral (a2a-sdk)"]
+        CS["ContextStore<br/>SQLite — conversation history"]
     end
 
     subgraph "Shared Services"
-        CREDS["CredentialStore\nenv → file → keyring"]
-        CONFIG["ConfigLoader\nTOML · 4-level priority"]
-        CTXP["ContextProviders\nfiles · git · history · env"]
-        REG["ProviderRegistry\nLLM providers"]
+        CREDS["CredentialStore<br/>env → file → keyring"]
+        CONFIG["ConfigLoader<br/>TOML · 4-level priority"]
+        CTXP["ContextProviders<br/>files · git · history · env"]
+        REG["ProviderRegistry<br/>LLM providers"]
     end
 
     LLM["pydantic-ai → LLM Providers"]

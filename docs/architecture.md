@@ -955,7 +955,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[agents.default]`; agent arg optional |
 | Context injection for `do` | Redesign | **Resolved** | CLI flags (`--file`, `--git-diff`, `--git-log`) |
 | Context injection for `talk` | Redesign | **Resolved** | `@`-completion in FinPrompt via `ContextProvider.search()` |
-| gRPC transport | Future | Open | A2A protocol supports gRPC; a2a-sdk v1.0 supports it, not yet used by fin-assist |
+| External agent federation | Future | Open | Hub can register external A2A servers (any language) in discovery; deferred until real external agent exists to validate config schema |
 | Non-blocking agents | Phase 10 | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
 | Hub server logging | Phase 9 | **Resolved** | Configurable via `[server] log_path` (default `~/.local/share/fin/hub.log`). Startup errors captured via subprocess stderr redirect. `configure_logging()` called before `create_hub_app()` to catch early import/initialization errors. Full structured logging (per-module loggers, log levels in config) deferred to Phase 9 when streaming makes observability matter. |
@@ -963,6 +963,46 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 ---
 
 ## Future Considerations
+
+### External Agent Federation
+
+The hub currently only mounts **internal** agents — Python `ConfigAgent` instances running in-process as A2A sub-apps. The A2A protocol is language-agnostic, so the hub can also register **external** agents: any process that serves the two A2A endpoints (`GET /.well-known/agent-card.json` + `POST /` JSON-RPC), regardless of implementation language.
+
+**Two pluggability levels:**
+
+| Level | What | Current support |
+|-------|------|-----------------|
+| Config plugins | New agent behaviors via TOML (different prompt, output type, serving modes) | Done |
+| Process plugins | External A2A servers in any language, registered with the hub via URL | Not yet |
+
+**Federation model — hub as registry, not proxy:**
+
+External agents register their URL in config. The hub lists them in the discovery endpoint (`GET /agents`) alongside internal agents. Clients talk to external agents directly — the hub is a directory service, not a proxy. This aligns with A2A's design: agent cards already have a `url` field, and the discovery endpoint already returns per-agent URLs.
+
+**Config schema (when implemented):**
+
+```toml
+[agents.myrust]
+mode = "external"                          # new field; internal is default
+url = "http://127.0.0.1:5001"             # A2A endpoint of the external agent
+
+[agents.claude-code]
+mode = "external"
+url = "http://127.0.0.1:5002"
+```
+
+**What changes when implemented:**
+
+1. `AgentConfig` gets `mode: Literal["internal", "external"]` and `url: str | None`
+2. `AgentHub.build_app()` distinguishes internal (mount sub-app) vs external (register URL in discovery only)
+3. Discovery endpoint already returns agent URLs — minimal change needed
+4. Client, CLI, streaming all work as-is — they're protocol-native
+
+**What external agents don't get:**
+
+`ContextStore`, `CredentialStore`, `ContextProviders` are in-process Python services. External agents manage their own credentials, context, and conversation history. This is the correct boundary: shared services are an implementation convenience for internal agents, not a protocol requirement.
+
+**Why defer:** No external agents exist yet. The change is small and well-understood (~50 lines), but designing the config schema without a real external process to validate against risks over-fitting. Once a toy Rust/Gleam agent exists, the schema will be obvious. The discovery endpoint is already forward-compatible — agent entries include a `url` field that can point externally.
 
 ### Near-term (Phases 13-15)
 - **Skills framework** — Configurable behaviors (e.g., brainstorming mode, terse mode)
