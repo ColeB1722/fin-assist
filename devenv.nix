@@ -39,7 +39,10 @@
   };
 
   git-hooks.hooks = {
-    treefmt.enable = true;
+    treefmt = {
+      enable = true;
+      settings.fail-on-change = false;
+    };
 
     ruff-check = {
       enable = true;

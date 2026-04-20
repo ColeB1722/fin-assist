@@ -121,7 +121,7 @@ class ConfigAgent:
         return context_type in self._SUPPORTED_CONTEXT_TYPES
 
     def build_pydantic_agent(self) -> PydanticAgent[Any, Any]:
-        """Build the pydantic-ai Agent that the FinAssistWorker will execute.
+        """Build the pydantic-ai Agent that the FinAssistExecutor will execute.
 
         The Agent is constructed **without a model** — pydantic-ai accepts
         ``model=None`` at construction and resolves it at run time via the

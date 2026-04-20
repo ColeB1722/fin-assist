@@ -6,16 +6,20 @@ import json
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.text import Text
 
+from fin_assist.cli.client import AgentResult
 from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
 from fin_assist.cli.interaction.response import PostResponseAction, handle_post_response
 from fin_assist.paths import SESSIONS_DIR
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from fin_assist.agents.metadata import AgentCardMeta
-    from fin_assist.cli.client import AgentResult
+    from fin_assist.cli.client import StreamEvent
     from fin_assist.cli.interaction.prompt import SlashCommand
 
 console = Console()
@@ -57,6 +61,7 @@ async def run_chat_loop(
     initial_message: str | None = None,
     show_thinking: bool = False,
     card_meta: AgentCardMeta | None = None,
+    stream_fn: Callable[[str, str, str | None], AsyncIterator[StreamEvent]] | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -71,6 +76,8 @@ async def run_chat_loop(
         show_thinking: Whether to render agent thinking content.
         card_meta: Agent capability metadata. When provided, drives widget
                   selection (approval, warnings, etc.) via the shared pipeline.
+        stream_fn: Optional streaming function. When provided, used for
+                  progressive text display instead of blocking send_message_fn.
 
     Returns:
         The final context_id if the conversation had one.
@@ -122,7 +129,10 @@ async def run_chat_loop(
 
         # --- Send message and render response ---
         try:
-            result = await send_message_fn(agent_name, user_input, ctx_id)
+            if stream_fn is not None:
+                result = await _stream_and_render(stream_fn, agent_name, user_input, ctx_id)
+            else:
+                result = await send_message_fn(agent_name, user_input, ctx_id)
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             continue
@@ -143,3 +153,31 @@ async def run_chat_loop(
         console.print()
 
     return ctx_id
+
+
+async def _stream_and_render(
+    stream_fn: Callable[[str, str, str | None], AsyncIterator[StreamEvent]],
+    agent_name: str,
+    prompt: str,
+    context_id: str | None,
+) -> AgentResult:
+    """Stream an agent response with progressive Rich Live display.
+
+    Accumulates text deltas and renders them as Markdown in a Rich Live
+    widget.  Returns the final AgentResult from the terminal event.
+    """
+    accumulated = ""
+    final_result: AgentResult | None = None
+
+    with Live(Text(""), console=console, refresh_per_second=8, vertical_overflow="visible") as live:
+        async for event in stream_fn(agent_name, prompt, context_id):
+            if event.kind == "text_delta":
+                accumulated += event.text
+                live.update(Markdown(accumulated))
+            elif event.result is not None:
+                final_result = event.result
+
+    if final_result is not None:
+        return final_result
+
+    return AgentResult(success=False, output=accumulated or "No response from agent")

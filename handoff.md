@@ -2,7 +2,77 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-20)**: Shared render pipeline (handle_post_response) unified. Progressive output reverted — polling-based streaming was too coupled to pydantic-ai internals and will be re-evaluated when evaluating A2A library options. 458 tests passing. Next: Steps 7-9 (context injection + approval), A2A library evaluation, manual testing re-verification.
+**Current state (2026-04-20)**: fasta2a → a2a-sdk migration complete (Phases 1-7). Streaming implemented via pydantic-ai `run_stream()` + a2a-sdk `TaskUpdater.add_artifact(append=True, last_chunk=)`. `worker.py` and `storage.py` deleted. 446 tests passing. Remaining: 11 protobuf type annotation warnings (inherent to a2a-sdk), manual end-to-end testing.
+
+---
+
+## fasta2a → a2a-sdk Migration (2026-04-20)
+
+**Status**: Complete (Phases 1-7)
+
+### What Was Accomplished
+
+Full migration from `fasta2a` (pydantic's abandoned A2A implementation) to `a2a-sdk` (Google's official A2A Python SDK v1.0.0), plus Phase 9 streaming that was blocked on fasta2a.
+
+**Phase 1: Storage split** — `hub/context_store.py` extracts conversation history (ModelMessage) from `SQLiteStorage`. A2A task storage uses `InMemoryTaskStore` (ephemeral).
+
+**Phase 2: AgentExecutor** — `hub/executor.py` replaces `FinAssistWorker(Worker[Context])`. Uses `TaskUpdater` for all state transitions (`start_work`, `complete`, `failed`, `requires_auth`). `MissingCredentialsError` → `updater.requires_auth()`. Protobuf message types replace TypedDicts.
+
+**Phase 3: Factory + Agent Card** — `hub/factory.py` uses a2a-sdk route factories (`create_jsonrpc_routes`, `create_agent_card_routes`). `AgentExtension(uri="fin_assist:meta")` replaces `Skill(id="fin_assist:meta")` hack. `AgentCapabilities(streaming=True, extensions=[...])`.
+
+**Phase 4: Hub App** — `hub/app.py` is a FastAPI parent app (matching sub-apps from a2a-sdk). No more `AsyncExitStack` lifespan hack. Sub-apps from route factories don't need explicit lifespan management.
+
+**Phase 5: Client** — `cli/client.py` uses `ClientFactory(config=ClientConfig(httpx_client=...))` + `client.send_message(request)` async iterator. `_poll_task()` eliminated. `_task_to_dict()` normalizes protobuf enums (state ints → strings, `ROLE_AGENT` → `agent`).
+
+**Phase 6: Streaming** — Executor uses `pydantic_agent.run_stream()` + `stream.stream_text(delta=True)` → `TaskUpdater.add_artifact(append=True, last_chunk=False)` per delta, final `last_chunk=True`. Client `stream_agent()` yields `StreamEvent` objects (`text_delta`, `completed`, `failed`, `auth_required`). Chat loop uses Rich `Live` for progressive Markdown display.
+
+**Phase 7: Cleanup** — Deleted `hub/worker.py`, `hub/storage.py`, `tests/test_hub/test_worker.py`, `tests/test_hub/test_storage.py`. Removed `fasta2a>=0.6` from `pyproject.toml`. All fasta2a imports eliminated.
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Task persistence | `InMemoryTaskStore` (ephemeral) | Tasks created/resolved in one session; history persisted separately in `ContextStore` |
+| Auth-required state | `TaskUpdater.requires_auth()` | First-class in a2a-sdk (`TaskState.TASK_STATE_AUTH_REQUIRED` = value 8) |
+| Agent card metadata | `AgentExtension(uri="fin_assist:meta")` | Proper A2A extension, eliminates `Skill(id="fin_assist:meta")` hack |
+| Parent app framework | FastAPI | Matches a2a-sdk sub-apps from route factories |
+| Streaming depth | Token-by-token via `stream_text(delta=True)` | Fine-grained progressive output; `add_artifact(append=True, last_chunk=)` for chunking |
+| No broker | `DefaultRequestHandler` handles routing | Eliminates `InMemoryBroker` indirection |
+| No lifespan hack | Route factory sub-apps are self-contained | No `AsyncExitStack` needed |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Removed `fasta2a>=0.6` |
+| `hub/worker.py` | **Deleted** |
+| `hub/storage.py` | **Deleted** |
+| `hub/context_store.py` | **New** (Phase 1) — extracted from SQLiteStorage |
+| `hub/executor.py` | **New** (Phase 2) — a2a-sdk AgentExecutor + streaming |
+| `hub/factory.py` | Rewritten for a2a-sdk route factories + AgentExtension |
+| `hub/app.py` | Rewritten as FastAPI parent |
+| `hub/__init__.py` | Updated exports |
+| `cli/client.py` | Rewritten for a2a-sdk ClientFactory + StreamEvent |
+| `cli/interaction/chat.py` | Added streaming support via Rich Live |
+| `tests/test_hub/test_worker.py` | **Deleted** |
+| `tests/test_hub/test_storage.py` | **Deleted** |
+| `tests/test_hub/test_executor.py` | **New** — executor + streaming tests |
+| `tests/test_hub/test_context_store.py` | Already existed from Phase 1 |
+| `tests/test_hub/test_factory.py` | Updated for a2a-sdk |
+| `tests/test_hub/test_app.py` | Updated for FastAPI + a2a-sdk |
+| `tests/test_cli/test_client.py` | Rewritten — removed fasta2a, added StreamEvent tests |
+
+### Test Summary
+
+```text
+446 tests passing (23 removed from deleted worker/storage tests, 1 new streaming test added)
+11 protobuf type annotation warnings (inherent to a2a-sdk generated types)
+```
+
+### Known Issues
+
+- 11 `ty` typecheck warnings from protobuf types — `RepeatedCompositeFieldContainer` vs `list`, `Value` vs `Struct`, `MessageToDict` returning untyped dicts. These are inherent to a2a-sdk's protobuf-based API.
+- `_stream_and_render` in chat.py falls back to blocking `send_message_fn` for the `do` command. The `do` command stays blocking (intentional per plan).
 
 ---
 

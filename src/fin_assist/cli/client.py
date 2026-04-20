@@ -1,31 +1,46 @@
 """Client for the fin-assist agent hub.
 
-Wraps fasta2a's ``A2AClient`` for per-agent A2A calls and adds hub-level
-concerns: agent discovery (custom ``/agents`` endpoint), task polling,
-and result extraction.
+Uses a2a-sdk's ``ClientFactory`` for per-agent A2A communication, with
+hub-level concerns (agent discovery, result extraction) layered on top.
+
+The client supports two modes:
+- **Blocking** (default): ``run_agent()`` / ``send_message()`` — sends a
+  message and waits for the final task result.
+- **Streaming** (Phase 6): ``stream_agent()`` — async iterator yielding
+  progressive updates.
 """
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import httpx
-from fasta2a.client import A2AClient
+from a2a.client.client import ClientConfig
+from a2a.client.client_factory import ClientFactory
+from a2a.types import (
+    Message,
+    Part,
+    Role,
+    SendMessageRequest,
+    TaskState,
+)
+from google.protobuf.json_format import MessageToDict
 
 from fin_assist.agents.metadata import AgentCardMeta
 
 if TYPE_CHECKING:
-    from fasta2a.schema import Message, Task, TaskState
+    from collections.abc import AsyncIterator
 
-# The A2A spec defines nine task states.  fasta2a exposes them as a
-# ``Literal`` type alias (``TaskState``) — not an enum — so there's no
-# programmatic way to ask "which are terminal?".  We define the set here,
-# derived from the spec: any state from which no further transitions occur.
-_TERMINAL_STATES: frozenset[TaskState] = frozenset(
-    {"completed", "failed", "canceled", "rejected", "auth-required"}
+_TERMINAL_STATES: frozenset[int] = frozenset(
+    {
+        TaskState.TASK_STATE_COMPLETED,
+        TaskState.TASK_STATE_FAILED,
+        TaskState.TASK_STATE_CANCELED,
+        TaskState.TASK_STATE_REJECTED,
+        TaskState.TASK_STATE_AUTH_REQUIRED,
+    }
 )
 
 
@@ -51,48 +66,61 @@ class AgentResult:
     thinking: list[str] = field(default_factory=list)
 
 
+@dataclass
+class StreamEvent:
+    """A single event from a streaming agent response."""
+
+    kind: str
+    """Event type: 'text_delta', 'completed', 'failed', 'auth_required'."""
+
+    text: str = ""
+    """Text content for 'text_delta' events."""
+
+    result: AgentResult | None = None
+    """Final result for 'completed'/'failed'/'auth_required' events."""
+
+
 class HubClient:
     """Client for the fin-assist agent hub.
 
     Combines hub-level discovery (``GET /agents``) with per-agent A2A
-    communication via ``fasta2a.client.A2AClient``.
-
-    The hub mounts each agent at ``/agents/{name}/``, so each fasta2a
-    client is pointed at the agent-specific sub-app URL.
+    communication via a2a-sdk's ``ClientFactory``.
     """
 
-    DEFAULT_POLL_INTERVAL = 0.5
     DEFAULT_TIMEOUT = 60.0
 
     def __init__(
         self,
         base_url: str,
         timeout: float = DEFAULT_TIMEOUT,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.poll_interval = poll_interval
         self._http: httpx.AsyncClient | None = None
-        self._a2a_clients: dict[str, A2AClient] = {}
+        self._factory: ClientFactory | None = None
+        self._a2a_clients: dict[str, Any] = {}
 
     def _get_http(self) -> httpx.AsyncClient:
         if self._http is None:
             self._http = httpx.AsyncClient(timeout=self.timeout)
         return self._http
 
-    def _get_a2a(self, agent_name: str) -> A2AClient:
-        """Return (or create) a fasta2a A2AClient for the given agent."""
+    def _get_factory(self) -> ClientFactory:
+        if self._factory is None:
+            config = ClientConfig(httpx_client=self._get_http())
+            self._factory = ClientFactory(config=config)
+        return self._factory
+
+    async def _get_a2a(self, agent_name: str):
         if agent_name not in self._a2a_clients:
             agent_url = f"{self.base_url}/agents/{agent_name}/"
-            self._a2a_clients[agent_name] = A2AClient(
-                base_url=agent_url,
-                http_client=self._get_http(),
-            )
+            factory = self._get_factory()
+            self._a2a_clients[agent_name] = await factory.create_from_url(agent_url)
         return self._a2a_clients[agent_name]
 
     async def close(self) -> None:
-        """Close the shared HTTP client.  Safe to call multiple times."""
+        for client in self._a2a_clients.values():
+            await client.close()
         self._a2a_clients.clear()
         if self._http is not None:
             await self._http.aclose()
@@ -120,135 +148,64 @@ class HubClient:
         ]
 
     # ------------------------------------------------------------------
-    # Task polling
-    # ------------------------------------------------------------------
-
-    async def _poll_task(self, agent_name: str, task_id: str) -> Task:
-        """Poll ``tasks/get`` until the task reaches a terminal state.
-
-        fasta2a's broker processes tasks asynchronously — ``message/send``
-        returns the task in ``"submitted"`` state.  Neither fasta2a nor the
-        official ``a2a-python`` SDK provide a send-and-wait helper, so
-        polling is the client's responsibility.
-        """
-        a2a = self._get_a2a(agent_name)
-
-        try:
-            async with asyncio.timeout(self.timeout):
-                while True:
-                    await asyncio.sleep(self.poll_interval)
-                    rpc = await a2a.get_task(task_id)
-                    task = rpc.get("result")
-                    if task and task["status"]["state"] in _TERMINAL_STATES:
-                        return task
-        except TimeoutError:
-            raise TimeoutError(f"Task {task_id} did not complete within {self.timeout}s") from None
-
-    async def _resolve_task(self, agent_name: str, result: Any) -> Task:
-        """Return a terminal ``Task`` — polling if necessary.
-
-        ``message/send`` may return a task that's already terminal (fast
-        agent), still in-progress (async broker), or even a bare Message.
-        """
-        match result:
-            case {"kind": "task"} if result["status"]["state"] in _TERMINAL_STATES:
-                return result
-            case {"kind": "task"}:
-                return await self._poll_task(agent_name, result["id"])
-            case _:
-                raise RuntimeError(f"Unexpected message/send result: {result!r:.200}")
-
-    # ------------------------------------------------------------------
     # Result extraction
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_from_artifacts(task: Task) -> tuple[str, list[str], dict[str, Any]]:
-        """Extract output, warnings, and metadata from task artifacts.
-
-        pydantic-ai wraps structured ``output_type`` values in a
-        ``{"result": ...}`` envelope inside data parts; we unwrap that.
-        Artifacts are checked in reverse order (latest wins for output).
-        """
+    def _extract_from_artifacts(task_dict: dict) -> tuple[str, list[str], dict[str, Any]]:
         output = ""
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
 
-        for item in reversed(task.get("artifacts") or []):
-            for part in item.get("parts", []):
-                match part:
-                    case {"kind": "data", "data": data}:
-                        inner = data.get("result", data)
-                        if not output:
-                            output = inner.get("command", "")
-                        if inner.get("warnings"):
-                            warnings = inner["warnings"]
-                        if inner.get("metadata"):
-                            metadata.update(inner["metadata"])
-                    case {"kind": "text", "text": text}:
-                        if not output:
-                            output = text
+        for artifact in reversed(task_dict.get("artifacts", [])):
+            for part in artifact.get("parts", []):
+                text = part.get("text", "")
+                data = part.get("data", {})
+                if data:
+                    inner = data.get("result", data)
+                    if not output:
+                        output = inner.get("command", "")
+                    if inner.get("warnings"):
+                        warnings = inner["warnings"]
+                    if inner.get("metadata"):
+                        metadata.update(inner["metadata"])
+                elif text and not output:
+                    output = text
 
         return output, warnings, metadata
 
     @staticmethod
-    def _extract_from_history(task: Task) -> str:
-        """Extract the last agent text from task history.
-
-        History includes the user's input message, so this is only used
-        as a fallback when artifacts yield no output.  Thinking parts
-        (tagged via metadata) are skipped.
-        """
-        for item in reversed(task.get("history") or []):
-            for part in item.get("parts", []):
-                match part:
-                    case {"kind": "text", "text": text} if (
-                        part.get("metadata", {}).get("type") != "thinking"
-                    ):
-                        return text
-        return ""
-
-    @staticmethod
-    def _extract_thinking(task: Task) -> list[str]:
-        """Extract thinking blocks from agent messages in task history.
-
-        The worker tags thinking parts with ``metadata.type == "thinking"``.
-        Only agent messages are scanned; user messages are skipped.
-        Empty thinking text is also skipped.
-        """
-        thinking: list[str] = []
-        for item in task.get("history") or []:
+    def _extract_from_history(task_dict: dict) -> str:
+        for item in reversed(task_dict.get("history", [])):
             if item.get("role") != "agent":
                 continue
             for part in item.get("parts", []):
-                match part:
-                    case {"kind": "text", "text": text} if (
-                        part.get("metadata", {}).get("type") == "thinking" and text
-                    ):
-                        thinking.append(text)
+                if part.get("text") and part.get("metadata", {}).get("type") != "thinking":
+                    return part["text"]
+        return ""
+
+    @staticmethod
+    def _extract_thinking(task_dict: dict) -> list[str]:
+        thinking: list[str] = []
+        for item in task_dict.get("history", []):
+            if item.get("role") != "agent":
+                continue
+            for part in item.get("parts", []):
+                if part.get("metadata", {}).get("type") == "thinking" and part.get("text"):
+                    thinking.append(part["text"])
         return thinking
 
     @staticmethod
-    def _extract_result(task: Task) -> AgentResult:
-        """Extract ``AgentResult`` from a completed ``Task``.
+    def _extract_result(task_dict: dict) -> AgentResult:
+        state = task_dict.get("status", {}).get("state", "")
+        context_id = task_dict.get("context_id")
 
-        Artifacts are checked first (they contain the agent's response).
-        History is the fallback — it includes the user's input message,
-        so scanning it first would return the prompt instead of the reply.
-
-        For ``auth-required`` tasks, the worker adds an agent message to
-        history explaining which credentials are missing.  We flag the
-        result so the display layer can render it distinctly.
-        """
-        state = task["status"]["state"]
-        context_id = task["context_id"]
-
-        output, warnings, metadata = HubClient._extract_from_artifacts(task)
+        output, warnings, metadata = HubClient._extract_from_artifacts(task_dict)
 
         if not output:
-            output = HubClient._extract_from_history(task)
+            output = HubClient._extract_from_history(task_dict)
 
-        thinking = HubClient._extract_thinking(task)
+        thinking = HubClient._extract_thinking(task_dict)
 
         if state == "auth-required":
             metadata["auth_required"] = True
@@ -266,27 +223,9 @@ class HubClient:
     # Public API
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_message(prompt: str, context_id: str | None = None) -> Message:
-        """Build an A2A ``Message`` TypedDict for the given prompt."""
-        msg: dict[str, Any] = {
-            "role": "user",
-            "parts": [{"kind": "text", "text": prompt}],
-            "kind": "message",
-            "message_id": str(uuid.uuid4()),
-        }
-        if context_id:
-            msg["context_id"] = context_id
-        return cast("Message", msg)
-
     async def run_agent(self, agent_name: str, prompt: str) -> AgentResult:
         """Send a one-shot message to an agent and wait for the result."""
-        a2a = self._get_a2a(agent_name)
-        rpc = await a2a.send_message(self._build_message(prompt))
-
-        result = rpc.get("result")
-        task = await self._resolve_task(agent_name, result)
-        return self._extract_result(task)
+        return await self._send_and_wait(agent_name, prompt, context_id=None)
 
     async def send_message(
         self,
@@ -295,9 +234,129 @@ class HubClient:
         context_id: str | None = None,
     ) -> AgentResult:
         """Send a message to an agent (multi-turn) and wait for the result."""
-        a2a = self._get_a2a(agent_name)
-        rpc = await a2a.send_message(self._build_message(prompt, context_id))
+        return await self._send_and_wait(agent_name, prompt, context_id=context_id)
 
-        result = rpc.get("result")
-        task = await self._resolve_task(agent_name, result)
-        return self._extract_result(task)
+    async def stream_agent(
+        self,
+        agent_name: str,
+        prompt: str,
+        context_id: str | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream an agent response, yielding progressive text deltas.
+
+        Yields ``StreamEvent`` objects — one ``text_delta`` per artifact chunk,
+        then a final ``completed``, ``failed``, or ``auth_required`` event.
+        """
+        client = await self._get_a2a(agent_name)
+        msg = Message(
+            role=Role.ROLE_USER,
+            message_id=str(uuid.uuid4()),
+            parts=[Part(text=prompt)],
+        )
+        if context_id:
+            msg.context_id = context_id
+
+        request = SendMessageRequest(message=msg)
+
+        task_dict: dict[str, Any] | None = None
+
+        async for response in client.send_message(request):
+            if response.HasField("artifact_update"):
+                artifact = response.artifact_update
+                for part in artifact.artifact.parts:
+                    if part.text:
+                        yield StreamEvent(kind="text_delta", text=part.text)
+
+            if response.HasField("task"):
+                task_dict = _task_to_dict(response.task)
+                state = response.task.status.state
+                if state in _TERMINAL_STATES:
+                    break
+            elif response.HasField("status_update"):
+                state = response.status_update.status.state
+                if state in _TERMINAL_STATES:
+                    if task_dict:
+                        task_dict["status"]["state"] = _task_state_to_str(state)
+                    break
+
+        if task_dict is not None:
+            result = self._extract_result(task_dict)
+            if result.metadata.get("auth_required"):
+                yield StreamEvent(kind="auth_required", result=result)
+            elif result.success:
+                yield StreamEvent(kind="completed", result=result)
+            else:
+                yield StreamEvent(kind="failed", result=result)
+        else:
+            yield StreamEvent(
+                kind="failed",
+                result=AgentResult(success=False, output="No response from agent"),
+            )
+
+    async def _send_and_wait(
+        self,
+        agent_name: str,
+        prompt: str,
+        context_id: str | None = None,
+    ) -> AgentResult:
+        client = await self._get_a2a(agent_name)
+        msg = Message(
+            role=Role.ROLE_USER,
+            message_id=str(uuid.uuid4()),
+            parts=[Part(text=prompt)],
+        )
+        if context_id:
+            msg.context_id = context_id
+
+        request = SendMessageRequest(message=msg)
+
+        task_dict = None
+        async for response in client.send_message(request):
+            if response.HasField("task"):
+                task_dict = _task_to_dict(response.task)
+                state = response.task.status.state
+                if state in _TERMINAL_STATES:
+                    break
+            elif response.HasField("status_update"):
+                state = response.status_update.status.state
+                if state in _TERMINAL_STATES:
+                    if task_dict:
+                        task_dict["status"]["state"] = _task_state_to_str(state)
+                    break
+            elif response.HasField("artifact_update"):
+                if task_dict is None:
+                    task_dict = {"status": {"state": "working"}, "artifacts": [], "history": []}
+                artifact_dict = MessageToDict(
+                    response.artifact_update.artifact, preserving_proto_field_name=True
+                )
+                task_dict.setdefault("artifacts", []).append(artifact_dict)
+
+        if task_dict is None:
+            return AgentResult(success=False, output="No response from agent")
+
+        return self._extract_result(task_dict)
+
+
+def _task_state_to_str(state: int) -> str:
+    mapping = {
+        TaskState.TASK_STATE_SUBMITTED: "submitted",
+        TaskState.TASK_STATE_WORKING: "working",
+        TaskState.TASK_STATE_COMPLETED: "completed",
+        TaskState.TASK_STATE_FAILED: "failed",
+        TaskState.TASK_STATE_CANCELED: "canceled",
+        TaskState.TASK_STATE_INPUT_REQUIRED: "input-required",
+        TaskState.TASK_STATE_AUTH_REQUIRED: "auth-required",
+        TaskState.TASK_STATE_REJECTED: "rejected",
+    }
+    return mapping.get(state, "unknown")  # type: ignore[arg-type]
+
+
+def _task_to_dict(task) -> dict:
+    d = MessageToDict(task, preserving_proto_field_name=True)
+    state_int = task.status.state
+    d["status"]["state"] = _task_state_to_str(state_int)
+    for msg in d.get("history", []):
+        role = msg.get("role", "")
+        if role.startswith("ROLE_"):
+            msg["role"] = role.removeprefix("ROLE_").lower()
+    return d

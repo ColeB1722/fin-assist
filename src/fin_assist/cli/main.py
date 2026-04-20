@@ -251,6 +251,7 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 initial_message=initial_message,
                 show_thinking=args.show_thinking,
                 card_meta=discovered.card_meta,
+                stream_fn=client.stream_agent,
             )
     except Exception:
         return 1

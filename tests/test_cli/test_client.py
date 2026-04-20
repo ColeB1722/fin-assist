@@ -1,19 +1,11 @@
-"""Tests for cli/client.py — hub client wrapping fasta2a."""
+"""Tests for cli/client.py — hub client wrapping a2a-sdk."""
 
 from __future__ import annotations
 
-import json
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from fasta2a.schema import Task
-
 from fin_assist.cli.client import AgentResult, DiscoveredAgent, HubClient
-
-# ---------------------------------------------------------------------------
-# Fixtures — cast to Task so the type checker is satisfied;
-# TypedDict = plain dict at runtime so the cast is free.
-# ---------------------------------------------------------------------------
 
 
 def _make_task(
@@ -21,23 +13,14 @@ def _make_task(
     artifacts: list[dict[str, Any]] | None = None,
     history: list[dict[str, Any]] | None = None,
     context_id: str = "ctx-1",
-) -> Task:
-    return cast(
-        "Task",
-        {
-            "id": "task-1",
-            "context_id": context_id,
-            "kind": "task",
-            "status": {"state": state},
-            "artifacts": artifacts or [],
-            "history": history or [],
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# DiscoveredAgent / AgentResult data classes
-# ---------------------------------------------------------------------------
+) -> dict:
+    return {
+        "id": "task-1",
+        "context_id": context_id,
+        "status": {"state": state},
+        "artifacts": artifacts or [],
+        "history": history or [],
+    }
 
 
 class TestDiscoveredAgent:
@@ -71,15 +54,10 @@ class TestAgentResult:
         assert result.thinking == ["hmm", "let me see"]
 
 
-# ---------------------------------------------------------------------------
-# HubClient._extract_result  (static method — no client instance needed)
-# ---------------------------------------------------------------------------
-
-
 class TestExtractResult:
     def test_extracts_data_part_command(self):
         task = _make_task(
-            artifacts=[{"parts": [{"kind": "data", "data": {"command": "ls -la", "warnings": []}}]}]
+            artifacts=[{"parts": [{"data": {"result": {"command": "ls -la", "warnings": []}}}]}]
         )
         result = HubClient._extract_result(task)
 
@@ -88,7 +66,7 @@ class TestExtractResult:
         assert result.warnings == []
 
     def test_extracts_text_part(self):
-        task = _make_task(artifacts=[{"parts": [{"kind": "text", "text": "Hello world"}]}])
+        task = _make_task(artifacts=[{"parts": [{"text": "Hello world"}]}])
         result = HubClient._extract_result(task)
 
         assert result.output == "Hello world"
@@ -99,11 +77,12 @@ class TestExtractResult:
                 {
                     "parts": [
                         {
-                            "kind": "data",
                             "data": {
-                                "command": "rm -rf /",
-                                "warnings": ["Dangerous!", "Be careful"],
-                            },
+                                "result": {
+                                    "command": "rm -rf /",
+                                    "warnings": ["Dangerous!", "Be careful"],
+                                }
+                            }
                         }
                     ]
                 }
@@ -119,11 +98,12 @@ class TestExtractResult:
                 {
                     "parts": [
                         {
-                            "kind": "data",
                             "data": {
-                                "command": "ls",
-                                "metadata": {"accept_action": "insert_command"},
-                            },
+                                "result": {
+                                    "command": "ls",
+                                    "metadata": {"accept_action": "insert_command"},
+                                }
+                            }
                         }
                     ]
                 }
@@ -140,7 +120,6 @@ class TestExtractResult:
         assert result.success is False
 
     def test_success_false_for_all_terminal_failure_states(self):
-        """Non-completed terminal states should all produce success=False."""
         for state in ("failed", "canceled", "rejected"):
             task = _make_task(state=state)
             result = HubClient._extract_result(task)
@@ -152,8 +131,6 @@ class TestExtractResult:
         assert result.success is False
 
     def test_auth_required_extracts_status_message_from_history(self):
-        """When state is auth-required, _extract_result should surface the
-        agent message from history as the output text."""
         task = _make_task(
             state="auth-required",
             artifacts=[],
@@ -162,7 +139,6 @@ class TestExtractResult:
                     "role": "agent",
                     "parts": [
                         {
-                            "kind": "text",
                             "text": "Missing API key for anthropic. Set ANTHROPIC_API_KEY or use `fin connect anthropic`.",
                         }
                     ],
@@ -173,7 +149,6 @@ class TestExtractResult:
         assert "anthropic" in result.output.lower()
 
     def test_auth_required_sets_auth_required_flag_in_metadata(self):
-        """auth-required results should carry a metadata flag for display layer."""
         task = _make_task(state="auth-required")
         result = HubClient._extract_result(task)
         assert result.metadata.get("auth_required") is True
@@ -193,17 +168,18 @@ class TestExtractResult:
     def test_history_items_used_when_no_artifacts(self):
         task = _make_task(
             artifacts=[],
-            history=[{"parts": [{"kind": "text", "text": "from history"}]}],
+            history=[
+                {"role": "agent", "parts": [{"text": "from history"}]},
+            ],
         )
         result = HubClient._extract_result(task)
 
         assert result.output == "from history"
 
     def test_artifacts_take_precedence_over_history(self):
-        """Artifacts contain the agent's response and should take precedence over history."""
         task = _make_task(
-            artifacts=[{"parts": [{"kind": "text", "text": "artifact text"}]}],
-            history=[{"parts": [{"kind": "text", "text": "history text"}]}],
+            artifacts=[{"parts": [{"text": "artifact text"}]}],
+            history=[{"role": "agent", "parts": [{"text": "history text"}]}],
         )
         result = HubClient._extract_result(task)
 
@@ -218,11 +194,10 @@ class TestExtractThinking:
                     "role": "agent",
                     "parts": [
                         {
-                            "kind": "text",
                             "text": "Let me reason...",
                             "metadata": {"type": "thinking"},
                         },
-                        {"kind": "text", "text": "Here is the answer."},
+                        {"text": "Here is the answer."},
                     ],
                 }
             ]
@@ -236,14 +211,13 @@ class TestExtractThinking:
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "First thought", "metadata": {"type": "thinking"}},
+                        {"text": "First thought", "metadata": {"type": "thinking"}},
                     ],
                 },
                 {
                     "role": "agent",
                     "parts": [
                         {
-                            "kind": "text",
                             "text": "Second thought",
                             "metadata": {"type": "thinking"},
                         },
@@ -260,7 +234,7 @@ class TestExtractThinking:
                 {
                     "role": "user",
                     "parts": [
-                        {"kind": "text", "text": "my thoughts", "metadata": {"type": "thinking"}},
+                        {"text": "my thoughts", "metadata": {"type": "thinking"}},
                     ],
                 }
             ]
@@ -274,8 +248,8 @@ class TestExtractThinking:
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "regular text"},
-                        {"kind": "text", "text": "thinking text", "metadata": {"type": "thinking"}},
+                        {"text": "regular text"},
+                        {"text": "thinking text", "metadata": {"type": "thinking"}},
                     ],
                 }
             ]
@@ -293,7 +267,7 @@ class TestExtractThinking:
             history=[
                 {
                     "role": "agent",
-                    "parts": [{"kind": "text", "text": "just a response"}],
+                    "parts": [{"text": "just a response"}],
                 }
             ]
         )
@@ -306,8 +280,8 @@ class TestExtractThinking:
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "", "metadata": {"type": "thinking"}},
-                        {"kind": "text", "text": "real thinking", "metadata": {"type": "thinking"}},
+                        {"text": "", "metadata": {"type": "thinking"}},
+                        {"text": "real thinking", "metadata": {"type": "thinking"}},
                     ],
                 }
             ]
@@ -324,8 +298,8 @@ class TestExtractFromHistorySkipsThinking:
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "reasoning...", "metadata": {"type": "thinking"}},
-                        {"kind": "text", "text": "actual answer"},
+                        {"text": "reasoning...", "metadata": {"type": "thinking"}},
+                        {"text": "actual answer"},
                     ],
                 }
             ],
@@ -340,7 +314,7 @@ class TestExtractFromHistorySkipsThinking:
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "only thinking", "metadata": {"type": "thinking"}},
+                        {"text": "only thinking", "metadata": {"type": "thinking"}},
                     ],
                 }
             ],
@@ -350,12 +324,12 @@ class TestExtractFromHistorySkipsThinking:
 
     def test_extract_result_includes_thinking(self):
         task = _make_task(
-            artifacts=[{"parts": [{"kind": "text", "text": "answer"}]}],
+            artifacts=[{"parts": [{"text": "answer"}]}],
             history=[
                 {
                     "role": "agent",
                     "parts": [
-                        {"kind": "text", "text": "hmm...", "metadata": {"type": "thinking"}},
+                        {"text": "hmm...", "metadata": {"type": "thinking"}},
                     ],
                 }
             ],
@@ -363,11 +337,6 @@ class TestExtractFromHistorySkipsThinking:
         result = HubClient._extract_result(task)
         assert result.thinking == ["hmm..."]
         assert result.output == "answer"
-
-
-# ---------------------------------------------------------------------------
-# HubClient.discover_agents
-# ---------------------------------------------------------------------------
 
 
 class TestDiscoverAgents:
@@ -448,88 +417,26 @@ class TestDiscoverAgents:
         assert agents[0].card_meta.requires_approval is False
 
 
-# ---------------------------------------------------------------------------
-# HubClient.run_agent — delegates to fasta2a A2AClient under the hood
-# ---------------------------------------------------------------------------
-
-
 class TestRunAgent:
-    async def test_returns_agent_result_from_inline_response(self):
-        """A completed task returned inline from message/send needs no polling."""
-        # fasta2a's TypeAdapter expects camelCase on the wire
-        wire_payload = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": "req-1",
-                "result": {
-                    "id": "task-1",
-                    "contextId": "ctx-1",
-                    "kind": "task",
-                    "status": {"state": "completed"},
-                    "artifacts": [
-                        {"artifactId": "a1", "parts": [{"kind": "text", "text": "hello"}]}
-                    ],
-                    "history": [],
-                },
-            }
-        ).encode()
-
-        mock_response = MagicMock()
-        mock_response.content = wire_payload
-        mock_response.raise_for_status = MagicMock()
-        mock_response.status_code = 200
-
-        mock_httpx = AsyncMock()
-        mock_httpx.post = AsyncMock(return_value=mock_response)
-
+    async def test_delegates_to_send_and_wait(self):
+        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
         client = HubClient("http://localhost")
-        client._http = mock_httpx
+        client._send_and_wait = AsyncMock(return_value=expected)
 
         result = await client.run_agent("shell", "list files")
 
-        assert result.success is True
-        assert result.output == "hello"
-        assert result.context_id == "ctx-1"
+        assert result is expected
+        client._send_and_wait.assert_called_once_with("shell", "list files", context_id=None)
 
-    async def test_sends_message_send_rpc(self):
-        """run_agent should delegate to fasta2a's send_message (message/send RPC)."""
-        wire_payload = json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": "req-1",
-                "result": {
-                    "id": "t",
-                    "contextId": "c",
-                    "kind": "task",
-                    "status": {"state": "completed"},
-                    "artifacts": [],
-                    "history": [],
-                },
-            }
-        ).encode()
-
-        mock_response = MagicMock()
-        mock_response.content = wire_payload
-        mock_response.raise_for_status = MagicMock()
-        mock_response.status_code = 200
-
-        mock_httpx = AsyncMock()
-        mock_httpx.post = AsyncMock(return_value=mock_response)
-
+    async def test_passes_context_id_to_send_and_wait(self):
+        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
         client = HubClient("http://localhost")
-        client._http = mock_httpx
+        client._send_and_wait = AsyncMock(return_value=expected)
 
-        await client.run_agent("shell", "do something")
+        result = await client.send_message("shell", "hello", context_id="ctx-1")
 
-        call_kwargs = mock_httpx.post.call_args
-        raw_body = call_kwargs.kwargs.get("content") or call_kwargs.args[1]
-        payload = json.loads(raw_body)
-        assert payload["method"] == "message/send"
-
-
-# ---------------------------------------------------------------------------
-# HubClient lifecycle
-# ---------------------------------------------------------------------------
+        assert result is expected
+        client._send_and_wait.assert_called_once_with("shell", "hello", context_id="ctx-1")
 
 
 class TestHubClientLifecycle:
@@ -545,7 +452,7 @@ class TestHubClientLifecycle:
 
     async def test_close_is_idempotent_when_no_client(self):
         client = HubClient("http://localhost")
-        await client.close()  # should not raise
+        await client.close()
 
     def test_base_url_trailing_slash_stripped(self):
         client = HubClient("http://localhost:4096/")
@@ -555,10 +462,12 @@ class TestHubClientLifecycle:
         client = HubClient("http://localhost")
         mock_httpx = AsyncMock()
         client._http = mock_httpx
-        # Force creation of an a2a sub-client
-        _ = client._get_a2a("shell")
+        mock_a2a = MagicMock()
+        mock_a2a.close = AsyncMock()
+        client._a2a_clients["shell"] = mock_a2a
         assert len(client._a2a_clients) == 1
 
         await client.close()
 
         assert client._a2a_clients == {}
+        mock_a2a.close.assert_called_once()
