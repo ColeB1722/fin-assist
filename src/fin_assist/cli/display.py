@@ -146,18 +146,18 @@ def render_agent_output(
 ) -> None:
     """Render an agent result using the shared widget pipeline.
 
-    Composes thinking, auth, command, text, and warning widgets based on
+    Composes auth, command, text, thinking, and warning widgets based on
     ``AgentResult`` and ``AgentCardMeta``.  ``mode`` controls the text
     wrapper (Panel for ``do``, Markdown for ``talk``) but does not affect
     which widgets render.
+
+    Thinking is rendered only for successful, non-auth-required results
+    when ``show_thinking`` is ``True``.
 
     When ``card_meta`` is ``None``, renders as Markdown (talk) or Panel
     (do) with standard warning panels — the same output as the card_meta
     path when ``requires_approval`` is ``False``.
     """
-    if show_thinking and result.thinking:
-        render_thinking(result.thinking)
-
     if result.metadata.get("auth_required"):
         render_auth_required(result.output)
         return
@@ -165,6 +165,9 @@ def render_agent_output(
     if not result.success:
         render_error(result.output or "Unknown error")
         return
+
+    if show_thinking and result.thinking:
+        render_thinking(result.thinking)
 
     if card_meta is not None and card_meta.requires_approval:
         render_command(result.output, result.warnings, result.metadata)

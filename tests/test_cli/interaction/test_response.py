@@ -6,6 +6,7 @@ from io import StringIO
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from rich.console import Console
 
 from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.cli.client import AgentResult
@@ -165,10 +166,6 @@ class TestHandlePostResponseApproval:
 
         result = _make_result(output="rm -rf /")
         card_meta = AgentCardMeta(requires_approval=True)
-
-        from io import StringIO
-
-        from rich.console import Console
 
         buf = StringIO()
         test_console = Console(file=buf, force_terminal=False)

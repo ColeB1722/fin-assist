@@ -15,6 +15,7 @@ import pytest
 
 from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.cli.client import AgentResult, DiscoveredAgent
+from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
 from fin_assist.cli.main import main
 
 # ---------------------------------------------------------------------------
@@ -337,8 +338,6 @@ class TestDoCommandNoApproval:
             run_result=AgentResult(success=True, output="ls -la"),
         )
 
-        from fin_assist.cli.interaction.response import PostResponseResult, PostResponseAction
-
         with (
             _patch_asyncio_run(),
             patch(
@@ -431,8 +430,6 @@ class TestDoCommandApproval:
             run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
         )
 
-        from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
-
         with (
             _patch_asyncio_run(),
             patch(
@@ -458,8 +455,6 @@ class TestDoCommandApproval:
             agents=[agent],
             run_result=AgentResult(success=True, output="echo hi"),
         )
-
-        from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
 
         with (
             _patch_asyncio_run(),
