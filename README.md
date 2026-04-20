@@ -6,86 +6,9 @@ Expandable personal AI agent platform for terminal workflows. An **Agent Hub** h
 
 ![System Architecture](docs/diagrams/system-architecture.png)
 
-<details>
-<summary>Mermaid source</summary>
-
-```mermaid
-graph TD
-    subgraph Clients
-        CLI["CLI Client\nRich + httpx + prompt-toolkit"]
-        TUI["TUI Client (planned)\nTextual"]
-    end
-
-    subgraph "A2A Protocol — HTTP + JSON-RPC"
-        RPC["SendMessage · SendStreamingMessage (SSE)\nAgent discovery via Agent Cards"]
-    end
-
-    subgraph "Agent Hub — FastAPI on 127.0.0.1:4096"
-        HUB["Hub Router\nGET /agents · GET /health"]
-
-        subgraph "Per-Agent A2A Sub-Apps"
-            D["/default/\ndo + talk · chain-of-thought"]
-            S["/shell/\ndo only · approval gate"]
-            F["/{name}/\nfuture agents"]
-        end
-
-        EXEC["FinAssistExecutor\nAgentExecutor + TaskUpdater"]
-        TS["InMemoryTaskStore\nephemeral (a2a-sdk)"]
-        CS["ContextStore\nSQLite — conversation history"]
-    end
-
-    subgraph "Shared Services"
-        CREDS["CredentialStore\nenv → file → keyring"]
-        CONFIG["ConfigLoader\nTOML · 4-level priority"]
-        CTXP["ContextProviders\nfiles · git · history · env"]
-        REG["ProviderRegistry\nLLM providers"]
-    end
-
-    LLM["pydantic-ai → LLM Providers"]
-
-    CLI --> RPC
-    TUI --> RPC
-    RPC --> HUB
-    HUB --> D & S & F
-    D & S & F --> EXEC
-    EXEC --> LLM
-    EXEC --> TS & CS
-    LLM --> CREDS & REG
-    EXEC --> CTXP
-    HUB -.-> CONFIG
-```
-
-</details>
-
 ## Request Flow
 
 ![Request Flow](docs/diagrams/request-flow.png)
-
-<details>
-<summary>Mermaid source</summary>
-
-```mermaid
-sequenceDiagram
-    participant C as CLI Client
-    participant H as Agent Hub
-    participant E as FinAssistExecutor
-    participant L as pydantic-ai / LLM
-
-    C->>H: SendStreamingMessage (JSON-RPC + SSE)
-    H->>E: execute(context, task_updater)
-    E->>E: Task enqueued (SUBMITTED)
-    E->>E: updater.start_work() → WORKING
-    E->>L: agent.run_stream(prompt, context)
-    loop Token-by-token
-        L-->>E: text delta
-        E-->>H: updater.add_artifact(append=true)
-        H-->>C: SSE: TaskArtifactUpdateEvent
-    end
-    E->>E: updater.complete() → COMPLETED
-    H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
-```
-
-</details>
 
 ## Key Concepts
 
