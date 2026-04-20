@@ -983,15 +983,27 @@ Total: 440 tests, all passing
 
 ---
 
-## Next Session: A2A Library Evaluation + Context Injection
+## Next Session: A2A SDK Migration + Context Injection
 
 ### Goals
 
-1. **A2A library evaluation**: Assess fasta2a vs a2a-python (and others) for streaming support and protocol completeness. Decide whether to stay with fasta2a or migrate.
+1. **A2A SDK migration**: Replace fasta2a with the official `a2a-sdk` (Google's `a2a-python`). fasta2a lacks protocol completeness (no extensions, no native streaming, no task resubscription). The official SDK implements the full A2A spec including extensions — which should eliminate the custom protocol hacks below.
 2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
 3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
 4. **Step 9**: Approval "add context" option for structured output in talk mode.
 5. **Manual testing**: Re-verify Chunks A-E after redesign.
+
+### Known Technical Debt (defer to SDK migration)
+
+The following are custom protocol extensions that exist because fasta2a doesn't support them natively. They should be re-evaluated during the SDK migration — not fixed now — since the official SDK may provide native mechanisms that replace them entirely.
+
+| Convention | Where | Why it exists | SDK migration impact |
+|------------|-------|---------------|---------------------|
+| `metadata.type == "thinking"` on TextPart | worker writes, client reads | No native thinking support in A2A/fasta2a | A2A extensions or native thinking parts may replace this |
+| `meta_skill` encoding (serving modes, multi-turn) in agent card skills | factory.py writes, client reads | No custom metadata fields on agent card | SDK may support proper agent capabilities/metadata |
+| `metadata.auth_required` flag on AgentResult | client.py | Auth-required is a custom state not in A2A spec | May need to stay as extension, but SDK extensions may formalize it |
+
+The current implementation serves as a reference translation layer — working code that maps the data flow and edge cases, making the migration easier than building from scratch.
 
 ---
 
