@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-12)**: Config-driven redesign Steps 1-6 complete. `ConfigAgent` replaces `BaseAgent`/`DefaultAgent`/`ShellAgent`. `FinAssistWorker(Worker[Context])` replaces private `AgentWorker` import. Manual testing Chunks A-E need re-verification. Next: Steps 7-9 (context injection + approval).
+**Current state (2026-04-20)**: Shared render pipeline (handle_post_response) unified. Progressive output reverted — polling-based streaming was too coupled to pydantic-ai internals and will be re-evaluated when evaluating A2A library options. 458 tests passing. Next: Steps 7-9 (context injection + approval), A2A library evaluation, manual testing re-verification.
 
 ---
 
@@ -909,14 +909,101 @@ Total: 368 tests, all passing
 
 ---
 
-## Next Session: Steps 7-9 (Context Injection + Approval)
+## Design Sketch: Shared Render Pipeline (Option B)
+
+**Status**: Complete
+
+### Problem
+
+Rendering is coupled to serving mode, not response type. Same `AgentResult` renders differently in `do` (Panel via `render_response`/`render_command`) vs `talk` (raw `console.print`). Widgets (thinking, warnings, approval) are bolted into specific code paths with inline if/else rather than composable. Approval widget doesn't work in `talk` at all.
+
+### Design
+
+**One entry point**: `render_agent_output(result, card_meta, *, show_thinking, mode)` composes existing widget functions. Both modes call the same function. `mode` only affects the text wrapper (Panel for `do`, Markdown for `talk`), not which widgets render.
+
+Widget dispatch (driven by `AgentResult` + `AgentCardMeta`):
+
+```text
+auth_required?  → render_auth_required()
+!result.success? → render_error()
+requires_approval? → render_command()  (syntax panel + inline warnings + hint)
+else (text)     → do: render_response() / talk: render_markdown()
+show_thinking?  → render_thinking()
+warnings?       → render_warnings()  (only when not already inside render_command)
+```
+
+Approval interaction stays in the caller (it's interaction, not display), but now works in both modes.
+
+### Implementation Steps
+
+1. **`display.py`** — Add `render_markdown(text)` (Rich `Markdown` class, no panel) + `render_agent_output(result, card_meta, *, show_thinking=False, mode="do")` composing all widget functions per dispatch table.
+2. **`main.py`** — Replace inline rendering in `_do_command()` with `render_agent_output()`. Add `--show-thinking` flag to `do` subparser. Keep approval widget as separate interaction step after rendering.
+3. **`chat.py`** — Add `card_meta: AgentCardMeta` param to `run_chat_loop()`. Replace inline rendering with `render_agent_output()`. Add approval widget support: after rendering, if `card_meta.requires_approval`, show `run_approve_widget()`.
+4. **`main.py`** — Pass `card_meta` to `run_chat_loop()` in `_talk_command()`.
+5. **Tests** — `TestRenderMarkdown`, `TestRenderAgentOutput` (matrix), update chat tests for `card_meta` param, add approval-in-talk test.
+
+### Scope Limits
+
+- No "add context" option in talk approval (Step 9 from config redesign)
+- No `render_agent_output` return value / event system
+- No streaming integration
+- No new `AgentResult` fields
+
+### What Was Accomplished
+
+- Added `render_markdown()` and `render_agent_output()` to `display.py` — shared pipeline composes all widget functions based on `AgentResult` + `AgentCardMeta`
+- Refactored `_do_command()` to use `render_agent_output()` instead of inline rendering
+- Added `--show-thinking` flag to `do` subparser
+- Refactored `run_chat_loop()` to accept `card_meta` param and use `render_agent_output()` with `mode="talk"`
+- Added approval widget support in talk mode — when `card_meta.requires_approval`, shows `run_approve_widget()` after rendering
+- Backward-compatible: when `card_meta` is `None`, chat loop falls back to legacy inline rendering
+- Passed `card_meta=discovered.card_meta` from `_talk_command()` to `run_chat_loop()`
+- Removed unused imports from `main.py` (`render_command`, `render_response`, `render_warnings`)
+- Moved `AgentCardMeta` import to `TYPE_CHECKING` block in `chat.py`
+
+### Test Summary
+
+```text
+tests/test_cli/test_display.py: +10 tests (TestRenderMarkdown: 2, TestRenderAgentOutput: 8)
+tests/test_cli/interaction/test_chat.py: +2 tests (TestChatLoopCardMeta: 2)
+tests/test_cli/test_main.py: 1 test updated (render_response → render_agent_output patch)
+Total: 440 tests, all passing
+```
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/cli/display.py` | Added `render_markdown()`, `render_agent_output()`, `Markdown` import |
+| `src/fin_assist/cli/main.py` | Refactored `_do_command()` to use `render_agent_output()`, added `--show-thinking` to `do`, passed `card_meta` to `run_chat_loop()`, removed unused imports |
+| `src/fin_assist/cli/interaction/chat.py` | Added `card_meta` param to `run_chat_loop()`, uses `render_agent_output()` + approval widget when `card_meta` provided |
+| `tests/test_cli/test_display.py` | Added `TestRenderMarkdown`, `TestRenderAgentOutput` |
+| `tests/test_cli/interaction/test_chat.py` | Added `TestChatLoopCardMeta` (approval in talk, no approval when not required) |
+| `tests/test_cli/test_main.py` | Updated `render_response` → `render_agent_output` patch |
+
+---
+
+## Next Session: A2A SDK Migration + Context Injection
 
 ### Goals
 
-1. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
-2. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
-3. **Step 9**: Approval "add context" option for structured output in talk mode.
-4. **Manual testing**: Re-verify Chunks A-E after redesign.
+1. **A2A SDK migration**: Replace fasta2a with the official `a2a-sdk` (Google's `a2a-python`). fasta2a lacks protocol completeness (no extensions, no native streaming, no task resubscription). The official SDK implements the full A2A spec including extensions — which should eliminate the custom protocol hacks below.
+2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
+3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
+4. **Step 9**: Approval "add context" option for structured output in talk mode.
+5. **Manual testing**: Re-verify Chunks A-E after redesign.
+
+### Known Technical Debt (defer to SDK migration)
+
+The following are custom protocol extensions that exist because fasta2a doesn't support them natively. They should be re-evaluated during the SDK migration — not fixed now — since the official SDK may provide native mechanisms that replace them entirely.
+
+| Convention | Where | Why it exists | SDK migration impact |
+|------------|-------|---------------|---------------------|
+| `metadata.type == "thinking"` on TextPart | worker writes, client reads | No native thinking support in A2A/fasta2a | A2A extensions or native thinking parts may replace this |
+| `meta_skill` encoding (serving modes, multi-turn) in agent card skills | factory.py writes, client reads | No custom metadata fields on agent card | SDK may support proper agent capabilities/metadata |
+| `metadata.auth_required` flag on AgentResult | client.py | Auth-required is a custom state not in A2A spec | May need to stay as extension, but SDK extensions may formalize it |
+
+The current implementation serves as a reference translation layer — working code that maps the data flow and edge cases, making the migration easier than building from scratch.
 
 ---
 
@@ -1001,7 +1088,8 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | **CLI REPL Mode** | ✅ Complete |
 | — | **Config-Driven Redesign** | ✅ Steps 1-6 complete, Steps 7-9 pending |
-| 9 | Streaming + Integration Tests | ⬜ Not Started |
+| 9a | **Progressive Output (polling)** | ↩️ Reverted — jank, tight coupling to pydantic-ai internals |
+| 9b | Full SSE Streaming | ⬜ **Blocked** (fasta2a v0.7+ unreleased) |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |

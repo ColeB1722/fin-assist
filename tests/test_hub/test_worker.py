@@ -1,4 +1,8 @@
-"""Tests for FinAssistWorker — custom Worker with auth-required support."""
+"""Tests for FinAssistWorker — custom Worker with auth-required support.
+
+Tests that exercise the full ``run_task`` path mock the pydantic-ai agent
+via ``_make_run_mock()``.
+"""
 
 from __future__ import annotations
 
@@ -35,6 +39,34 @@ def _make_agent(*, build_model_side_effect=None, build_model_return=None):
     else:
         agent.build_model.return_value = MagicMock()
     return agent
+
+
+def _make_run_mock(
+    *,
+    result_output: str = "hello",
+    new_messages: list | None = None,
+    all_messages: list | None = None,
+    run_side_effect: Exception | None = None,
+) -> MagicMock:
+    """Create a mock pydantic Agent that supports ``run()`` via ``async with``.
+
+    Returns a MagicMock agent where ``agent.run(...)`` returns a result mock
+    with ``all_messages()``, ``new_messages()``, and ``.output``.
+    """
+    result_mock = MagicMock()
+    result_mock.all_messages.return_value = all_messages or []
+    result_mock.new_messages.return_value = new_messages or []
+    result_mock.output = result_output
+
+    pydantic_agent = MagicMock()
+    pydantic_agent.__aenter__ = AsyncMock(return_value=pydantic_agent)
+    pydantic_agent.__aexit__ = AsyncMock(return_value=False)
+    if run_side_effect is not None:
+        pydantic_agent.run = AsyncMock(side_effect=run_side_effect)
+    else:
+        pydantic_agent.run = AsyncMock(return_value=result_mock)
+
+    return pydantic_agent
 
 
 class TestFinAssistWorkerAuthRequired:
@@ -116,10 +148,9 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_context.return_value = None
 
         mock_model = MagicMock()
-        pydantic_agent_mock = MagicMock()
-        pydantic_agent_mock.__aenter__ = AsyncMock(return_value=pydantic_agent_mock)
-        pydantic_agent_mock.__aexit__ = AsyncMock(return_value=False)
-        pydantic_agent_mock.run = AsyncMock(side_effect=RuntimeError("something broke"))
+        pydantic_agent_mock = _make_run_mock(
+            run_side_effect=RuntimeError("something broke"),
+        )
 
         agent = _make_agent(build_model_return=mock_model)
         agent.build_pydantic_agent.return_value = pydantic_agent_mock
@@ -141,16 +172,8 @@ class TestFinAssistWorkerAuthRequired:
         storage.load_task.return_value = task
         storage.load_context.return_value = None
 
-        result_mock = MagicMock()
-        result_mock.all_messages.return_value = []
-        result_mock.new_messages.return_value = []
-        result_mock.output = "hello"
-
         mock_model = MagicMock()
-        pydantic_agent_mock = MagicMock()
-        pydantic_agent_mock.__aenter__ = AsyncMock(return_value=pydantic_agent_mock)
-        pydantic_agent_mock.__aexit__ = AsyncMock(return_value=False)
-        pydantic_agent_mock.run = AsyncMock(return_value=result_mock)
+        pydantic_agent_mock = _make_run_mock(result_output="hello")
 
         agent = _make_agent(build_model_return=mock_model)
         agent.build_pydantic_agent.return_value = pydantic_agent_mock

@@ -60,10 +60,15 @@ class TestAgentResult:
         assert result.warnings == []
         assert result.metadata == {}
         assert result.context_id is None
+        assert result.thinking == []
 
     def test_stores_context_id(self):
         result = AgentResult(success=True, output="x", context_id="ctx-42")
         assert result.context_id == "ctx-42"
+
+    def test_stores_thinking(self):
+        result = AgentResult(success=True, output="x", thinking=["hmm", "let me see"])
+        assert result.thinking == ["hmm", "let me see"]
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +208,161 @@ class TestExtractResult:
         result = HubClient._extract_result(task)
 
         assert result.output == "artifact text"
+
+
+class TestExtractThinking:
+    def test_extracts_thinking_from_agent_history(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "Let me reason...",
+                            "metadata": {"type": "thinking"},
+                        },
+                        {"kind": "text", "text": "Here is the answer."},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["Let me reason..."]
+
+    def test_extracts_multiple_thinking_blocks(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "First thought", "metadata": {"type": "thinking"}},
+                    ],
+                },
+                {
+                    "role": "agent",
+                    "parts": [
+                        {
+                            "kind": "text",
+                            "text": "Second thought",
+                            "metadata": {"type": "thinking"},
+                        },
+                    ],
+                },
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["First thought", "Second thought"]
+
+    def test_skips_user_messages(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"kind": "text", "text": "my thoughts", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_skips_non_thinking_parts(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "regular text"},
+                        {"kind": "text", "text": "thinking text", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["thinking text"]
+
+    def test_empty_when_no_history(self):
+        task = _make_task(history=[])
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_empty_when_no_thinking_metadata(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [{"kind": "text", "text": "just a response"}],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == []
+
+    def test_skips_empty_thinking_text(self):
+        task = _make_task(
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "", "metadata": {"type": "thinking"}},
+                        {"kind": "text", "text": "real thinking", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["real thinking"]
+
+
+class TestExtractFromHistorySkipsThinking:
+    def test_skips_thinking_parts(self):
+        task = _make_task(
+            artifacts=[],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "reasoning...", "metadata": {"type": "thinking"}},
+                        {"kind": "text", "text": "actual answer"},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "actual answer"
+
+    def test_returns_empty_when_only_thinking_in_history(self):
+        task = _make_task(
+            artifacts=[],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "only thinking", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == ""
+
+    def test_extract_result_includes_thinking(self):
+        task = _make_task(
+            artifacts=[{"parts": [{"kind": "text", "text": "answer"}]}],
+            history=[
+                {
+                    "role": "agent",
+                    "parts": [
+                        {"kind": "text", "text": "hmm...", "metadata": {"type": "thinking"}},
+                    ],
+                }
+            ],
+        )
+        result = HubClient._extract_result(task)
+        assert result.thinking == ["hmm..."]
+        assert result.output == "answer"
 
 
 # ---------------------------------------------------------------------------

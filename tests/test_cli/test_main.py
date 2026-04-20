@@ -15,6 +15,7 @@ import pytest
 
 from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.cli.client import AgentResult, DiscoveredAgent
+from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
 from fin_assist.cli.main import main
 
 # ---------------------------------------------------------------------------
@@ -345,7 +346,11 @@ class TestDoCommandNoApproval:
                 return_value="http://localhost:4096",
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch("fin_assist.cli.main.render_response"),
+            patch(
+                "fin_assist.cli.main.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
         ):
             result = _run_main("do", "shell", "list files")
 
@@ -412,15 +417,19 @@ class TestDoCommandNoApproval:
 
 
 class TestDoCommandApproval:
-    def test_shows_approval_widget_when_requires_approval(self):
+    """Approval behaviour is now tested via handle_post_response (test_response.py).
+
+    These integration tests verify that _do_command delegates to
+    handle_post_response and respects its returned exit_code.
+    """
+
+    def test_approval_cancelled_returns_zero(self):
         agent = _make_discovered("shell", requires_approval=True)
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
         )
 
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
         with (
             _patch_asyncio_run(),
             patch(
@@ -430,24 +439,23 @@ class TestDoCommandApproval:
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
-                "fin_assist.cli.main.run_approve_widget",
-                return_value=ApprovalAction.CANCEL,
-            ) as mock_widget,
+                "fin_assist.cli.main.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CANCELLED, exit_code=0),
+            ) as mock_handle,
         ):
             result = _run_main("do", "shell", "remove temp")
 
-        mock_widget.assert_called_once()
+        mock_handle.assert_called_once()
         assert result == 0
 
-    def test_executes_command_on_approve(self):
+    def test_approval_executed_returns_exit_code(self):
         agent = _make_discovered("shell", requires_approval=True)
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="echo hi"),
         )
 
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
         with (
             _patch_asyncio_run(),
             patch(
@@ -457,14 +465,13 @@ class TestDoCommandApproval:
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
-                "fin_assist.cli.main.run_approve_widget",
-                return_value=ApprovalAction.EXECUTE,
+                "fin_assist.cli.main.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.EXECUTED, exit_code=0),
             ),
-            patch("fin_assist.cli.main.execute_command", return_value=0) as mock_exec,
         ):
             result = _run_main("do", "shell", "say hello")
 
-        mock_exec.assert_called_once_with("echo hi")
         assert result == 0
 
 

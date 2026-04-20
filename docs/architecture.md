@@ -846,6 +846,7 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Step 9: Approval "add context" option for structured output in talk mode
 
 ### Phase 9: Streaming + Integration Tests ⬜ **NEXT**
+
 - [ ] Implement `stream_agent()` in `cli/client.py` using `message/stream` + SSE
 - [ ] Update `cli/interaction/chat.py` to render streaming output progressively
 - [ ] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames

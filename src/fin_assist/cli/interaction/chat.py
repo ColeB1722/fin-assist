@@ -7,13 +7,14 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from fin_assist.cli.display import render_auth_required
 from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
+from fin_assist.cli.interaction.response import PostResponseAction, handle_post_response
 from fin_assist.paths import SESSIONS_DIR
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from fin_assist.agents.metadata import AgentCardMeta
     from fin_assist.cli.client import AgentResult
     from fin_assist.cli.interaction.prompt import SlashCommand
 
@@ -54,6 +55,8 @@ async def run_chat_loop(
     prompt: FinPrompt | None = None,
     *,
     initial_message: str | None = None,
+    show_thinking: bool = False,
+    card_meta: AgentCardMeta | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -65,6 +68,9 @@ async def run_chat_loop(
         prompt: Optional FinPrompt instance for input (created if not provided).
         initial_message: Optional message to send as the first turn before
                         entering the interactive prompt loop.
+        show_thinking: Whether to render agent thinking content.
+        card_meta: Agent capability metadata. When provided, drives widget
+                  selection (approval, warnings, etc.) via the shared pipeline.
 
     Returns:
         The final context_id if the conversation had one.
@@ -114,6 +120,7 @@ async def run_chat_loop(
             console.print("Type /help for available commands")
             continue
 
+        # --- Send message and render response ---
         try:
             result = await send_message_fn(agent_name, user_input, ctx_id)
         except Exception as e:
@@ -122,18 +129,16 @@ async def run_chat_loop(
 
         ctx_id = result.context_id or ctx_id
 
-        if result.metadata.get("auth_required"):
-            render_auth_required(result.output)
+        response = await handle_post_response(
+            result,
+            card_meta,
+            show_thinking=show_thinking,
+            mode="talk",
+        )
+
+        if response.action == PostResponseAction.AUTH_REQUIRED:
             console.print("[dim]Fix credentials and try again.[/dim]")
             break
-
-        if result.success:
-            console.print()
-            console.print(result.output)
-            if result.warnings:
-                console.print(f"[yellow]{' '.join(result.warnings)}[/yellow]")
-        else:
-            console.print(f"[red]Error: {result.output or 'Unknown error'}[/red]")
 
         console.print()
 

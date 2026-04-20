@@ -48,6 +48,7 @@ class AgentResult:
     warnings: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     context_id: str | None = None
+    thinking: list[str] = field(default_factory=list)
 
 
 class HubClient:
@@ -195,14 +196,37 @@ class HubClient:
         """Extract the last agent text from task history.
 
         History includes the user's input message, so this is only used
-        as a fallback when artifacts yield no output.
+        as a fallback when artifacts yield no output.  Thinking parts
+        (tagged via metadata) are skipped.
         """
         for item in reversed(task.get("history") or []):
             for part in item.get("parts", []):
                 match part:
-                    case {"kind": "text", "text": text}:
+                    case {"kind": "text", "text": text} if (
+                        part.get("metadata", {}).get("type") != "thinking"
+                    ):
                         return text
         return ""
+
+    @staticmethod
+    def _extract_thinking(task: Task) -> list[str]:
+        """Extract thinking blocks from agent messages in task history.
+
+        The worker tags thinking parts with ``metadata.type == "thinking"``.
+        Only agent messages are scanned; user messages are skipped.
+        Empty thinking text is also skipped.
+        """
+        thinking: list[str] = []
+        for item in task.get("history") or []:
+            if item.get("role") != "agent":
+                continue
+            for part in item.get("parts", []):
+                match part:
+                    case {"kind": "text", "text": text} if (
+                        part.get("metadata", {}).get("type") == "thinking" and text
+                    ):
+                        thinking.append(text)
+        return thinking
 
     @staticmethod
     def _extract_result(task: Task) -> AgentResult:
@@ -224,6 +248,8 @@ class HubClient:
         if not output:
             output = HubClient._extract_from_history(task)
 
+        thinking = HubClient._extract_thinking(task)
+
         if state == "auth-required":
             metadata["auth_required"] = True
 
@@ -233,6 +259,7 @@ class HubClient:
             warnings=warnings,
             metadata=metadata,
             context_id=context_id,
+            thinking=thinking,
         )
 
     # ------------------------------------------------------------------
