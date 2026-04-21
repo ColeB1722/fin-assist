@@ -6,7 +6,7 @@
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
 >
-> **After the config-driven redesign**: `shell` and `default` are no longer separate Python classes — they're `[agents.shell]` and `[agents.default]` TOML config entries driving a single `ConfigAgent` class. The CLI commands and user experience are the same, but agent behavior is now config-driven.
+> **After the config-driven redesign**: `shell` and `default` are no longer separate Python classes — they're `[agents.shell]` and `[agents.default]` TOML config entries driving a single `AgentSpec` class. The CLI commands and user experience are the same, but agent behavior is now config-driven.
 
 ---
 
@@ -191,4 +191,4 @@ Chunks F and G are NOT YET IMPLEMENTED — skip until Steps 7-8 land.
 - `fin talk` (no agent arg) also resolves to `[agents.default]`.
 - `shell` agent has `serving_modes = ["do"]` — it does not support `talk` mode.
 - `default` agent has `serving_modes = ["do", "talk"]` — it supports both modes.
-- Agent behavior (system prompt, output type, thinking, approval) is driven by TOML config via a single `ConfigAgent` class — no Python subclasses, no ABC.
+- Agent behavior (system prompt, output type, thinking, approval) is driven by TOML config via a single `AgentSpec` class — no Python subclasses, no ABC.

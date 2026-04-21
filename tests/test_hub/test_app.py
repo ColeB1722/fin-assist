@@ -206,7 +206,7 @@ class TestMessageSendEndToEnd:
         assert result_task["status"]["state"] == "TASK_STATE_COMPLETED"
 
         artifacts = result_task.get("artifacts", [])
-        assert len(artifacts) >= 0
+        assert isinstance(artifacts, list)
 
 
 class TestSendStreamingMessageEndToEnd:

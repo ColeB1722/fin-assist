@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-21)**: Backend extraction complete. `AgentSpec` is a pure config object, `Executor` is framework-agnostic, `ContextStore` is `bytes`-in/out. 494 tests passing, CI green.
+**Current state (2026-04-21)**: Backend extraction + cleanup complete. `AgentSpec` is a pure config object (zero framework imports), `Executor` is framework-agnostic, `ContextStore` is `bytes`-in/out, `PydanticAIBackend` uses only public `AgentSpec` API. 489 tests passing, CI green.
 
 ---
 
@@ -57,7 +57,117 @@ class AgentBackend(Protocol):
 7. Update all tests
 8. `just ci` verification
 
-### Client Readability Refactor (2026-04-20)
+### Nix / Home Manager Packaging (2026-04-21)
+
+**Status**: Pre-design — no implementation started.
+
+**Goal**: Make fin-assist installable via Nix and declaratively manageable via Home Manager, integrating with the owner's existing dotfiles-driven setup.
+
+**Why**: The owner's dev environment is fully declarative via Home Manager (`~/dotfiles/home.nix`). fin-assist should be installable the same way as every other tool, with config managed alongside the rest of the dotfiles.
+
+#### Layer 1: PyPI Publishing (prerequisite)
+
+Publish to PyPI so Nix tooling can fetch a known-good sdist/wheel. Without this, `uv2nix` and `nixpkgs buildPythonApplication` have nothing to build from.
+
+Steps:
+1. Ensure `pyproject.toml` has correct metadata (description, classifiers, license, URLs)
+2. Add CI workflow for publishing on tag push (`uv publish`)
+3. Publish v0.1.0 to PyPI (or TestPyPI first)
+
+#### Layer 2: Nix Flake
+
+Two viable approaches:
+
+| Approach | How | Pros | Cons |
+|----------|-----|------|------|
+| **`uv2nix`** | Locks `uv.lock` into Nix derivations | Most idiomatic for Python+nix; already uses `uv`; reproducible lockfile | Requires `uv2nix` + `pyproject.nix` in flake inputs; more moving parts |
+| **`nixpkgs buildPythonApplication`** | Fetches from PyPI | Simpler overlay; familiar pattern | Requires PyPI publish first; dependency resolution via nixpkgs may lag |
+
+Recommendation: **`uv2nix`** — the project already uses `uv` and `devenv`, so `uv2nix` is the natural fit. It produces a `python313Packages.fin-assist` derivation from the lockfile.
+
+Flake structure:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+    uv2nix.url = "github:pyproject-nix/uv2nix";
+    # ...
+  };
+  outputs = { nixpkgs, pyproject-nix, uv2nix, ... }@inputs: {
+    packages.x86_64-linux.fin-assist = ...;  # uv2nix derivation
+    overlays.default = final: prev: { fin-assist = ...; };
+  };
+}
+```
+
+#### Layer 3: Home Manager Module
+
+A `programs.fin-assist` module for declarative config + service management:
+
+```nix
+# In home.nix
+programs.fin-assist = {
+  enable = true;
+
+  settings = {
+    general.default_provider = "anthropic";
+    general.default_model = "claude-sonnet-4-6";
+
+    agents.default = {
+      enabled = true;
+      system_prompt = "chain-of-thought";
+      output_type = "text";
+      thinking = "medium";
+      serving_modes = ["do" "talk"];
+    };
+
+    agents.shell = {
+      enabled = true;
+      system_prompt = "shell";
+      output_type = "command";
+      thinking = null;
+      serving_modes = ["do"];
+      requires_approval = true;
+    };
+  };
+
+  # Optional: run hub server as systemd user service
+  server = {
+    enable = true;           # auto-start on login
+    port = 4096;
+  };
+
+  # Optional: fish plugin (when Phase 12 lands)
+  fishIntegration.enable = true;
+};
+```
+
+**Module implementation** would generate:
+- `~/.config/fin/config.toml` from `settings` (Nix → TOML via `formats.toml`)
+- `~/.local/share/fin/` data directory (via `xdg.dataFile` or `systemd.tmpfiles`)
+- `systemd.user.services.fin-assist-hub` if `server.enable = true`
+- Fish plugin files if `fishIntegration.enable = true`
+
+**Credential handling**: API keys stay out of the Nix store (they're secrets). The module would document using `CredentialStore` file or env vars post-install, or integrate with the owner's 1Password CLI setup via `secretspec`.
+
+#### Open Questions
+
+| Question | Notes |
+|----------|-------|
+| PyPI package name | `fin-assist` (matches CLI) or `fin_assist` (matches Python package)? Most tools use the dash form on PyPI |
+| Flake location | Standalone flake in this repo, or add to `~/dotfiles/flake.nix` as an overlay? |
+| Versioning | Start PyPI publishes at `0.1.0` or wait until a stable feature set? |
+| uv2nix vs nixpkgs | Verify `uv2nix` handles `a2a-sdk` and `pydantic-ai` dependency chains correctly before committing |
+| Config validation | Nix → TOML generation needs to match `Config` schema exactly; consider generating from the same schema |
+
+#### Dependencies
+
+- PyPI publish must come first (for `nixpkgs` approach) or be done in parallel (for `uv2nix` which builds from source)
+- Fish plugin module depends on Phase 12
+- systemd service for hub server is independent — can ship as soon as packaging works
 
 ---
 
@@ -121,9 +231,7 @@ CI green (fmt, lint, typecheck, all tests)
 
 ### Next Steps
 
-- Remove `build_pydantic_agent()` and `build_model()` from `AgentSpec` (currently still present but not called by Executor; only called by their own tests and `PydanticAIBackend` internally via `_spec` attribute access)
-- Add properties to `AgentSpec` for config fields that `PydanticAIBackend` accesses via private attributes (`_agent_config.thinking`, `_config.general.default_model`, etc.)
-- Consider removing the old `TestAgentSpecBuildPydanticAgent` and `TestAgentSpecBuildModel` test classes since those methods are now on the backend
+- None remaining from backend extraction — all cleanup complete
 
 ---
 
@@ -1279,6 +1387,7 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | **CLI REPL Mode** | ✅ Complete |
 | — | **Config-Driven Redesign** | ✅ Steps 1-6 complete, Steps 7-9 pending |
+| — | **Backend Extraction** | ✅ Complete — AgentSpec pure config, Executor framework-agnostic |
 | 9a | **Progressive Output (polling)** | ↩️ Reverted — jank, tight coupling to pydantic-ai internals |
 | 9b | Full SSE Streaming | ⬜ **Blocked** (fasta2a v0.7+ unreleased) |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
@@ -1417,12 +1526,13 @@ To quickly get context in a new session:
 - Config stored in `~/.config/fin/config.toml`
 - Credentials stored in `~/.local/share/fin/credentials.json` (0600 permissions)
 - Server binds to `127.0.0.1` only (local-only)
-- A2A protocol via fasta2a for multi-client support
+- A2A protocol via a2a-sdk v1.0 for multi-client support
 - Multi-path routing: N agents at `/agents/{name}/`, each with own agent card
 - Conversation threading via A2A `context_id`
-- SQLite for task + context storage (shared across agents)
-- Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI deferred
+- SQLite for context storage; InMemoryTaskStore for A2A tasks (ephemeral)
+- Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI
 - Existing TUI widgets set aside — will become A2A client in Phase 11
+- `AgentSpec` is a pure config object (zero framework imports); all LLM coupling in `PydanticAIBackend`
 
 ---
 

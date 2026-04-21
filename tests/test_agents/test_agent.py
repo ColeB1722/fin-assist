@@ -378,7 +378,7 @@ class TestAgentSpecGetApiKey:
 class TestAgentSpecConfigProperties:
     def test_thinking_from_config(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent.thinking is not None
+        assert agent.thinking == "medium"
 
     def test_thinking_off(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)

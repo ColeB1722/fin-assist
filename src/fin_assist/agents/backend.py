@@ -32,6 +32,7 @@ from a2a.types import Part
 from google.protobuf.struct_pb2 import Struct, Value
 from pydantic import TypeAdapter
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelRequestPart,
     ModelResponse,
@@ -43,6 +44,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import TextPart as PydanticTextPart
 
 from fin_assist.agents.metadata import MissingCredentialsError
+
+_message_ta = TypeAdapter(list[ModelMessage])
 
 if TYPE_CHECKING:
     from fin_assist.agents.agent import AgentSpec
@@ -70,9 +73,6 @@ class AgentBackend(Protocol):
     def deserialize_history(self, data: bytes) -> list[Any]: ...
     def convert_result_to_part(self, result: Any) -> Part: ...
     def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
-
-
-_context_ta = TypeAdapter(list[Any])
 
 
 class _PydanticAIStreamHandle:
@@ -156,16 +156,10 @@ class PydanticAIBackend:
         )
 
     def serialize_history(self, messages: list[Any]) -> bytes:
-        from pydantic_ai import ModelMessage as MM
-
-        ta = TypeAdapter(list[MM])
-        return ta.dump_json(messages)
+        return _message_ta.dump_json(messages)
 
     def deserialize_history(self, data: bytes) -> list[Any]:
-        from pydantic_ai import ModelMessage as MM
-
-        ta = TypeAdapter(list[MM])
-        return ta.validate_json(data)
+        return _message_ta.validate_json(data)
 
     def convert_result_to_part(self, result: Any) -> Part:
         if isinstance(result, str):
@@ -230,6 +224,9 @@ class PydanticAIBackend:
         default_model = self._spec.default_model
         enabled_providers = self._spec.get_enabled_providers()
 
+        if not enabled_providers:
+            raise MissingCredentialsError(providers=["No providers enabled"])
+
         if len(enabled_providers) == 1:
             provider_name = enabled_providers[0]
             model_name = self._spec.get_model_name(provider_name, default_model)
@@ -290,4 +287,8 @@ class PydanticAIBackend:
                 model_parts.append(PydanticTextPart(content=part.text))
             elif part.HasField("data"):
                 raise NotImplementedError("Data parts in responses are not supported yet.")
+            elif part.url:
+                raise NotImplementedError("URL parts in responses are not supported yet.")
+            elif part.raw:
+                raise NotImplementedError("Binary parts in responses are not supported yet.")
         return model_parts

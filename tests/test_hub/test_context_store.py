@@ -8,11 +8,6 @@ from fin_assist.hub.context_store import ContextStore
 
 
 @pytest.fixture
-def store(tmp_path) -> ContextStore:
-    return ContextStore(db_path=str(tmp_path / "test.db"))
-
-
-@pytest.fixture
 def in_memory_store() -> ContextStore:
     return ContextStore(db_path=":memory:")
 
