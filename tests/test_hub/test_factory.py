@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from fin_assist.agents.agent import AgentSpec
+from fin_assist.agents.spec import AgentSpec
 from fin_assist.config.schema import AgentConfig
 from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory

@@ -16,7 +16,7 @@ from fin_assist.hub.app import create_hub_app
 
 @pytest.fixture
 def mock_agents(mock_config, mock_credentials):
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
     from fin_assist.agents.backend import PydanticAIBackend
     from fin_assist.config.schema import AgentConfig
 

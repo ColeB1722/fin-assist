@@ -22,7 +22,7 @@ not Python inheritance.
 Usage::
 
     from fin_assist.config.schema import AgentConfig
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
 
     cfg = AgentConfig(system_prompt="shell", output_type="command", serving_modes=["do"])
     agent = AgentSpec(name="shell", agent_config=cfg, config=config, credentials=creds)

@@ -126,7 +126,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     import errno
     import socket
 
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
     from fin_assist.credentials.store import CredentialStore
     from fin_assist.hub.pidfile import acquire as acquire_pidfile
     from fin_assist.paths import PID_FILE

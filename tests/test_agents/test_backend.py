@@ -12,7 +12,7 @@ from pydantic import TypeAdapter
 from pydantic_ai import ModelRequest, UserPromptPart
 from pydantic_ai.messages import ModelResponse, TextPart as PydanticTextPart
 
-from fin_assist.agents.agent import AgentSpec
+from fin_assist.agents.spec import AgentSpec
 from fin_assist.agents.backend import (
     AgentBackend,
     PydanticAIBackend,

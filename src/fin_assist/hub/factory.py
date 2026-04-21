@@ -38,7 +38,7 @@ from fin_assist.agents.backend import PydanticAIBackend
 from fin_assist.hub.executor import Executor
 
 if TYPE_CHECKING:
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
     from fin_assist.hub.context_store import ContextStore
 
 

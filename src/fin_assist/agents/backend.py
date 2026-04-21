@@ -48,7 +48,7 @@ from fin_assist.agents.metadata import MissingCredentialsError
 _message_ta = TypeAdapter(list[ModelMessage])
 
 if TYPE_CHECKING:
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
 
 
 @dataclass

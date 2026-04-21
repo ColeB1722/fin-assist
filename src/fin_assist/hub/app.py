@@ -26,7 +26,7 @@ from fin_assist.hub.factory import AgentFactory
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.spec import AgentSpec
 
 
 def _extract_card_meta(sub_app: FastAPI) -> dict:
