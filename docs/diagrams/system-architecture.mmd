@@ -17,9 +17,20 @@ graph TD
             F["/{name}/<br/>future agents"]
         end
 
-        EXEC["FinAssistExecutor<br/>AgentExecutor + TaskUpdater"]
+        FACTORY["AgentFactory<br/>AgentSpec → FastAPI sub-app"]
+        EXEC["Executor<br/>AgentExecutor + TaskUpdater"]
         TS["InMemoryTaskStore<br/>ephemeral (a2a-sdk)"]
-        CS["ContextStore<br/>SQLite — conversation history"]
+        CS["ContextStore<br/>SQLite — opaque bytes"]
+    end
+
+    subgraph "Backend Layer"
+        BEH["«protocol» AgentBackend"]
+        PAI["PydanticAIBackend<br/>pydantic-ai Agent · FallbackModel"]
+        SH["StreamHandle<br/>async iter (deltas) + result()"]
+    end
+
+    subgraph "Agent Specification"
+        SPEC["AgentSpec<br/>pure config — zero framework deps"]
     end
 
     subgraph "Shared Services"
@@ -29,15 +40,21 @@ graph TD
         REG["ProviderRegistry<br/>LLM providers"]
     end
 
-    LLM["pydantic-ai → LLM Providers"]
+    LLM["LLM Providers<br/>Anthropic · OpenAI · OpenRouter · Google"]
 
     CLI --> RPC
     TUI --> RPC
     RPC --> HUB
-    HUB --> D & S & F
+    HUB --> FACTORY
+    FACTORY --> D & S & F
     D & S & F --> EXEC
-    EXEC --> LLM
+    EXEC -->|"delegates LLM work"| BEH
+    BEH -.->|"implemented by"| PAI
+    PAI --> SH
+    PAI --> LLM
+    PAI --> REG
     EXEC --> TS & CS
-    LLM --> CREDS & REG
+    PAI --> SPEC
     EXEC --> CTXP
     HUB -.-> CONFIG
+    SPEC --> CREDS & CONFIG

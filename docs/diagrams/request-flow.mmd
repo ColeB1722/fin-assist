@@ -1,18 +1,54 @@
 sequenceDiagram
     participant C as CLI Client
     participant H as Agent Hub
-    participant E as FinAssistExecutor
-    participant L as pydantic-ai / LLM
+    participant E as Executor
+    participant B as AgentBackend
+    participant SH as StreamHandle
+    participant CS as ContextStore
+    participant LLM as LLM Provider
 
     C->>H: SendStreamingMessage (JSON-RPC + SSE)
-    H->>E: execute(context, task_updater)
+    H->>E: execute(context, event_queue)
     E->>E: Task enqueued (SUBMITTED)
     E->>E: updater.start_work() → WORKING
-    E->>L: agent.run_stream(prompt, context)
-    loop Token-by-token
-        L-->>E: text delta
-        E-->>H: updater.add_artifact(append=true)
-        H-->>C: SSE: TaskArtifactUpdateEvent
+
+    E->>B: check_credentials()
+    B-->>E: [] (all present) or missing providers
+
+    alt Credentials missing
+        E->>E: updater.requires_auth() → AUTH_REQUIRED
+        H-->>C: SSE: TaskStatusUpdateEvent (auth_required)
+    else Credentials present
+        E->>CS: load(context_id)
+        CS-->>E: bytes or None
+        E->>B: deserialize_history(bytes)
+        B-->>E: message_history
+
+        E->>B: convert_history(a2a_messages)
+        B-->>E: framework messages
+
+        E->>B: run_stream(messages, model)
+        B-->>E: StreamHandle
+
+        loop Token-by-token
+            E->>SH: async for delta
+            SH-->>E: text delta
+            E->>H: updater.add_artifact(append=true)
+            H-->>C: SSE: TaskArtifactUpdateEvent
+        end
+
+        E->>SH: await result()
+        SH-->>E: RunResult (output, serialized_history, new_message_parts)
+
+        E->>CS: save(context_id, serialized_history)
+
+        alt Structured output (non-str)
+            E->>B: convert_result_to_part(output)
+            B-->>E: Part (data + json_schema)
+            E->>H: updater.add_artifact(structured)
+            H-->>C: SSE: TaskArtifactUpdateEvent (structured)
+        end
+
+        E->>E: updater.complete() → COMPLETED
+        H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
     end
-    E->>E: updater.complete() → COMPLETED
-    H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
