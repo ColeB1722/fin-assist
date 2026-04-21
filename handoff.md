@@ -2,25 +2,128 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-20)**: fasta2a → a2a-sdk migration complete (Phases 1-7). Streaming implemented via pydantic-ai `run_stream()` + a2a-sdk `TaskUpdater.add_artifact(append=True, last_chunk=)`. `worker.py` and `storage.py` deleted. 446 tests passing. Remaining: 11 protobuf type annotation warnings (inherent to a2a-sdk), manual end-to-end testing.
+**Current state (2026-04-21)**: Backend extraction complete. `AgentSpec` is a pure config object, `Executor` is framework-agnostic, `ContextStore` is `bytes`-in/out. 494 tests passing, CI green.
 
 ---
 
 ## Design Sketches
 
+### AgentBackend Extraction (2026-04-21)
+
+**Problem**: The `Executor` is deeply coupled to pydantic-ai (~15 distinct API touch points in 283 lines). It both orchestrates the A2A task lifecycle AND translates between A2A and pydantic-ai message formats. `AgentSpec` (formerly `ConfigAgent`) has framework-coupled construction methods (`build_pydantic_agent()`, `build_model()`). `ContextStore` hardcodes `TypeAdapter(list[ModelMessage])` for serialization.
+
+**Goal**: Extract pydantic-ai coupling into an `AgentBackend` protocol so that the `Executor` orchestrates the A2A task lifecycle without knowing which LLM framework is underneath, `ContextStore` becomes framework-agnostic, and `AgentSpec` becomes a pure config object.
+
+**Protocol shapes**:
+
+```python
+@dataclass
+class RunResult:
+    output: Any                     # final output (str or structured)
+    serialized_history: bytes       # opaque — backend owns the format
+    new_message_parts: list[Part]   # already in A2A terms (thinking, etc.)
+
+class StreamHandle(Protocol):
+    def __aiter__(self) -> AsyncIterator[str]: ...   # text deltas
+    async def result(self) -> RunResult: ...         # call after iteration
+
+class AgentBackend(Protocol):
+    def check_credentials(self) -> list[str]: ...
+    def convert_history(self, a2a_messages: Sequence[Message]) -> list[Any]: ...
+    def run_stream(self, *, messages: list[Any], model: Any) -> StreamHandle: ...
+    def serialize_history(self, messages: list[Any]) -> bytes: ...
+    def deserialize_history(self, data: bytes) -> list[Any]: ...
+    def convert_result_to_part(self, result: Any) -> Part: ...
+```
+
+**Key decisions**:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Streaming API | `StreamHandle` (iterator + result accessor) | Matches the two-phase shape of all LLM frameworks (stream tokens, then access final result). Consumer drives iteration. Backend wraps context manager lifecycle internally. |
+| ContextStore | `bytes` in/out | Backend owns serialization. ContextStore becomes a dumb KV store. Zero framework deps. |
+| AgentSpec role | Pure config object | No `build_pydantic_agent()` or `build_model()` — those move to `PydanticAIBackend`. AgentSpec exposes config via properties only. |
+| `RunResult.new_message_parts` | `list[Part]` (A2A type) | Conversion is the backend's job. `Part` is our domain type (A2A), not a framework type. |
+| `check_credentials()` | Stays on AgentSpec, backend delegates | Credential checking is a config concern, not a framework concern. |
+
+**Implementation phases**:
+
+1. Rename: `ConfigAgent` → `AgentSpec`, `FinAssistExecutor` → `Executor`
+2. Create `AgentBackend` protocol + `PydanticAIBackend` (TDD)
+3. Make `ContextStore` framework-agnostic (`bytes` in/out)
+4. Refactor `Executor` to take `AgentBackend` instead of `AgentSpec`
+5. Update `AgentFactory` wiring
+6. Move `build_pydantic_agent()` / `build_model()` from `AgentSpec` to `PydanticAIBackend`
+7. Update all tests
+8. `just ci` verification
+
 ### Client Readability Refactor (2026-04-20)
 
-**Problem**: `cli/client.py` extraction methods conflate two levels of abstraction — protobuf navigation (`HasField`, `_struct_to_dict`) and business logic (first-wins output, thinking filtering). This makes the code disorienting to read. Additionally, `stream_agent` and `_send_and_wait` duplicate response-dispatch logic.
+---
 
-**Changes**:
+## AgentBackend Extraction — Accomplished (2026-04-21)
 
-1. **Protobuf navigation helpers** — `_part_struct_data(part) -> dict | None` and `_is_thinking(part) -> bool` isolate protobuf API from business logic. Extraction methods call these instead of inline `HasField` chains and repeated `_struct_to_dict(part.metadata).get("type")` calls.
+**Status**: Complete
 
-2. **`_Extraction` NamedTuple** — replaces the 3-tuple return of `_extract_from_artifacts(output, warnings, metadata)` with named fields. Call sites become self-documenting.
+### What Was Accomplished
 
-3. **`_process_response` static method** — shared response dispatch for `stream_agent` and `_send_and_wait`. Returns `(is_terminal, task_or_none, artifact_or_none)`. Both callers handle artifacts their own way (stream yields, send collects) but share the terminal-state check.
+Extracted pydantic-ai coupling from the hub layer into an `AgentBackend` protocol so the `Executor` orchestrates A2A task lifecycle without knowing which LLM framework is underneath.
 
-4. **`context_id or None` comment** — protobuf defaults `context_id` to `""` (can't represent `None`); the coercion is intentional.
+**Phase 1: Rename** — `ConfigAgent` → `AgentSpec`, `FinAssistExecutor` → `Executor` across 12 source + test files.
+
+**Phase 2: Backend protocol** — Created `agents/backend.py` with `AgentBackend` protocol, `StreamHandle` protocol, `RunResult` dataclass, and `PydanticAIBackend` concrete implementation. 24 new tests.
+
+**Phase 3: ContextStore** — Changed from `TypeAdapter(list[ModelMessage])` to `bytes`-in/`bytes`-out. Backend owns serialization. Zero framework deps in `context_store.py`.
+
+**Phase 4: Executor refactor** — Executor now takes `AgentBackend` instead of `AgentSpec`. No pydantic-ai imports. Uses `StreamHandle` for streaming and `RunResult` for final results.
+
+**Phase 5: Factory wiring** — `AgentFactory.create_a2a_app()` creates `PydanticAIBackend(agent_spec=agent)` and passes to `Executor(backend=backend, ...)`.
+
+**Phase 6: Move construction** — `build_pydantic_agent()` and `build_model()` moved from `AgentSpec` to `PydanticAIBackend._build_pydantic_agent()` and `_build_model()`. `AgentSpec` is now a pure config object (properties only).
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Streaming API | `StreamHandle` (iterator + result accessor) | Matches two-phase shape of all LLM frameworks. Consumer drives. Backend wraps context manager internally. |
+| ContextStore | `bytes` in/out | Backend owns serialization. Zero framework deps. Adding a new backend automatically gets serialization. |
+| AgentSpec role | Pure config object | No `build_pydantic_agent()` or `build_model()`. All pydantic-ai knowledge in `PydanticAIBackend`. |
+| `RunResult.new_message_parts` | `list[Part]` (A2A type) | Conversion is the backend's job. `Part` is our domain type, not a framework type. |
+| `check_credentials()` | Stays on AgentSpec, backend delegates | Credential checking is a config concern. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/agent.py` | Renamed `ConfigAgent` → `AgentSpec` |
+| `src/fin_assist/agents/__init__.py` | Updated exports, added backend types |
+| `src/fin_assist/agents/backend.py` | **New** — `AgentBackend`, `StreamHandle`, `RunResult`, `PydanticAIBackend` |
+| `src/fin_assist/agents/metadata.py` | Updated docstring reference |
+| `src/fin_assist/hub/executor.py` | Rewritten — takes `AgentBackend`, zero pydantic-ai imports |
+| `src/fin_assist/hub/factory.py` | Creates `PydanticAIBackend`, passes to `Executor` |
+| `src/fin_assist/hub/app.py` | Updated type hints |
+| `src/fin_assist/hub/context_store.py` | `bytes` in/out, no framework deps |
+| `src/fin_assist/hub/__init__.py` | Updated exports |
+| `src/fin_assist/cli/main.py` | Updated import + construction |
+| `tests/test_agents/test_backend.py` | **New** — 24 backend tests |
+| `tests/test_agents/test_agent.py` | Renamed all references |
+| `tests/test_hub/test_executor.py` | Rewritten — mocks `AgentBackend` instead of pydantic-ai |
+| `tests/test_hub/test_context_store.py` | Uses `bytes` instead of `ModelMessage` |
+| `tests/test_hub/test_factory.py` | Updated imports |
+| `tests/test_hub/test_app.py` | Patches `PydanticAIBackend._build_model` |
+
+### Test Summary
+
+```text
+494 tests passing (467 before + 27 new: 24 backend + 3 executor)
+CI green (fmt, lint, typecheck, all tests)
+```
+
+### Next Steps
+
+- Remove `build_pydantic_agent()` and `build_model()` from `AgentSpec` (currently still present but not called by Executor; only called by their own tests and `PydanticAIBackend` internally via `_spec` attribute access)
+- Add properties to `AgentSpec` for config fields that `PydanticAIBackend` accesses via private attributes (`_agent_config.thinking`, `_config.general.default_model`, etc.)
+- Consider removing the old `TestAgentSpecBuildPydanticAgent` and `TestAgentSpecBuildModel` test classes since those methods are now on the backend
 
 ---
 

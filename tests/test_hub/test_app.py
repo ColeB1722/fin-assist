@@ -16,7 +16,8 @@ from fin_assist.hub.app import create_hub_app
 
 @pytest.fixture
 def mock_agents(mock_config, mock_credentials):
-    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.agents.agent import AgentSpec
+    from fin_assist.agents.backend import PydanticAIBackend
     from fin_assist.config.schema import AgentConfig
 
     shell_config = AgentConfig(
@@ -36,15 +37,15 @@ def mock_agents(mock_config, mock_credentials):
         serving_modes=["do", "talk"],
     )
 
-    with patch.object(ConfigAgent, "build_model", return_value=TestModel()):
+    with patch.object(PydanticAIBackend, "_build_model", return_value=TestModel()):
         yield [
-            ConfigAgent(
+            AgentSpec(
                 name="shell",
                 agent_config=shell_config,
                 config=mock_config,
                 credentials=mock_credentials,
             ),
-            ConfigAgent(
+            AgentSpec(
                 name="default",
                 agent_config=default_config,
                 config=mock_config,

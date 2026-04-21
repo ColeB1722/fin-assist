@@ -1,7 +1,7 @@
 """Agent metadata types: AgentCardMeta, AgentResult, MissingCredentialsError, ServingMode.
 
 These types are used across the hub, CLI, and worker — they have no dependency
-on the ConfigAgent class itself, so they live in their own module to avoid
+on the AgentSpec class itself, so they live in their own module to avoid
 circular imports.
 """
 

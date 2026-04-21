@@ -26,7 +26,7 @@ from fin_assist.hub.factory import AgentFactory
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.agents.agent import AgentSpec
 
 
 def _extract_card_meta(sub_app: FastAPI) -> dict:
@@ -41,14 +41,14 @@ def _extract_card_meta(sub_app: FastAPI) -> dict:
 
 
 def create_hub_app(
-    agents: Sequence[ConfigAgent] | None = None,
+    agents: Sequence[AgentSpec] | None = None,
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
 ) -> FastAPI:
     """Build and return the parent FastAPI hub application.
 
     Args:
-        agents:   List of initialised ``ConfigAgent`` instances to mount.
+        agents:   List of initialised ``AgentSpec`` instances to mount.
                   If ``None`` an empty hub is created.
         db_path:  SQLite database path for conversation context storage.
                   Defaults to ``":memory:"`` (tests); production should

@@ -1,26 +1,18 @@
 """SQLite-backed conversation context store.
 
-Stores per-context-id conversation history (``list[ModelMessage]``) in a
+Stores per-context-id conversation history as opaque ``bytes`` in a
 local SQLite database.  Shared across all mounted agents on the hub, with
 ``context_id`` naturally scoping conversations per agent path.
 
-A2A task storage is handled by ``a2a-sdk``'s ``InMemoryTaskStore``; this
-module owns the pydantic-ai message history that persists across tasks
-within a conversation.
-
-The ``ModelMessage`` objects are pydantic dataclass instances, not plain
-dicts, so we use pydantic's ``TypeAdapter`` for JSON serialisation instead
-of ``json.dumps``.
+Serialization is the backend's responsibility — the store has no framework
+dependencies.  A2A task storage is handled by ``a2a-sdk``'s
+``InMemoryTaskStore``; this module owns the opaque blobs that persist
+across tasks within a conversation.
 """
 
 from __future__ import annotations
 
 import sqlite3
-
-from pydantic import TypeAdapter
-from pydantic_ai import ModelMessage
-
-_context_ta = TypeAdapter(list[ModelMessage])
 
 
 class ContextStore:
@@ -44,15 +36,15 @@ class ContextStore:
                 """
                 CREATE TABLE IF NOT EXISTS contexts (
                     context_id  TEXT PRIMARY KEY,
-                    data        TEXT NOT NULL
+                    data        BLOB NOT NULL
                 )
                 """
             )
             self._conn.commit()
         return self._conn
 
-    async def load(self, context_id: str) -> list[ModelMessage] | None:
-        """Load conversation history for the given context ID.
+    async def load(self, context_id: str) -> bytes | None:
+        """Load serialized conversation history for the given context ID.
 
         Returns ``None`` if no history exists for this context.
         """
@@ -62,16 +54,16 @@ class ContextStore:
         ).fetchone()
         if row is None:
             return None
-        return _context_ta.validate_json(row["data"])
+        return bytes(row["data"])
 
-    async def save(self, context_id: str, messages: list[ModelMessage]) -> None:
-        """Save (upsert) conversation history for the given context ID."""
+    async def save(self, context_id: str, data: bytes) -> None:
+        """Save (upsert) serialized conversation history for the given context ID."""
         conn = self._get_conn()
         conn.execute(
             """
             INSERT INTO contexts (context_id, data) VALUES (?, ?)
             ON CONFLICT(context_id) DO UPDATE SET data = excluded.data
             """,
-            (context_id, _context_ta.dump_json(messages).decode()),
+            (context_id, data),
         )
         conn.commit()

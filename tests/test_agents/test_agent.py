@@ -1,21 +1,18 @@
-"""Tests for ConfigAgent — the single config-driven agent class."""
+"""Tests for AgentSpec — the single config-driven agent specification class."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-from pydantic_ai import Agent as PydanticAgent
-
-from fin_assist.agents.agent import ConfigAgent
+from fin_assist.agents.agent import AgentSpec
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult, MissingCredentialsError
 from fin_assist.agents.results import CommandResult
 from fin_assist.config.schema import AgentConfig
 from fin_assist.context.base import ContextType
 
 
-def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_default_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="default",
         agent_config=AgentConfig(
             description="Default agent",
@@ -27,8 +24,8 @@ def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
     )
 
 
-def _make_shell_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_shell_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="shell",
         agent_config=AgentConfig(
             description="Shell agent",
@@ -130,10 +127,10 @@ class TestMissingCredentialsError:
         assert "ANTHROPIC_API_KEY" in msg
 
 
-# -- ConfigAgent property tests -----------------------------------------------
+# -- AgentSpec property tests -----------------------------------------------
 
 
-class TestConfigAgentProperties:
+class TestAgentSpecProperties:
     def test_default_name(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
         assert agent.name == "default"
@@ -147,7 +144,7 @@ class TestConfigAgentProperties:
         assert agent.description == "Default agent"
 
     def test_description_fallback_when_empty(self, mock_config, mock_credentials) -> None:
-        agent = ConfigAgent(
+        agent = AgentSpec(
             name="test",
             agent_config=AgentConfig(description=""),
             config=mock_config,
@@ -164,7 +161,7 @@ class TestConfigAgentProperties:
         assert "shell" in agent.system_prompt.lower()
 
     def test_system_prompt_passthrough_for_unknown(self, mock_config, mock_credentials) -> None:
-        agent = ConfigAgent(
+        agent = AgentSpec(
             name="custom",
             agent_config=AgentConfig(system_prompt="You are a custom agent."),
             config=mock_config,
@@ -181,10 +178,10 @@ class TestConfigAgentProperties:
         assert agent.output_type is CommandResult
 
 
-# -- ConfigAgent agent_card_metadata tests -------------------------------------
+# -- AgentSpec agent_card_metadata tests -------------------------------------
 
 
-class TestConfigAgentCardMetadata:
+class TestAgentSpecCardMetadata:
     def test_default_serving_modes(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
         assert agent.agent_card_metadata.serving_modes == ["do", "talk"]
@@ -216,10 +213,10 @@ class TestConfigAgentCardMetadata:
         assert agent.agent_card_metadata.tags == ["shell", "one-shot"]
 
 
-# -- ConfigAgent supports_context tests ----------------------------------------
+# -- AgentSpec supports_context tests ----------------------------------------
 
 
-class TestConfigAgentSupportsContext:
+class TestAgentSpecSupportsContext:
     def test_supports_all_context_types_by_default(
         self, mock_config, mock_credentials, expected_context_types
     ) -> None:
@@ -232,47 +229,10 @@ class TestConfigAgentSupportsContext:
         assert agent.supports_context("unknown_type") is False
 
 
-# -- ConfigAgent build_pydantic_agent tests ------------------------------------
+# -- AgentSpec credential check tests ----------------------------------------
 
 
-class TestConfigAgentBuildPydanticAgent:
-    def test_returns_pydantic_agent(self, mock_config, mock_credentials) -> None:
-        agent = _make_default_agent(mock_config, mock_credentials)
-        built = agent.build_pydantic_agent()
-        assert isinstance(built, PydanticAgent)
-
-    def test_with_thinking(self, mock_config, mock_credentials) -> None:
-        from pydantic_ai.capabilities import Thinking
-
-        agent = _make_default_agent(mock_config, mock_credentials)
-        built = agent.build_pydantic_agent()
-        caps = built._root_capability.capabilities
-        assert len(caps) == 1
-        assert isinstance(caps[0], Thinking)
-
-    def test_no_thinking_when_off(self, mock_config, mock_credentials) -> None:
-        agent = _make_shell_agent(mock_config, mock_credentials)
-        built = agent.build_pydantic_agent()
-        assert not built._root_capability.capabilities
-
-    @pytest.mark.parametrize("effort", ["off", None])
-    def test_thinking_off_means_no_capabilities(
-        self, mock_config, mock_credentials, effort
-    ) -> None:
-        agent = ConfigAgent(
-            name="test",
-            agent_config=AgentConfig(thinking=effort),
-            config=mock_config,
-            credentials=mock_credentials,
-        )
-        built = agent.build_pydantic_agent()
-        assert not built._root_capability.capabilities
-
-
-# -- ConfigAgent credential check tests ----------------------------------------
-
-
-class TestConfigAgentCheckCredentials:
+class TestAgentSpecCheckCredentials:
     def test_returns_empty_when_all_keys_present(self, mock_config, mock_credentials) -> None:
         mock_config.general.default_provider = "anthropic"
         mock_config.providers = {}
@@ -333,98 +293,17 @@ class TestConfigAgentCheckCredentials:
         assert agent.check_credentials() == []
 
 
-# -- ConfigAgent build_model tests ---------------------------------------------
+# -- AgentSpec get_enabled_providers tests ------------------------------------
 
 
-class TestConfigAgentBuildModel:
-    def test_uses_single_model_when_no_fallback(self, mock_config, mock_credentials) -> None:
-        mock_model = MagicMock()
-
-        with patch(
-            "fin_assist.llm.model_registry.ProviderRegistry.create_model", return_value=mock_model
-        ):
-            agent = _make_default_agent(mock_config, mock_credentials)
-            result = agent.build_model()
-            assert result is mock_model
-
-    def test_uses_fallback_when_multiple_providers_enabled(
-        self, mock_config, mock_credentials
-    ) -> None:
-        mock_config.providers = {"openai": MagicMock(enabled=True)}
-        mock_credentials.get_api_key.side_effect = lambda p: {
-            "anthropic": "key1",
-            "openai": "key2",
-        }.get(p)
-
-        mock_model1 = MagicMock()
-        mock_model2 = MagicMock()
-
-        with patch("fin_assist.llm.model_registry.ProviderRegistry.create_model") as mock_create:
-            mock_create.side_effect = [mock_model1, mock_model2]
-
-            with patch("pydantic_ai.models.fallback.FallbackModel") as mock_fallback_class:
-                mock_fallback_instance = MagicMock()
-                mock_fallback_class.return_value = mock_fallback_instance
-
-                agent = _make_default_agent(mock_config, mock_credentials)
-                result = agent.build_model()
-
-                assert result is mock_fallback_instance
-                mock_fallback_class.assert_called_once_with(mock_model1, mock_model2)
-
-    def test_raises_when_credentials_missing(self, mock_config, mock_credentials) -> None:
-        mock_config.general.default_provider = "anthropic"
-        mock_config.general.default_model = "claude-sonnet-4-6"
-        mock_config.providers = {}
-        mock_credentials.get_api_key.return_value = None
-
-        agent = _make_default_agent(mock_config, mock_credentials)
-        with pytest.raises(MissingCredentialsError) as exc_info:
-            agent.build_model()
-        assert "anthropic" in exc_info.value.providers
-
-    def test_does_not_raise_when_credentials_present(self, mock_config, mock_credentials) -> None:
-        mock_config.general.default_provider = "anthropic"
-        mock_config.general.default_model = "claude-sonnet-4-6"
-        mock_config.providers = {}
-        mock_credentials.get_api_key.return_value = "sk-test"
-
-        agent = _make_default_agent(mock_config, mock_credentials)
-        mock_registry = MagicMock()
-        mock_registry.create_model.return_value = MagicMock()
-
-        with patch.object(agent, "_get_registry", return_value=mock_registry):
-            model = agent.build_model()
-        assert model is not None
-
-
-# -- _get_registry tests ------------------------------------------------------
-
-
-class TestGetRegistry:
-    def test_returns_provider_registry_instance(self, mock_config, mock_credentials) -> None:
-        from fin_assist.llm.model_registry import ProviderRegistry
-
-        agent = _make_default_agent(mock_config, mock_credentials)
-        registry = agent._get_registry()
-        assert isinstance(registry, ProviderRegistry)
-
-    def test_returns_same_instance_on_repeated_calls(self, mock_config, mock_credentials) -> None:
-        agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent._get_registry() is agent._get_registry()
-
-
-# -- _get_enabled_providers tests ---------------------------------------------
-
-
-class TestGetEnabledProviders:
+class TestAgentSpecGetEnabledProviders:
     def test_returns_default_provider_when_no_others_configured(
         self, mock_config, mock_credentials
     ) -> None:
         mock_config.general.default_provider = "anthropic"
         mock_config.providers = {}
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent._get_enabled_providers() == ["anthropic"]
+        assert agent.get_enabled_providers() == ["anthropic"]
 
     def test_includes_enabled_additional_providers(self, mock_config, mock_credentials) -> None:
         mock_config.general.default_provider = "anthropic"
@@ -432,7 +311,7 @@ class TestGetEnabledProviders:
         extra.enabled = True
         mock_config.providers = {"openrouter": extra}
         agent = _make_default_agent(mock_config, mock_credentials)
-        providers = agent._get_enabled_providers()
+        providers = agent.get_enabled_providers()
         assert "anthropic" in providers
         assert "openrouter" in providers
 
@@ -442,7 +321,7 @@ class TestGetEnabledProviders:
         extra.enabled = False
         mock_config.providers = {"openrouter": extra}
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert "openrouter" not in agent._get_enabled_providers()
+        assert "openrouter" not in agent.get_enabled_providers()
 
     def test_default_provider_not_duplicated(self, mock_config, mock_credentials) -> None:
         mock_config.general.default_provider = "anthropic"
@@ -450,29 +329,71 @@ class TestGetEnabledProviders:
         anthropic_cfg.enabled = True
         mock_config.providers = {"anthropic": anthropic_cfg}
         agent = _make_default_agent(mock_config, mock_credentials)
-        providers = agent._get_enabled_providers()
+        providers = agent.get_enabled_providers()
         assert providers.count("anthropic") == 1
 
 
-# -- _get_model_name tests ----------------------------------------------------
+# -- AgentSpec get_model_name tests ------------------------------------------
 
 
-class TestGetModelName:
+class TestAgentSpecGetModelName:
     def test_returns_provider_specific_model_when_set(self, mock_config, mock_credentials) -> None:
         provider_cfg = MagicMock()
         provider_cfg.default_model = "claude-opus-4"
         mock_config.providers = {"anthropic": provider_cfg}
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent._get_model_name("anthropic", "default-model") == "claude-opus-4"
+        assert agent.get_model_name("anthropic", "default-model") == "claude-opus-4"
 
     def test_falls_back_to_default_model(self, mock_config, mock_credentials) -> None:
         provider_cfg = MagicMock()
         provider_cfg.default_model = None
         mock_config.providers = {"anthropic": provider_cfg}
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent._get_model_name("anthropic", "fallback-model") == "fallback-model"
+        assert agent.get_model_name("anthropic", "fallback-model") == "fallback-model"
 
     def test_falls_back_when_provider_not_in_config(self, mock_config, mock_credentials) -> None:
         mock_config.providers = {}
         agent = _make_default_agent(mock_config, mock_credentials)
-        assert agent._get_model_name("openai", "gpt-4o") == "gpt-4o"
+        assert agent.get_model_name("openai", "gpt-4o") == "gpt-4o"
+
+
+# -- AgentSpec get_api_key tests ---------------------------------------------
+
+
+class TestAgentSpecGetApiKey:
+    def test_delegates_to_credential_store(self, mock_config, mock_credentials) -> None:
+        mock_credentials.get_api_key.return_value = "sk-test-key"
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.get_api_key("anthropic") == "sk-test-key"
+
+    def test_returns_none_when_missing(self, mock_config, mock_credentials) -> None:
+        mock_credentials.get_api_key.return_value = None
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.get_api_key("anthropic") is None
+
+
+# -- AgentSpec thinking / default_model properties ---------------------------
+
+
+class TestAgentSpecConfigProperties:
+    def test_thinking_from_config(self, mock_config, mock_credentials) -> None:
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.thinking is not None
+
+    def test_thinking_off(self, mock_config, mock_credentials) -> None:
+        agent = _make_shell_agent(mock_config, mock_credentials)
+        assert agent.thinking == "off"
+
+    def test_thinking_none(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(thinking=None),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.thinking is None
+
+    def test_default_model_from_config(self, mock_config, mock_credentials) -> None:
+        mock_config.general.default_model = "claude-opus-4"
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.default_model == "claude-opus-4"

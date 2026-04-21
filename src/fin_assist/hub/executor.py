@@ -1,71 +1,63 @@
-"""FinAssistExecutor — a2a-sdk AgentExecutor for fin-assist agents.
+"""Executor — a2a-sdk AgentExecutor for fin-assist agents.
 
 Uses ``TaskUpdater`` for all state transitions (start_work, complete, failed,
 requires_auth) and ``ContextStore`` for conversation history persistence.
 
-The a2a-sdk ``DefaultRequestHandler`` routes tasks internally — no broker
-needed.  A2A task storage is handled by ``InMemoryTaskStore`` while
-conversation history lives in our ``ContextStore``.  Message conversion uses
-protobuf types (``Part(text=...)``).
+The executor is framework-agnostic — it delegates all LLM interaction to
+an ``AgentBackend`` (see ``agents/backend.py``).  The backend handles
+streaming, message conversion, and history serialization.
+
+A2A task storage is handled by ``InMemoryTaskStore`` while conversation
+history lives in our ``ContextStore``.  Message conversion uses protobuf
+types (``Part(text=...)``).
 """
 
 from __future__ import annotations
 
-import base64
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
-from google.protobuf.struct_pb2 import Struct, Value  # noqa: TC002
-from pydantic import TypeAdapter
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelRequestPart,
-    ModelResponse,
-    ModelResponsePart,
-    ThinkingPart,
-    ToolCallPart,
-    UserPromptPart,
-)
-from pydantic_ai.messages import TextPart as PydanticTextPart
+from a2a.types import Message, Part, Task, TaskState, TaskStatus
 
 from fin_assist.agents.metadata import MissingCredentialsError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from a2a.server.events import EventQueue
-    from pydantic_ai import ModelMessage
 
-    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.hub.context_store import ContextStore
 
 
-class FinAssistExecutor(AgentExecutor):
-    """AgentExecutor that runs a ConfigAgent and handles missing credentials.
+class Executor(AgentExecutor):
+    """AgentExecutor that runs a task via an AgentBackend.
 
-    Takes a ``ConfigAgent`` (our domain agent) alongside a shared
-    ``ContextStore`` for conversation history.  On each task:
+    Takes an ``AgentBackend`` alongside a shared ``ContextStore`` for
+    conversation history.  On each task:
 
-    1. Calls ``agent.build_model()`` to lazily construct the LLM model.
-    2. Loads conversation history from ``ContextStore``.
-    3. Builds the pydantic-ai Agent and runs it with the resolved model.
-    4. Converts the result to A2A artifacts and messages via ``TaskUpdater``.
-    5. Saves updated conversation history to ``ContextStore``.
+    1. Calls ``backend.check_credentials()`` to detect missing API keys.
+    2. Loads serialized history from ``ContextStore`` and deserializes
+       via ``backend.deserialize_history()``.
+    3. Converts A2A messages via ``backend.convert_history()``.
+    4. Runs the backend with streaming via ``backend.run_stream()``.
+    5. Sends streaming deltas as A2A artifacts.
+    6. Saves updated history via ``ContextStore.save()`` with
+       ``RunResult.serialized_history`` from the backend.
+    7. Sends new message parts (thinking, etc.) as A2A messages.
+    8. If structured output, adds as a separate artifact.
 
-    If ``build_model()`` raises ``MissingCredentialsError``, the task is set
+    If ``check_credentials()`` returns missing providers, the task is set
     to ``auth-required`` with a helpful message instead of failing.
     """
 
     def __init__(
         self,
         *,
-        agent: ConfigAgent,
+        backend: AgentBackend,
         context_store: ContextStore,
     ) -> None:
-        self._agent = agent
+        self._backend = backend
         self._context_store = context_store
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
@@ -86,83 +78,76 @@ class FinAssistExecutor(AgentExecutor):
         await event_queue.enqueue_event(initial_task)
         await updater.start_work()
 
-        # 1. Build model (catch MissingCredentialsError early)
-        try:
-            model = self._agent.build_model()
-        except MissingCredentialsError as exc:
+        # 1. Check credentials
+        missing = self._backend.check_credentials()
+        if missing:
+            exc = MissingCredentialsError(providers=missing)
             auth_msg = updater.new_agent_message(parts=[Part(text=str(exc))])
             await updater.requires_auth(message=auth_msg)
             return
 
         # 2. Load conversation history
         raw_context_id = context.context_id
-        message_history: list[ModelMessage] = (
-            await self._context_store.load(raw_context_id) if raw_context_id else []
-        ) or []
+        serialized_history: bytes | None = (
+            await self._context_store.load(raw_context_id) if raw_context_id else None
+        )
+        message_history: list[Any] = (
+            self._backend.deserialize_history(serialized_history) if serialized_history else []
+        )
 
-        # 3. Convert A2A message → pydantic-ai message history
+        # 3. Convert A2A message → backend message history
         if context.message:
             a2a_history = [context.message]
-            message_history.extend(self._build_message_history(a2a_history))
+            message_history.extend(self._backend.convert_history(a2a_history))
 
-        # 4. Run pydantic-ai agent with streaming
-        pydantic_agent = self._agent.build_pydantic_agent()
+        # 4. Run backend with streaming
         artifact_id = str(uuid.uuid4())
         try:
-            async with (
-                pydantic_agent,
-                pydantic_agent.run_stream(model=model, message_history=message_history) as stream,
-            ):
-                accumulated_text = ""
-                async for delta in stream.stream_text(delta=True):
-                    accumulated_text += delta
-                    await updater.add_artifact(
-                        parts=[Part(text=delta)],
-                        artifact_id=artifact_id,
-                        name="result",
-                        append=True,
-                        last_chunk=False,
-                    )
-                # Final chunk signals completion
+            handle = self._backend.run_stream(messages=message_history)
+            accumulated_text = ""
+            async for delta in handle:
+                accumulated_text += delta
                 await updater.add_artifact(
-                    parts=[Part(text="")],
+                    parts=[Part(text=delta)],
                     artifact_id=artifact_id,
                     name="result",
                     append=True,
-                    last_chunk=True,
+                    last_chunk=False,
                 )
-                result_output = await stream.get_output()
-                all_msgs = stream.all_messages()
-                new_msgs = stream.new_messages()
+            # Final chunk signals completion
+            await updater.add_artifact(
+                parts=[Part(text="")],
+                artifact_id=artifact_id,
+                name="result",
+                append=True,
+                last_chunk=True,
+            )
+            result: RunResult = await handle.result()
         except Exception:
             await updater.failed()
             raise
 
         # 5. Save updated conversation history
         if raw_context_id:
-            await self._context_store.save(raw_context_id, all_msgs)
+            await self._context_store.save(raw_context_id, result.serialized_history)
 
         # 6. Send agent messages (thinking, etc.)
         a2a_messages: list[Message] = []
-        for message in new_msgs:
-            if isinstance(message, ModelRequest):
-                continue
-            a2a_parts = self._response_parts_to_a2a(message.parts)
-            if a2a_parts:
-                a2a_messages.append(updater.new_agent_message(parts=a2a_parts))
+        for part in result.new_message_parts:
+            a2a_messages.append(updater.new_agent_message(parts=[part]))
 
         for msg in a2a_messages:
             await updater.update_status(TaskState.TASK_STATE_WORKING, message=msg)
 
         # 7. If structured output, add as a separate artifact
-        if not isinstance(result_output, str):
-            artifacts = self._build_artifacts(result_output)
-            for artifact in artifacts:
-                await updater.add_artifact(
-                    parts=list(artifact.parts),
-                    artifact_id=artifact.artifact_id,
-                    name=artifact.name,
-                )
+        if not isinstance(result.output, str):
+            part = self._backend.convert_result_to_part(result.output)
+            structured_artifact_id = str(uuid.uuid4())
+            await updater.add_artifact(
+                parts=[part],
+                artifact_id=structured_artifact_id,
+                name="result",
+            )
 
         await updater.complete()
 
@@ -173,111 +158,3 @@ class FinAssistExecutor(AgentExecutor):
             context_id=context.context_id or str(uuid.uuid4()),
         )
         await updater.cancel()
-
-    # ------------------------------------------------------------------
-    # Message conversion: A2A → pydantic-ai
-    # ------------------------------------------------------------------
-
-    def _build_message_history(self, history: Sequence[Message]) -> list[Any]:
-        model_messages: list[Any] = []
-        for message in history:
-            if message.role == Role.ROLE_USER:
-                model_messages.append(
-                    ModelRequest(parts=self._request_parts_from_a2a(message.parts))
-                )
-            else:
-                model_messages.append(
-                    ModelResponse(parts=self._response_parts_from_a2a(message.parts))
-                )
-        return model_messages
-
-    def _request_parts_from_a2a(self, parts: Sequence[Part]) -> list[ModelRequestPart]:
-        model_parts: list[ModelRequestPart] = []
-        for part in parts:
-            if part.text:
-                model_parts.append(UserPromptPart(content=part.text))
-            elif part.HasField("data"):
-                raise NotImplementedError("Data parts in requests are not supported yet.")
-            elif part.url:
-                from pydantic_ai.messages import DocumentUrl, ImageUrl
-
-                matched = False
-                for url_cls in (DocumentUrl, ImageUrl):
-                    try:
-                        content = url_cls(url=part.url)
-                        _ = content.media_type
-                        model_parts.append(UserPromptPart(content=[content]))
-                        matched = True
-                        break
-                    except ValueError:
-                        continue
-                if not matched:
-                    model_parts.append(UserPromptPart(content=part.url))
-            elif part.raw:
-                from pydantic_ai.messages import BinaryContent
-
-                data = base64.b64decode(part.raw)
-                mime_type = part.media_type or "application/octet-stream"
-                content = BinaryContent(data=data, media_type=mime_type)
-                model_parts.append(UserPromptPart(content=[content]))
-        return model_parts
-
-    def _response_parts_from_a2a(self, parts: Sequence[Part]) -> list[ModelResponsePart]:
-        model_parts: list[ModelResponsePart] = []
-        for part in parts:
-            if part.text:
-                model_parts.append(PydanticTextPart(content=part.text))
-            elif part.HasField("data"):
-                raise NotImplementedError("Data parts in responses are not supported yet.")
-        return model_parts
-
-    # ------------------------------------------------------------------
-    # Result conversion: pydantic-ai → A2A
-    # ------------------------------------------------------------------
-
-    def _build_artifacts(self, result: Any) -> list[Artifact]:
-        import uuid
-
-        artifact_id = str(uuid.uuid4())
-        part = self._convert_result_to_part(result)
-        return [Artifact(artifact_id=artifact_id, name="result", parts=[part])]
-
-    def _convert_result_to_part(self, result: Any) -> Part:
-        if isinstance(result, str):
-            return Part(text=result)
-
-        output_type = type(result)
-        type_adapter = TypeAdapter(output_type)
-        data = type_adapter.dump_python(result, mode="json")
-        json_schema = type_adapter.json_schema(mode="serialization")
-
-        # Wrap in {"result": ...} envelope for structured output
-        result_struct = Struct()
-        result_struct.update({"result": data})
-        result_value = Value(struct_value=result_struct)
-
-        meta_struct = Struct()
-        meta_struct.update({"json_schema": json_schema})
-
-        return Part(data=result_value, metadata=meta_struct)
-
-    def _response_parts_to_a2a(self, parts: Sequence[ModelResponsePart]) -> list[Part]:
-        a2a_parts: list[Part] = []
-        for part in parts:
-            if isinstance(part, PydanticTextPart):
-                a2a_parts.append(Part(text=part.content))
-            elif isinstance(part, ThinkingPart):
-                thinking_meta = Struct()
-                thinking_meta.update(
-                    {
-                        "type": "thinking",
-                        "thinking_id": part.id,
-                        "signature": part.signature,
-                    }
-                )
-                a2a_parts.append(Part(text=part.content, metadata=thinking_meta))
-            elif isinstance(part, ToolCallPart):
-                # Tool calls are internal to pydantic-ai execution and not
-                # surfaced in A2A message history (tool results appear in output)
-                pass
-        return a2a_parts

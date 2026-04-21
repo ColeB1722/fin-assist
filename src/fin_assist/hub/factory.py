@@ -1,4 +1,4 @@
-"""AgentFactory: translates a ConfigAgent into a FastAPI sub-application.
+"""AgentFactory: translates an AgentSpec into a FastAPI sub-application.
 
 Uses the a2a-sdk's route factories (``create_jsonrpc_routes``,
 ``create_agent_card_routes``) to construct a per-agent ASGI sub-app.
@@ -34,15 +34,16 @@ from a2a.types import (
 from fastapi import FastAPI
 from google.protobuf.struct_pb2 import Struct
 
-from fin_assist.hub.executor import FinAssistExecutor
+from fin_assist.agents.backend import PydanticAIBackend
+from fin_assist.hub.executor import Executor
 
 if TYPE_CHECKING:
-    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.agents.agent import AgentSpec
     from fin_assist.hub.context_store import ContextStore
 
 
 class AgentFactory:
-    """Converts ``ConfigAgent`` instances into mountable FastAPI sub-apps.
+    """Converts ``AgentSpec`` instances into mountable FastAPI sub-apps.
 
     Args:
         context_store: Shared ``ContextStore`` instance for conversation history.
@@ -53,19 +54,19 @@ class AgentFactory:
 
     def create_a2a_app(
         self,
-        agent: ConfigAgent,
+        agent: AgentSpec,
         *,
         base_url: str = "http://127.0.0.1:4096",
     ) -> FastAPI:
         """Build a FastAPI sub-app for a single agent.
 
         Constructs an ``AgentCard`` with proper extensions, creates a
-        ``FinAssistExecutor`` and ``InMemoryTaskStore``, wires them
+        ``Executor`` and ``InMemoryTaskStore``, wires them
         through ``DefaultRequestHandler``, and returns a FastAPI app
         with the A2A JSON-RPC and agent-card routes mounted.
 
         Args:
-            agent: The ``ConfigAgent`` to serve.
+            agent: The ``AgentSpec`` to serve.
             base_url: Public base URL used in the agent card's supported
                       interfaces.
         """
@@ -102,8 +103,9 @@ class AgentFactory:
             ],
         )
 
-        executor = FinAssistExecutor(
-            agent=agent,
+        backend = PydanticAIBackend(agent_spec=agent)
+        executor = Executor(
+            backend=backend,
             context_store=self._context_store,
         )
         task_store = InMemoryTaskStore()

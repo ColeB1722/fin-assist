@@ -1,10 +1,10 @@
-"""Tests for AgentFactory — ConfigAgent → FastAPI sub-app via a2a-sdk."""
+"""Tests for AgentFactory — AgentSpec → FastAPI sub-app via a2a-sdk."""
 
 from __future__ import annotations
 
 from fastapi import FastAPI
 
-from fin_assist.agents.agent import ConfigAgent
+from fin_assist.agents.agent import AgentSpec
 from fin_assist.config.schema import AgentConfig
 from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
@@ -15,8 +15,8 @@ def _make_factory() -> AgentFactory:
     return AgentFactory(context_store=context_store)
 
 
-def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_default_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="default",
         agent_config=AgentConfig(
             description="Default agent",
@@ -28,8 +28,8 @@ def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
     )
 
 
-def _make_shell_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_shell_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="shell",
         agent_config=AgentConfig(
             description="Shell agent",

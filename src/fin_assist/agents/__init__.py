@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fin_assist.agents.agent import ConfigAgent
+from fin_assist.agents.agent import AgentSpec
+from fin_assist.agents.backend import AgentBackend, PydanticAIBackend, RunResult, StreamHandle
 from fin_assist.agents.metadata import (
     AgentCardMeta,
     AgentResult,
@@ -11,14 +12,18 @@ from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS, OutputTypeN
 from fin_assist.agents.results import CommandResult
 
 __all__ = [
+    "AgentBackend",
     "AgentCardMeta",
     "AgentResult",
+    "AgentSpec",
     "CommandResult",
-    "ConfigAgent",
     "MissingCredentialsError",
     "OUTPUT_TYPES",
     "OutputTypeName",
+    "PydanticAIBackend",
     "PromptName",
+    "RunResult",
     "ServingMode",
+    "StreamHandle",
     "SYSTEM_PROMPTS",
 ]
