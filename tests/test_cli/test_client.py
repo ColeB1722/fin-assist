@@ -4,11 +4,28 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-from a2a.types import Artifact, Message, Part, Role, Task, TaskState, TaskStatus
+from a2a.types import (
+    Artifact,
+    Message,
+    Part,
+    Role,
+    StreamResponse,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+)
 from google.protobuf.struct_pb2 import Struct, Value
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
-from fin_assist.cli.client import DiscoveredAgent, HubClient
+from fin_assist.cli.client import (
+    DiscoveredAgent,
+    HubClient,
+    _Extraction,
+    _is_thinking,
+    _part_struct_data,
+)
 
 
 def _make_struct(d: dict) -> Struct:
@@ -508,3 +525,115 @@ class TestHubClientLifecycle:
 
         assert client._a2a_clients == {}
         mock_a2a.close.assert_called_once()
+
+
+class TestPartStructData:
+    def test_returns_dict_when_struct_value_present(self):
+        part = _make_data_part({"command": "ls", "warnings": []})
+        result = _part_struct_data(part)
+        assert result is not None
+        assert result["result"]["command"] == "ls"
+
+    def test_returns_none_when_no_data_field(self):
+        part = _make_text_part("hello")
+        result = _part_struct_data(part)
+        assert result is None
+
+    def test_returns_none_when_data_has_no_struct_value(self):
+        part = Part(data=Value(number_value=42.0))
+        result = _part_struct_data(part)
+        assert result is None
+
+    def test_unwraps_result_envelope(self):
+        part = _make_data_part({"command": "ls"})
+        result = _part_struct_data(part)
+        assert result is not None
+        inner = result.get("result", result)
+        assert inner["command"] == "ls"
+
+
+class TestIsThinking:
+    def test_returns_true_for_thinking_metadata(self):
+        part = _make_text_part("hmm...", metadata={"type": "thinking"})
+        assert _is_thinking(part) is True
+
+    def test_returns_false_for_no_metadata(self):
+        part = _make_text_part("hello")
+        assert _is_thinking(part) is False
+
+    def test_returns_false_for_non_thinking_metadata(self):
+        part = _make_text_part("hello", metadata={"type": "response"})
+        assert _is_thinking(part) is False
+
+    def test_returns_false_for_empty_metadata(self):
+        part = _make_text_part("hello", metadata={})
+        assert _is_thinking(part) is False
+
+
+class TestExtraction:
+    def test_named_fields(self):
+        ext = _Extraction(output="ls", warnings=["careful"], metadata={"key": "val"})
+        assert ext.output == "ls"
+        assert ext.warnings == ["careful"]
+        assert ext.metadata == {"key": "val"}
+
+    def test_unpacks_like_tuple(self):
+        ext = _Extraction(output="ls", warnings=[], metadata={})
+        output, warnings, metadata = ext
+        assert output == "ls"
+        assert warnings == []
+        assert metadata == {}
+
+
+class TestProcessResponse:
+    def test_task_in_terminal_state(self):
+        task = Task(id="t1", status=TaskStatus(state=TaskState.TASK_STATE_COMPLETED))
+        response = StreamResponse(task=task)
+        is_terminal, resp_task, artifact = HubClient._process_response(response)
+        assert is_terminal is True
+        assert resp_task is not None
+        assert resp_task.id == "t1"
+        assert artifact is None
+
+    def test_task_in_non_terminal_state(self):
+        task = Task(id="t1", status=TaskStatus(state=TaskState.TASK_STATE_WORKING))
+        response = StreamResponse(task=task)
+        is_terminal, resp_task, artifact = HubClient._process_response(response)
+        assert is_terminal is False
+        assert resp_task is not None
+
+    def test_status_update_in_terminal_state(self):
+        tsue = TaskStatusUpdateEvent(
+            task_id="t1",
+            status=TaskStatus(state=TaskState.TASK_STATE_FAILED),
+        )
+        response = StreamResponse(status_update=tsue)
+        is_terminal, resp_task, artifact = HubClient._process_response(response)
+        assert is_terminal is True
+        assert resp_task is None
+        assert artifact is None
+
+    def test_status_update_in_non_terminal_state(self):
+        tsue = TaskStatusUpdateEvent(
+            task_id="t1",
+            status=TaskStatus(state=TaskState.TASK_STATE_WORKING),
+        )
+        response = StreamResponse(status_update=tsue)
+        is_terminal, resp_task, artifact = HubClient._process_response(response)
+        assert is_terminal is False
+
+    def test_artifact_update(self):
+        artifact = Artifact(artifact_id="a1", name="result", parts=[Part(text="chunk")])
+        taue = TaskArtifactUpdateEvent(task_id="t1", artifact=artifact)
+        response = StreamResponse(artifact_update=taue)
+        is_terminal, resp_task, resp_artifact = HubClient._process_response(response)
+        assert is_terminal is False
+        assert resp_task is None
+        assert resp_artifact is not None
+
+    def test_empty_response(self):
+        response = StreamResponse()
+        is_terminal, resp_task, artifact = HubClient._process_response(response)
+        assert is_terminal is False
+        assert resp_task is None
+        assert artifact is None

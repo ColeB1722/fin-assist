@@ -13,7 +13,7 @@ The client supports two modes:
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 import httpx
 from a2a.client.client import ClientConfig
@@ -23,6 +23,7 @@ from a2a.types import (
     Part,
     Role,
     SendMessageRequest,
+    StreamResponse,
     Task,
     TaskState,
 )
@@ -67,6 +68,24 @@ def _struct_to_dict(struct) -> dict[str, Any]:
     if not struct or not struct.fields:
         return {}
     return MessageToDict(struct, preserving_proto_field_name=True)
+
+
+def _part_struct_data(part) -> dict[str, Any] | None:
+    """Return the struct dict from a Part's data field, or None."""
+    if part.HasField("data") and part.data.HasField("struct_value"):
+        return _struct_to_dict(part.data.struct_value)
+    return None
+
+
+def _is_thinking(part) -> bool:
+    """Return whether a Part's metadata marks it as a thinking block."""
+    return _struct_to_dict(part.metadata).get("type") == "thinking"
+
+
+class _Extraction(NamedTuple):
+    output: str
+    warnings: list[str]
+    metadata: dict[str, Any]
 
 
 class HubClient:
@@ -141,16 +160,15 @@ class HubClient:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _extract_from_artifacts(task: Task) -> tuple[str, list[str], dict[str, Any]]:
+    def _extract_from_artifacts(task: Task) -> _Extraction:
         output = ""
         warnings: list[str] = []
         metadata: dict[str, Any] = {}
 
         for artifact in reversed(task.artifacts):
             for part in artifact.parts:
-                text = part.text
-                if part.HasField("data") and part.data.HasField("struct_value"):
-                    data = _struct_to_dict(part.data.struct_value)
+                data = _part_struct_data(part)
+                if data is not None:
                     inner = data.get("result", data)
                     if not output:
                         output = inner.get("command", "")
@@ -158,10 +176,10 @@ class HubClient:
                         warnings = inner["warnings"]
                     if inner.get("metadata"):
                         metadata.update(inner["metadata"])
-                elif text and not output:
-                    output = text
+                elif part.text and not output:
+                    output = part.text
 
-        return output, warnings, metadata
+        return _Extraction(output, warnings, metadata)
 
     @staticmethod
     def _extract_from_history(task: Task) -> str:
@@ -169,7 +187,7 @@ class HubClient:
             if item.role != Role.ROLE_AGENT:
                 continue
             for part in item.parts:
-                if part.text and _struct_to_dict(part.metadata).get("type") != "thinking":
+                if part.text and not _is_thinking(part):
                     return part.text
         return ""
 
@@ -180,31 +198,53 @@ class HubClient:
             if item.role != Role.ROLE_AGENT:
                 continue
             for part in item.parts:
-                if _struct_to_dict(part.metadata).get("type") == "thinking" and part.text:
+                if _is_thinking(part) and part.text:
                     thinking.append(part.text)
         return thinking
 
     @staticmethod
     def _extract_result(task: Task) -> AgentResult:
         state = task.status.state
-        context_id = task.context_id or None
+        context_id = task.context_id or None  # protobuf defaults to ""
 
-        output, warnings, metadata = HubClient._extract_from_artifacts(task)
+        extraction = HubClient._extract_from_artifacts(task)
 
-        if not output:
+        if not extraction.output:
             output = HubClient._extract_from_history(task)
+        else:
+            output = extraction.output
 
         thinking = HubClient._extract_thinking(task)
 
         return AgentResult(
             success=state == TaskState.TASK_STATE_COMPLETED,
             output=output,
-            warnings=warnings,
-            metadata=metadata,
+            warnings=extraction.warnings,
+            metadata=extraction.metadata,
             context_id=context_id,
             thinking=thinking,
             auth_required=state == TaskState.TASK_STATE_AUTH_REQUIRED,
         )
+
+    # ------------------------------------------------------------------
+    # Response dispatch
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _process_response(response: StreamResponse) -> tuple[bool, Task | None, Any | None]:
+        """Process a single streaming response.
+
+        Returns (is_terminal, task_or_none, artifact_or_none).
+        """
+        if response.HasField("task"):
+            task = response.task
+            return task.status.state in _TERMINAL_STATES, task, None
+        if response.HasField("status_update"):
+            state = response.status_update.status.state
+            return state in _TERMINAL_STATES, None, None
+        if response.HasField("artifact_update"):
+            return False, None, response.artifact_update.artifact
+        return False, None, None
 
     # ------------------------------------------------------------------
     # Public API
@@ -248,21 +288,15 @@ class HubClient:
         task: Task | None = None
 
         async for response in client.send_message(request):
-            if response.HasField("artifact_update"):
-                artifact = response.artifact_update
-                for part in artifact.artifact.parts:
+            is_terminal, resp_task, artifact = self._process_response(response)
+            if artifact is not None:
+                for part in artifact.parts:
                     if part.text:
                         yield StreamEvent(kind="text_delta", text=part.text)
-
-            if response.HasField("task"):
-                task = response.task
-                state = response.task.status.state
-                if state in _TERMINAL_STATES:
-                    break
-            elif response.HasField("status_update"):
-                state = response.status_update.status.state
-                if state in _TERMINAL_STATES:
-                    break
+            if resp_task is not None:
+                task = resp_task
+            if is_terminal:
+                break
 
         if task is not None:
             result = self._extract_result(task)
@@ -299,17 +333,13 @@ class HubClient:
         artifacts: list[Any] = []
 
         async for response in client.send_message(request):
-            if response.HasField("task"):
-                task = response.task
-                state = response.task.status.state
-                if state in _TERMINAL_STATES:
-                    break
-            elif response.HasField("status_update"):
-                state = response.status_update.status.state
-                if state in _TERMINAL_STATES:
-                    break
-            elif response.HasField("artifact_update"):
-                artifacts.append(response.artifact_update.artifact)
+            is_terminal, resp_task, artifact = self._process_response(response)
+            if resp_task is not None:
+                task = resp_task
+            if artifact is not None:
+                artifacts.append(artifact)
+            if is_terminal:
+                break
 
         if task is None:
             return AgentResult(success=False, output="No response from agent")

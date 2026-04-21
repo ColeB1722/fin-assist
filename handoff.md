@@ -6,6 +6,24 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
+## Design Sketches
+
+### Client Readability Refactor (2026-04-20)
+
+**Problem**: `cli/client.py` extraction methods conflate two levels of abstraction — protobuf navigation (`HasField`, `_struct_to_dict`) and business logic (first-wins output, thinking filtering). This makes the code disorienting to read. Additionally, `stream_agent` and `_send_and_wait` duplicate response-dispatch logic.
+
+**Changes**:
+
+1. **Protobuf navigation helpers** — `_part_struct_data(part) -> dict | None` and `_is_thinking(part) -> bool` isolate protobuf API from business logic. Extraction methods call these instead of inline `HasField` chains and repeated `_struct_to_dict(part.metadata).get("type")` calls.
+
+2. **`_Extraction` NamedTuple** — replaces the 3-tuple return of `_extract_from_artifacts(output, warnings, metadata)` with named fields. Call sites become self-documenting.
+
+3. **`_process_response` static method** — shared response dispatch for `stream_agent` and `_send_and_wait`. Returns `(is_terminal, task_or_none, artifact_or_none)`. Both callers handle artifacts their own way (stream yields, send collects) but share the terminal-state check.
+
+4. **`context_id or None` comment** — protobuf defaults `context_id` to `""` (can't represent `None`); the coercion is intentional.
+
+---
+
 ## fasta2a → a2a-sdk Migration (2026-04-20)
 
 **Status**: Complete (Phases 1-7)
