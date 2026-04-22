@@ -99,7 +99,10 @@ class AgentFactory:
                 )
             ],
             supported_interfaces=[
-                AgentInterface(url=f"{base_url}/agents/{agent.name}/"),
+                AgentInterface(
+                    url=f"{base_url}/agents/{agent.name}/",
+                    protocol_binding="JSONRPC",
+                ),
             ],
         )
 

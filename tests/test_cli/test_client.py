@@ -402,7 +402,7 @@ class TestDiscoverAgents:
                     "description": "Shell command generator",
                     "url": "http://localhost/agents/shell/",
                     "card_meta": {
-                        "multi_turn": False,
+                        "serving_modes": ["do"],
                         "requires_approval": True,
                         "supports_thinking": False,
                         "supports_model_selection": True,
@@ -426,7 +426,7 @@ class TestDiscoverAgents:
 
         assert len(agents) == 1
         assert agents[0].name == "shell"
-        assert agents[0].card_meta.multi_turn is False
+        assert agents[0].card_meta.serving_modes == ["do"]
         assert agents[0].card_meta.requires_approval is True
 
     async def test_returns_empty_when_no_agents(self):
@@ -467,7 +467,7 @@ class TestDiscoverAgents:
 
         agents = await client.discover_agents()
 
-        assert agents[0].card_meta.multi_turn is True
+        assert agents[0].card_meta.serving_modes == ["do", "talk"]
         assert agents[0].card_meta.requires_approval is False
 
 

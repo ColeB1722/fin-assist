@@ -133,10 +133,11 @@ class TestRenderAgentCard:
         output = _capture_output(render_agent_card, agent)
         assert "Runs shell commands" in output
 
-    def test_renders_one_shot_for_non_multi_turn(self):
-        agent = self._make_agent(card_meta=AgentCardMeta(multi_turn=False))
+    def test_renders_serving_modes(self):
+        agent = self._make_agent(card_meta=AgentCardMeta(serving_modes=["do", "talk"]))
         output = _capture_output(render_agent_card, agent)
-        assert "one-shot" in output
+        assert "do" in output
+        assert "talk" in output
 
     def test_renders_requires_approval_flag(self):
         agent = self._make_agent(card_meta=AgentCardMeta(requires_approval=True))

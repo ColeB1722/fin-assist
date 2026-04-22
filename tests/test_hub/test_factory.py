@@ -82,10 +82,10 @@ class TestCreateA2AApp:
         card = app.state.agent_card
         meta_ext = next(e for e in card.capabilities.extensions if e.uri == "fin_assist:meta")
         params = dict(meta_ext.params)
-        assert params.get("multi_turn") is False
+        assert params.get("serving_modes") == ["do"]
         assert params.get("requires_approval") is True
 
-    def test_extension_encodes_multi_turn_true_for_default(
+    def test_extension_encodes_serving_modes_for_default(
         self, mock_config, mock_credentials
     ) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
@@ -93,7 +93,7 @@ class TestCreateA2AApp:
         card = app.state.agent_card
         meta_ext = next(e for e in card.capabilities.extensions if e.uri == "fin_assist:meta")
         params = dict(meta_ext.params)
-        assert params.get("multi_turn") is True
+        assert params.get("serving_modes") == ["do", "talk"]
 
     def test_agent_card_has_streaming_capability(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)

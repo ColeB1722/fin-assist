@@ -295,6 +295,8 @@ class HubClient:
                         yield StreamEvent(kind="text_delta", text=part.text)
             if resp_task is not None:
                 task = resp_task
+            if response.HasField("status_update") and task is not None:
+                task.status.CopyFrom(response.status_update.status)
             if is_terminal:
                 break
 
@@ -336,6 +338,8 @@ class HubClient:
             is_terminal, resp_task, artifact = self._process_response(response)
             if resp_task is not None:
                 task = resp_task
+            if response.HasField("status_update") and task is not None:
+                task.status.CopyFrom(response.status_update.status)
             if artifact is not None:
                 artifacts.append(artifact)
             if is_terminal:

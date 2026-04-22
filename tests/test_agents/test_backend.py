@@ -240,6 +240,7 @@ class TestPydanticAIBackendRunStream:
 
         mock_model = MagicMock()
         pydantic_agent = MagicMock()
+        pydantic_agent.output_type = str
         pydantic_agent.__aenter__ = AsyncMock(return_value=pydantic_agent)
         pydantic_agent.__aexit__ = AsyncMock(return_value=False)
 
@@ -273,6 +274,7 @@ class TestPydanticAIBackendRunStream:
 
         mock_model = MagicMock()
         pydantic_agent = MagicMock()
+        pydantic_agent.output_type = str
         pydantic_agent.__aenter__ = AsyncMock(return_value=pydantic_agent)
         pydantic_agent.__aexit__ = AsyncMock(return_value=False)
 

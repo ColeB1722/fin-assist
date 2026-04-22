@@ -114,7 +114,7 @@ class TestDiscoveryEndpoint:
         resp = client.get("/agents")
         shell_entry = next(a for a in resp.json()["agents"] if a["name"] == "shell")
         assert "card_meta" in shell_entry
-        assert shell_entry["card_meta"]["multi_turn"] is False
+        assert shell_entry["card_meta"]["serving_modes"] == ["do"]
 
 
 class TestAgentSubAppMounting:

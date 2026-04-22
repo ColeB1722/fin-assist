@@ -102,8 +102,13 @@ class _PydanticAIStreamHandle:
             ) as stream,
         ):
             self._stream = stream
-            async for delta in stream.stream_text(delta=True):
-                yield delta
+            is_text_output = self._pydantic_agent.output_type is str
+            if is_text_output:
+                async for delta in stream.stream_text(delta=True):
+                    yield delta
+            else:
+                async for _ in stream.stream_output():
+                    pass
             output = await stream.get_output()
             all_msgs = stream.all_messages()
             new_msgs = stream.new_messages()

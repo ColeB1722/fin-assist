@@ -188,17 +188,16 @@ def render_agent_card(agent: DiscoveredAgent) -> None:
     name = f"[bold cyan]{agent.name}[/bold cyan]"
     desc = agent.description
 
-    meta_parts = []
-    if not agent.card_meta.multi_turn:
-        meta_parts.append("[dim]one-shot[/dim]")
+    capability_parts = [f"[dim]{mode}[/dim]" for mode in agent.card_meta.serving_modes]
+    constraint_parts = []
     if agent.card_meta.requires_approval:
-        meta_parts.append("[yellow]requires approval[/yellow]")
+        constraint_parts.append("[yellow]requires approval[/yellow]")
 
-    meta_str = "  |  ".join(meta_parts) if meta_parts else ""
+    chip_parts = capability_parts + constraint_parts
+    chip_str = "  |  ".join(chip_parts)
 
     console.print(f"{name}  —  {desc}")
-    if meta_str:
-        console.print(f"  {meta_str}")
+    console.print(f"  {chip_str}")
 
 
 def render_agents_list(agents: list[DiscoveredAgent]) -> None:
