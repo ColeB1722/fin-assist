@@ -2,11 +2,118 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-21)**: Backend extraction + cleanup complete. `AgentSpec` is a pure config object (zero framework imports), `Executor` is framework-agnostic, `ContextStore` is `bytes`-in/out, `PydanticAIBackend` uses only public `AgentSpec` API. 489 tests passing, CI green.
+**Current state (2026-04-22)**: Doc alignment complete. README diagrams are canonical (inline Mermaid, rendered to `docs/diagrams/` on demand via `just diagrams`). `docs/architecture.md` prose reconciled with code — no known diagram/prose drift. Backend extraction (2026-04-21) stable: `AgentSpec` is pure config, `Executor` is framework-agnostic via `AgentBackend` protocol, `ContextStore` is `bytes`-in/out, `PydanticAIBackend` uses only public `AgentSpec` API. 489 tests passing, CI green.
+
+**Four known structural gaps**, documented below under Design Sketches and Next Session:
+
+1. **Executor rework** (one-shot → looping) — **Needs design sketch before implementation.** Prerequisite for tool calling, context injection, and most experimental loop patterns.
+2. **ContextProviders integration** (Steps 7-8, parked) — Classes built and tested; wiring deferred until after Executor loop lands.
+3. **Human-in-the-loop (HITL)** — Needs research spike. Current approval is agent-level only; real experimentation needs finer-grained gates (per-tool, per-plan, per-effect). Design space wide; think before building.
+4. **AgentBackend protocol simplification** — Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Not urgent; revisit when a second backend is actually needed.
 
 ---
 
 ## Design Sketches
+
+### Executor Loop Rework (2026-04-22) — Needs Design Sketch
+
+**Status: Design not yet sketched. Do not implement without a sketch pass first.**
+
+**Problem.** The current `Executor.execute()` is a single-pass pipeline: load history → convert messages → `backend.run_stream()` → drain deltas → save history → complete. It has no concept of a multi-step turn. That's fine for free-form chat but structurally insufficient for:
+
+- **Tool calling** (the dominant pattern in modern agent harnesses): stream → tool_use → run tool → tool_result → stream → possibly more tools → end_turn.
+- **Context injection triggered by agent choice** (e.g. agent asks for a file, loop fetches it, resumes).
+- **Self-critique or plan-and-execute loops** (generate → critique → revise).
+- **Multi-agent orchestration within one turn** (delegate sub-task to peer agent, resume on result).
+
+**Why a sketch is required before coding.** The refactor touches the hottest path in the system. Specific open design questions:
+
+1. **Strategy vs. inline.** Does the loop live inside `Executor`, or does `Executor` delegate to a pluggable `LoopStrategy` protocol (one-shot, tool-using, plan-execute, …)? Strategy gives us flexibility for experimental patterns — which is the stated goal of the project — but adds an abstraction.
+2. **Backend contract changes.** `AgentBackend.run_stream()` currently returns one `StreamHandle` per turn. Tool-using loops need mid-stream events (`tool_use` parts, not just text deltas). Either `StreamHandle` grows a richer event type, or the backend gains a separate `run_step()` call that returns one iteration, or we lean entirely on pydantic-ai's agent-level loop and the Executor's job shrinks.
+3. **TaskUpdater semantics.** a2a-sdk's `TaskUpdater.add_artifact(append=True)` assumes a single artifact per task. Multi-step turns probably want one artifact per step, or a mixed artifact-plus-status-update stream. Needs verification against a2a-sdk's state model.
+4. **ContextStore format versioning.** Today the store holds opaque `bytes` of pydantic-ai history. A looping Executor that introduces tool calls changes the serialized shape. Before the rework lands, add a version byte to the stored format so we can migrate rather than lose history.
+5. **Streaming contract for clients.** Clients (CLI + future TUI) consume `TaskArtifactUpdateEvent` deltas. Do they need to distinguish "model-output delta" from "tool-call event"? If yes, that's A2A extension territory.
+
+**Dependencies unblocked by this work.**
+
+- Tool calling (core capability, currently missing)
+- ContextProviders integration (Steps 7-8)
+- SDD/TDD agent workflows (both will need tools)
+- Any future experimental loop pattern
+
+**Recommended next action.** Open a fresh session specifically to sketch this. No implementation in the same session. Expected sketch artifacts: a `LoopStrategy` protocol signature, a revised `AgentBackend` shape, a TaskUpdater flow diagram for a tool-using turn, and a ContextStore format migration plan.
+
+**Scope explicitly excluded.** Do not try to design HITL gates in the same sketch (HITL has its own research spike — see below). The loop refactor should define *where* gates can be inserted (hook points in the loop) but not *what* the gate semantics are.
+
+---
+
+### HITL Approval Model (2026-04-22) — Needs Research Spike
+
+**Status: Unstarted. Research spike required before design sketch.**
+
+**Problem.** The current approval model is a single `requires_approval: bool` on `AgentCardMeta`. The client (CLI) reads that flag and shows an approval widget on structured output. That's adequate for the shell agent's "execute/cancel" gate. It's nowhere near enough for the experimentation patterns the project wants to support.
+
+**Examples of approval needs we'll encounter:**
+
+- **Per-tool-call approval.** "Agent wants to run `rm -rf /tmp/x`. Approve?" Different gate than agent-level approval.
+- **Plan approval.** Agent produces a multi-step plan; human approves the plan, then steps execute without further approval.
+- **Approval with edit.** Agent proposes a command; human edits it before it runs.
+- **Destructive-effect approval.** Any write to disk, any network call, any `git push`, any DB write.
+- **Approval thresholds.** Auto-approve reads, gate writes, always-prompt for deletes.
+- **Batch approval.** Agent proposes 10 edits; human approves/rejects per file, or approves all.
+- **Provisional execution.** Run in a sandbox, show diff, approve merge.
+
+**Why it's trap-prone.** Each of these examples could be implemented as "just another flag", and if we do that six times we end up with a `requires_approval` bool, a `tool_approval_policy` enum, a `plan_approval_hook`, a `destructive_effect_checker`, etc. — a pile of unrelated mechanisms that don't compose. The right abstraction is almost certainly a **single `ApprovalGate` protocol** with well-defined hook points in the loop, but the exact shape depends on:
+
+- What granularity does the loop actually expose? (→ answered by Executor Loop Rework)
+- How does a gate return control — sync, async, via the event queue back to the client?
+- How are gate decisions serialized for resumability / replay?
+- Do gates compose (chain of `ApprovalGate`s)? What's the resolution semantics?
+
+**Recommended research spike.** Before any design sketch, spend a session reading how other projects handle this:
+
+- **Claude Code** — its tool-approval prompts, settings (`--dangerously-skip-permissions`, `allowed_tools`, etc.)
+- **opencode** — permission/approval model
+- **AutoGen / LangGraph** — their `HumanMessage` / interrupt patterns
+- **Cursor / Aider** — diff-and-approve flows
+- **Copilot Workspace, Devin, others** — plan-approval UX
+
+Write up findings as a comparison matrix. From that, identify the minimum gate primitive that composes cleanly. Only then sketch.
+
+**Dependency note.** HITL design is loosely coupled to Executor Loop Rework. The loop refactor defines *where* gates fire (hook points); HITL research defines *what gates do when they fire*. Execute in that order.
+
+**Do not bake gate semantics into the loop refactor.** The temptation will be to design approval in the same session as the loop. Resist — they compose better if designed independently and then reconciled.
+
+---
+
+### ContextProviders — Parked State (2026-04-22)
+
+**Status: Classes built and unit-tested; integration deferred.**
+
+**What exists.** `FileFinder`, `GitContext`, `ShellHistory`, `Environment` in `src/fin_assist/context/`. Each implements the `ContextProvider` protocol (`base.py`). Full unit test coverage under `tests/test_context/`. Supporting types: `ContextItem`, `ContextType` enum, `ItemStatus` lifecycle.
+
+**What doesn't exist.**
+
+- No caller in `src/` instantiates any provider.
+- `AgentSpec.supports_context()` is a stub that returns based on a hardcoded frozenset, not agent config.
+- `llm/prompts.py`'s `build_user_message`/`format_context` helpers accept `ContextItem` but nothing calls them from the request path.
+- CLI has no `--file`, `--git-diff`, or `--git-log` flags on `do`.
+- `FinPrompt` has no `@`-triggered completion.
+
+**Why parked, not deleted.** The classes encode design decisions (context taxonomy, item lifecycle, provider interface) that the CLI and Executor will consume when Steps 7-8 land. Rewriting them when needed is strictly more work than keeping them. The alternative — delete now, recreate later — would also lose the tests.
+
+**When to pick up.** After the Executor loop rework (see above). The loop rework changes the shape of what "inject context" means, so wiring context providers before the loop exists would lock in the wrong API.
+
+**In-code marker.** `src/fin_assist/context/__init__.py` has a module docstring pointing here, so a future session reading the code sees the parked status without having to grep the handoff.
+
+**The session that picks this up should:**
+
+1. Re-read this entry + the in-code docstring.
+2. Confirm the Executor loop rework has landed (otherwise, don't start).
+3. Choose one provider (probably `FileFinder`) and wire it end-to-end as a vertical slice — CLI flag → Executor injection → system prompt. Ship it. Then generalize for the others.
+4. Update `AgentSpec.supports_context()` to read from `AgentConfig.supported_context_types` rather than the hardcoded set.
+
+---
 
 ### AgentBackend Extraction (2026-04-21)
 
@@ -1282,27 +1389,48 @@ Total: 440 tests, all passing
 
 ---
 
-## Next Session: A2A SDK Migration + Context Injection
+## Next Session
 
-### Goals
+### Recommended sequence
 
-1. **A2A SDK migration**: Replace fasta2a with the official `a2a-sdk` (Google's `a2a-python`). fasta2a lacks protocol completeness (no extensions, no native streaming, no task resubscription). The official SDK implements the full A2A spec including extensions — which should eliminate the custom protocol hacks below.
-2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
-3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
-4. **Step 9**: Approval "add context" option for structured output in talk mode.
-5. **Manual testing**: Re-verify Chunks A-E after redesign.
+1. **PR review + manual verification baseline.** Review the open PR that's gathered changes since the last merge. Before the Executor rework, run the manual-testing "Pre-Refactor Smoke Set" (`docs/manual-testing.md`): Chunk A (all), B1/B3/B4/B6, C1/C5/C10/C11/C13, F1/F3. This establishes a known-good baseline so any regression from the rework is attributable.
+2. **Executor Loop Rework — design sketch session.** Open a dedicated session. Follow the "Needs Design Sketch" entry above. Produce sketch artifacts; do not implement. End the session with a checked-in sketch in this file.
+3. **HITL research spike.** Separate session. Follow the "Needs Research Spike" entry. Produce a comparison matrix of how Claude Code / opencode / AutoGen / LangGraph / Cursor / Aider handle approval. Do not design yet.
+4. **Executor Loop Rework — implementation session.** Separate session. Implement against the sketch from (2). Re-run the Pre-Refactor Smoke Set to confirm no regression; extend with tests for new loop behavior.
+5. **ContextProviders integration (Steps 7-8).** Only after (4) lands. Wire `FileFinder` first as a vertical slice (`--file` flag → Executor context injection → system prompt). Generalize when `--git-diff` comes along.
+6. **HITL design sketch + implementation.** Informed by (3) and (4). Dedicated sketch session first, then implementation.
 
-### Known Technical Debt (defer to SDK migration)
+The ordering is deliberate: (2) unblocks everything; (3) is cheap but trap-prone and benefits from being independent of (2); (4) has to precede (5) because the loop's shape dictates the injection API.
 
-The following are custom protocol extensions that exist because fasta2a doesn't support them natively. They should be re-evaluated during the SDK migration — not fixed now — since the official SDK may provide native mechanisms that replace them entirely.
+### Deferred / open as external tickets
 
-| Convention | Where | Why it exists | SDK migration impact |
-|------------|-------|---------------|---------------------|
-| `metadata.type == "thinking"` on TextPart | worker writes, client reads | No native thinking support in A2A/fasta2a | A2A extensions or native thinking parts may replace this |
-| `meta_skill` encoding (serving modes, multi-turn) in agent card skills | factory.py writes, client reads | No custom metadata fields on agent card | SDK may support proper agent capabilities/metadata |
-| `metadata.auth_required` flag on AgentResult | client.py | Auth-required is a custom state not in A2A spec | May need to stay as extension, but SDK extensions may formalize it |
+- **AgentBackend protocol simplification.** Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Revisit when a second backend (LangChain, Anthropic SDK, etc.) is actually needed. Not urgent.
+- **ContextStore format versioning.** Before (4) lands, add a version byte to the stored history format so the loop refactor doesn't silently corrupt existing sessions. Tiny change; fits in the (2) sketch or (4) implementation.
+- **Diagram / doc drift defense.** The "citation required" rule in `docs/architecture.md` (2026-04-22) is now the structural guard. If a future session claims something is "Resolved" or "integrated" without a `file:line` citation, push back.
 
-The current implementation serves as a reference translation layer — working code that maps the data flow and edge cases, making the migration easier than building from scratch.
+---
+
+## Historical: A2A SDK Migration + Context Injection Plan (2026-04-20, superseded)
+
+> **Status**: Goals 1-4 below are **complete** (a2a-sdk migration landed 2026-04-20; config-driven redesign Steps 1-6 landed 2026-04-11; Steps 7-9 explicitly deferred — see current Next Session for ordering). Kept as historical record of the migration plan.
+
+### Original Goals
+
+1. ~~**A2A SDK migration**~~: Done. See "fasta2a → a2a-sdk Migration (2026-04-20)" entry above.
+2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message. — **Deferred** until Executor Loop Rework lands.
+3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`. — **Deferred**, same reason.
+4. **Step 9**: Approval "add context" option for structured output in talk mode. — **Partially obsolete**. Folds into the HITL research spike, not a standalone step.
+5. ~~**Manual testing**~~: Re-verified post-migration; `docs/manual-testing.md` was audited 2026-04-22 and corrected.
+
+### Resolved Technical Debt
+
+The custom protocol extensions below existed because fasta2a didn't support them. The a2a-sdk migration replaced most of them with native mechanisms:
+
+| Convention (fasta2a era) | Resolution under a2a-sdk |
+|--------------------------|--------------------------|
+| `metadata.type == "thinking"` on TextPart | Still used; a2a-sdk has no native thinking part type. Acceptable. |
+| `meta_skill` encoding on agent card skills | Replaced with `AgentExtension(uri="fin_assist:meta", params=Struct)` — proper a2a-sdk extension. |
+| `metadata.auth_required` flag on AgentResult | Replaced with native `TaskState.TASK_STATE_AUTH_REQUIRED`. |
 
 ---
 

@@ -974,6 +974,13 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 
 Decisions deferred until the relevant phase. Resolved decisions are noted.
 
+> **Pointer to in-flight work.** Four structural changes are known-needed but not started. Their design + implementation notes live in `handoff.md` (the rolling session log) rather than here, because they are actively being refined. This section records only the architectural commitment; details evolve there.
+>
+> 1. **Executor loop rework** — The `Executor` is currently one-shot (messages in → stream out → done). Tool calling, context injection triggered by the agent, plan-and-execute, self-critique, and most experimental loop patterns all require a multi-step loop. **Needs design sketch before implementation.** See `handoff.md` → "Executor Loop Rework".
+> 2. **ContextProviders integration (Steps 7-8)** — `FileFinder`, `GitContext`, `ShellHistory`, `Environment` exist and are tested but unwired. Integration deliberately deferred until the Executor loop rework lands, because the loop's shape dictates the injection API. The module carries an in-code marker (`src/fin_assist/context/__init__.py` docstring) pointing at `handoff.md`.
+> 3. **Human-in-the-loop (HITL) approval model** — Current `requires_approval: bool` is agent-level and binary. Fine-grained gates (per-tool, per-plan, per-effect, approve-with-edit) are needed for meaningful experimentation. **Needs research spike** (survey of existing tools' approval models) before design. See `handoff.md` → "HITL Approval Model".
+> 4. **`AgentBackend` protocol simplification** — The current protocol has ~6 methods, several of which leak pydantic-ai shape. Tracked as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt); revisit when a second backend is actually implemented.
+
 | Question | Phase | Status | Resolution |
 |----------|-------|--------|------------|
 | Conversation storage | Phase 7 | **Resolved** | SQLite `ContextStore` for conversation history; `InMemoryTaskStore` for A2A tasks |
@@ -991,8 +998,11 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | Private `AgentWorker` import (#68) | Redesign | **Resolved** | Direct `Worker[list[ModelMessage]]` implementation using public APIs |
 | Thinking configuration | Redesign | **Resolved** | Per-agent `thinking` field in `AgentConfig`, not `DefaultAgent` override |
 | Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[agents.default]`; agent arg optional |
-| Context injection for `do` | Redesign | Open (Step 7) | Planned: CLI flags (`--file`, `--git-diff`, `--git-log`). ContextProviders built in Phase 5 but not yet wired into Executor or `do` parser. |
-| Context injection for `talk` | Redesign | Open (Step 8) | Planned: `@`-completion in FinPrompt via `ContextProvider.search()`. ContextProviders built, integration unstarted. |
+| Context injection for `do` | Redesign | Open (Step 7) — **blocked on Executor Loop Rework** | Planned: CLI flags (`--file`, `--git-diff`, `--git-log`). ContextProviders built in Phase 5 but not yet wired into Executor or `do` parser. See `handoff.md` → "ContextProviders — Parked State". |
+| Context injection for `talk` | Redesign | Open (Step 8) — **blocked on Executor Loop Rework** | Planned: `@`-completion in FinPrompt via `ContextProvider.search()`. ContextProviders built, integration unstarted. |
+| Executor loop (one-shot → multi-step) | TBD | Open — **needs design sketch** | Prerequisite for tool calling, context injection, plan-and-execute, self-critique, and most experimental loop patterns. See `handoff.md` → "Executor Loop Rework". |
+| HITL approval model | TBD | Open — **needs research spike** | Current `requires_approval: bool` is agent-level and binary. Fine-grained gates (per-tool, per-plan, per-effect) needed for experimentation. See `handoff.md` → "HITL Approval Model". |
+| AgentBackend protocol shape | Cleanup | Open — [#80](https://github.com/ColeB1722/fin-assist/issues/80) | Protocol currently reflects pydantic-ai shape in ~5 of 6 methods. Revisit when a second backend is actually needed. |
 | External agent federation | Future | Open | Hub can register external A2A servers (any language) in discovery; deferred until real external agent exists to validate config schema |
 | Non-blocking agents | Phase 10 | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented |
 | Deep evals criteria | Phase 14 | Open | Must/must-not/should per agent, LLM-as-judge default |
