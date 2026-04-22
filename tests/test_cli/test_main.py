@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.cli.client import AgentResult, DiscoveredAgent
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.cli.client import DiscoveredAgent
 from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
 from fin_assist.cli.main import main
 

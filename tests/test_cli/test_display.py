@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
-from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.cli.client import AgentResult, DiscoveredAgent
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.cli.client import DiscoveredAgent
 from fin_assist.cli.display import (
     render_agent_card,
     render_agent_output,
@@ -203,7 +203,7 @@ class TestRenderAgentOutput:
         return AgentCardMeta(**kwargs)
 
     def test_auth_required_renders_auth_panel(self):
-        result = AgentResult(success=False, output="anthropic", metadata={"auth_required": True})
+        result = AgentResult(success=False, output="anthropic", auth_required=True)
         meta = self._make_meta()
         output = _capture_output(render_agent_output, result, meta)
         assert "auth" in output.lower()

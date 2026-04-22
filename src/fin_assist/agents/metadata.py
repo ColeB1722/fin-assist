@@ -1,13 +1,12 @@
 """Agent metadata types: AgentCardMeta, AgentResult, MissingCredentialsError, ServingMode.
 
 These types are used across the hub, CLI, and worker — they have no dependency
-on the ConfigAgent class itself, so they live in their own module to avoid
+on the AgentSpec class itself, so they live in their own module to avoid
 circular imports.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -31,12 +30,14 @@ class MissingCredentialsError(Exception):
         )
 
 
-@dataclass
-class AgentResult:
+class AgentResult(BaseModel):
     success: bool
-    output: str
-    warnings: list[str] = field(default_factory=list)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    output: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    context_id: str | None = None
+    thinking: list[str] = Field(default_factory=list)
+    auth_required: bool = False
 
 
 class AgentCardMeta(BaseModel):

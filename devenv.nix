@@ -39,7 +39,12 @@
   };
 
   git-hooks.hooks = {
-    treefmt.enable = true;
+    treefmt = {
+      enable = true;
+      # Disabled to reduce commit friction during active development;
+      # CI should still enforce formatting.
+      settings.fail-on-change = false;
+    };
 
     ruff-check = {
       enable = true;

@@ -126,7 +126,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     import errno
     import socket
 
-    from fin_assist.agents.agent import ConfigAgent
+    from fin_assist.agents.spec import AgentSpec
     from fin_assist.credentials.store import CredentialStore
     from fin_assist.hub.pidfile import acquire as acquire_pidfile
     from fin_assist.paths import PID_FILE
@@ -165,7 +165,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
     console.print(f"[dim]Logging to {log_path}[/dim]")
     agents = [
-        ConfigAgent(name=name, agent_config=ac, config=config, credentials=credentials)
+        AgentSpec(name=name, agent_config=ac, config=config, credentials=credentials)
         for name, ac in config.agents.items()
         if ac.enabled
     ]
@@ -251,6 +251,7 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 initial_message=initial_message,
                 show_thinking=args.show_thinking,
                 card_meta=discovered.card_meta,
+                stream_fn=client.stream_agent,
             )
     except Exception:
         return 1

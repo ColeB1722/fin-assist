@@ -2,7 +2,413 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-20)**: Shared render pipeline (handle_post_response) unified. Progressive output reverted — polling-based streaming was too coupled to pydantic-ai internals and will be re-evaluated when evaluating A2A library options. 458 tests passing. Next: Steps 7-9 (context injection + approval), A2A library evaluation, manual testing re-verification.
+**Current state (2026-04-22)**: Doc alignment complete. README diagrams are canonical (inline Mermaid, rendered to `docs/diagrams/` on demand via `just diagrams`). `docs/architecture.md` prose reconciled with code — no known diagram/prose drift. Backend extraction (2026-04-21) stable: `AgentSpec` is pure config, `Executor` is framework-agnostic via `AgentBackend` protocol, `ContextStore` is `bytes`-in/out, `PydanticAIBackend` uses only public `AgentSpec` API. 489 tests passing, CI green.
+
+**Four known structural gaps**, documented below under Design Sketches and Next Session:
+
+1. **Executor rework** (one-shot → looping) — **Needs design sketch before implementation.** Prerequisite for tool calling, context injection, and most experimental loop patterns.
+2. **ContextProviders integration** (Steps 7-8, parked) — Classes built and tested; wiring deferred until after Executor loop lands.
+3. **Human-in-the-loop (HITL)** — Needs research spike. Current approval is agent-level only; real experimentation needs finer-grained gates (per-tool, per-plan, per-effect). Design space wide; think before building.
+4. **AgentBackend protocol simplification** — Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Not urgent; revisit when a second backend is actually needed.
+
+---
+
+## Design Sketches
+
+### Executor Loop Rework (2026-04-22) — Needs Design Sketch
+
+**Status: Design not yet sketched. Do not implement without a sketch pass first.**
+
+**Problem.** The current `Executor.execute()` is a single-pass pipeline: load history → convert messages → `backend.run_stream()` → drain deltas → save history → complete. It has no concept of a multi-step turn. That's fine for free-form chat but structurally insufficient for:
+
+- **Tool calling** (the dominant pattern in modern agent harnesses): stream → tool_use → run tool → tool_result → stream → possibly more tools → end_turn.
+- **Context injection triggered by agent choice** (e.g. agent asks for a file, loop fetches it, resumes).
+- **Self-critique or plan-and-execute loops** (generate → critique → revise).
+- **Multi-agent orchestration within one turn** (delegate sub-task to peer agent, resume on result).
+
+**Why a sketch is required before coding.** The refactor touches the hottest path in the system. Specific open design questions:
+
+1. **Strategy vs. inline.** Does the loop live inside `Executor`, or does `Executor` delegate to a pluggable `LoopStrategy` protocol (one-shot, tool-using, plan-execute, …)? Strategy gives us flexibility for experimental patterns — which is the stated goal of the project — but adds an abstraction.
+2. **Backend contract changes.** `AgentBackend.run_stream()` currently returns one `StreamHandle` per turn. Tool-using loops need mid-stream events (`tool_use` parts, not just text deltas). Either `StreamHandle` grows a richer event type, or the backend gains a separate `run_step()` call that returns one iteration, or we lean entirely on pydantic-ai's agent-level loop and the Executor's job shrinks.
+3. **TaskUpdater semantics.** a2a-sdk's `TaskUpdater.add_artifact(append=True)` assumes a single artifact per task. Multi-step turns probably want one artifact per step, or a mixed artifact-plus-status-update stream. Needs verification against a2a-sdk's state model.
+4. **ContextStore format versioning.** Today the store holds opaque `bytes` of pydantic-ai history. A looping Executor that introduces tool calls changes the serialized shape. Before the rework lands, add a version byte to the stored format so we can migrate rather than lose history.
+5. **Streaming contract for clients.** Clients (CLI + future TUI) consume `TaskArtifactUpdateEvent` deltas. Do they need to distinguish "model-output delta" from "tool-call event"? If yes, that's A2A extension territory.
+
+**Dependencies unblocked by this work.**
+
+- Tool calling (core capability, currently missing)
+- ContextProviders integration (Steps 7-8)
+- SDD/TDD agent workflows (both will need tools)
+- Any future experimental loop pattern
+
+**Recommended next action.** Open a fresh session specifically to sketch this. No implementation in the same session. Expected sketch artifacts: a `LoopStrategy` protocol signature, a revised `AgentBackend` shape, a TaskUpdater flow diagram for a tool-using turn, and a ContextStore format migration plan.
+
+**Scope explicitly excluded.** Do not try to design HITL gates in the same sketch (HITL has its own research spike — see below). The loop refactor should define *where* gates can be inserted (hook points in the loop) but not *what* the gate semantics are.
+
+---
+
+### HITL Approval Model (2026-04-22) — Needs Research Spike
+
+**Status: Unstarted. Research spike required before design sketch.**
+
+**Problem.** The current approval model is a single `requires_approval: bool` on `AgentCardMeta`. The client (CLI) reads that flag and shows an approval widget on structured output. That's adequate for the shell agent's "execute/cancel" gate. It's nowhere near enough for the experimentation patterns the project wants to support.
+
+**Examples of approval needs we'll encounter:**
+
+- **Per-tool-call approval.** "Agent wants to run `rm -rf /tmp/x`. Approve?" Different gate than agent-level approval.
+- **Plan approval.** Agent produces a multi-step plan; human approves the plan, then steps execute without further approval.
+- **Approval with edit.** Agent proposes a command; human edits it before it runs.
+- **Destructive-effect approval.** Any write to disk, any network call, any `git push`, any DB write.
+- **Approval thresholds.** Auto-approve reads, gate writes, always-prompt for deletes.
+- **Batch approval.** Agent proposes 10 edits; human approves/rejects per file, or approves all.
+- **Provisional execution.** Run in a sandbox, show diff, approve merge.
+
+**Why it's trap-prone.** Each of these examples could be implemented as "just another flag", and if we do that six times we end up with a `requires_approval` bool, a `tool_approval_policy` enum, a `plan_approval_hook`, a `destructive_effect_checker`, etc. — a pile of unrelated mechanisms that don't compose. The right abstraction is almost certainly a **single `ApprovalGate` protocol** with well-defined hook points in the loop, but the exact shape depends on:
+
+- What granularity does the loop actually expose? (→ answered by Executor Loop Rework)
+- How does a gate return control — sync, async, via the event queue back to the client?
+- How are gate decisions serialized for resumability / replay?
+- Do gates compose (chain of `ApprovalGate`s)? What's the resolution semantics?
+
+**Recommended research spike.** Before any design sketch, spend a session reading how other projects handle this:
+
+- **Claude Code** — its tool-approval prompts, settings (`--dangerously-skip-permissions`, `allowed_tools`, etc.)
+- **opencode** — permission/approval model
+- **AutoGen / LangGraph** — their `HumanMessage` / interrupt patterns
+- **Cursor / Aider** — diff-and-approve flows
+- **Copilot Workspace, Devin, others** — plan-approval UX
+
+Write up findings as a comparison matrix. From that, identify the minimum gate primitive that composes cleanly. Only then sketch.
+
+**Dependency note.** HITL design is loosely coupled to Executor Loop Rework. The loop refactor defines *where* gates fire (hook points); HITL research defines *what gates do when they fire*. Execute in that order.
+
+**Do not bake gate semantics into the loop refactor.** The temptation will be to design approval in the same session as the loop. Resist — they compose better if designed independently and then reconciled.
+
+---
+
+### ContextProviders — Parked State (2026-04-22)
+
+**Status: Classes built and unit-tested; integration deferred.**
+
+**What exists.** `FileFinder`, `GitContext`, `ShellHistory`, `Environment` in `src/fin_assist/context/`. Each implements the `ContextProvider` protocol (`base.py`). Full unit test coverage under `tests/test_context/`. Supporting types: `ContextItem`, `ContextType` enum, `ItemStatus` lifecycle.
+
+**What doesn't exist.**
+
+- No caller in `src/` instantiates any provider.
+- `AgentSpec.supports_context()` is a stub that returns based on a hardcoded frozenset, not agent config.
+- `llm/prompts.py`'s `build_user_message`/`format_context` helpers accept `ContextItem` but nothing calls them from the request path.
+- CLI has no `--file`, `--git-diff`, or `--git-log` flags on `do`.
+- `FinPrompt` has no `@`-triggered completion.
+
+**Why parked, not deleted.** The classes encode design decisions (context taxonomy, item lifecycle, provider interface) that the CLI and Executor will consume when Steps 7-8 land. Rewriting them when needed is strictly more work than keeping them. The alternative — delete now, recreate later — would also lose the tests.
+
+**When to pick up.** After the Executor loop rework (see above). The loop rework changes the shape of what "inject context" means, so wiring context providers before the loop exists would lock in the wrong API.
+
+**In-code marker.** `src/fin_assist/context/__init__.py` has a module docstring pointing here, so a future session reading the code sees the parked status without having to grep the handoff.
+
+**The session that picks this up should:**
+
+1. Re-read this entry + the in-code docstring.
+2. Confirm the Executor loop rework has landed (otherwise, don't start).
+3. Choose one provider (probably `FileFinder`) and wire it end-to-end as a vertical slice — CLI flag → Executor injection → system prompt. Ship it. Then generalize for the others.
+4. Update `AgentSpec.supports_context()` to read from `AgentConfig.supported_context_types` rather than the hardcoded set.
+
+---
+
+### AgentBackend Extraction (2026-04-21)
+
+**Problem**: The `Executor` is deeply coupled to pydantic-ai (~15 distinct API touch points in 283 lines). It both orchestrates the A2A task lifecycle AND translates between A2A and pydantic-ai message formats. `AgentSpec` (formerly `ConfigAgent`) has framework-coupled construction methods (`build_pydantic_agent()`, `build_model()`). `ContextStore` hardcodes `TypeAdapter(list[ModelMessage])` for serialization.
+
+**Goal**: Extract pydantic-ai coupling into an `AgentBackend` protocol so that the `Executor` orchestrates the A2A task lifecycle without knowing which LLM framework is underneath, `ContextStore` becomes framework-agnostic, and `AgentSpec` becomes a pure config object.
+
+**Protocol shapes**:
+
+```python
+@dataclass
+class RunResult:
+    output: Any                     # final output (str or structured)
+    serialized_history: bytes       # opaque — backend owns the format
+    new_message_parts: list[Part]   # already in A2A terms (thinking, etc.)
+
+class StreamHandle(Protocol):
+    def __aiter__(self) -> AsyncIterator[str]: ...   # text deltas
+    async def result(self) -> RunResult: ...         # call after iteration
+
+class AgentBackend(Protocol):
+    def check_credentials(self) -> list[str]: ...
+    def convert_history(self, a2a_messages: Sequence[Message]) -> list[Any]: ...
+    def run_stream(self, *, messages: list[Any], model: Any) -> StreamHandle: ...
+    def serialize_history(self, messages: list[Any]) -> bytes: ...
+    def deserialize_history(self, data: bytes) -> list[Any]: ...
+    def convert_result_to_part(self, result: Any) -> Part: ...
+```
+
+**Key decisions**:
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Streaming API | `StreamHandle` (iterator + result accessor) | Matches the two-phase shape of all LLM frameworks (stream tokens, then access final result). Consumer drives iteration. Backend wraps context manager lifecycle internally. |
+| ContextStore | `bytes` in/out | Backend owns serialization. ContextStore becomes a dumb KV store. Zero framework deps. |
+| AgentSpec role | Pure config object | No `build_pydantic_agent()` or `build_model()` — those move to `PydanticAIBackend`. AgentSpec exposes config via properties only. |
+| `RunResult.new_message_parts` | `list[Part]` (A2A type) | Conversion is the backend's job. `Part` is our domain type (A2A), not a framework type. |
+| `check_credentials()` | Stays on AgentSpec, backend delegates | Credential checking is a config concern, not a framework concern. |
+
+**Implementation phases**:
+
+1. Rename: `ConfigAgent` → `AgentSpec`, `FinAssistExecutor` → `Executor`
+2. Create `AgentBackend` protocol + `PydanticAIBackend` (TDD)
+3. Make `ContextStore` framework-agnostic (`bytes` in/out)
+4. Refactor `Executor` to take `AgentBackend` instead of `AgentSpec`
+5. Update `AgentFactory` wiring
+6. Move `build_pydantic_agent()` / `build_model()` from `AgentSpec` to `PydanticAIBackend`
+7. Update all tests
+8. `just ci` verification
+
+### Nix / Home Manager Packaging (2026-04-21)
+
+**Status**: Pre-design — no implementation started.
+
+**Goal**: Make fin-assist installable via Nix and declaratively manageable via Home Manager, integrating with the owner's existing dotfiles-driven setup.
+
+**Why**: The owner's dev environment is fully declarative via Home Manager (`~/dotfiles/home.nix`). fin-assist should be installable the same way as every other tool, with config managed alongside the rest of the dotfiles.
+
+#### Layer 1: PyPI Publishing (prerequisite)
+
+Publish to PyPI so Nix tooling can fetch a known-good sdist/wheel. Without this, `uv2nix` and `nixpkgs buildPythonApplication` have nothing to build from.
+
+Steps:
+1. Ensure `pyproject.toml` has correct metadata (description, classifiers, license, URLs)
+2. Add CI workflow for publishing on tag push (`uv publish`)
+3. Publish v0.1.0 to PyPI (or TestPyPI first)
+
+#### Layer 2: Nix Flake
+
+Two viable approaches:
+
+| Approach | How | Pros | Cons |
+|----------|-----|------|------|
+| **`uv2nix`** | Locks `uv.lock` into Nix derivations | Most idiomatic for Python+nix; already uses `uv`; reproducible lockfile | Requires `uv2nix` + `pyproject.nix` in flake inputs; more moving parts |
+| **`nixpkgs buildPythonApplication`** | Fetches from PyPI | Simpler overlay; familiar pattern | Requires PyPI publish first; dependency resolution via nixpkgs may lag |
+
+Recommendation: **`uv2nix`** — the project already uses `uv` and `devenv`, so `uv2nix` is the natural fit. It produces a `python313Packages.fin-assist` derivation from the lockfile.
+
+Flake structure:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    pyproject-nix.url = "github:pyproject-nix/pyproject.nix";
+    uv2nix.url = "github:pyproject-nix/uv2nix";
+    # ...
+  };
+  outputs = { nixpkgs, pyproject-nix, uv2nix, ... }@inputs: {
+    packages.x86_64-linux.fin-assist = ...;  # uv2nix derivation
+    overlays.default = final: prev: { fin-assist = ...; };
+  };
+}
+```
+
+#### Layer 3: Home Manager Module
+
+A `programs.fin-assist` module for declarative config + service management:
+
+```nix
+# In home.nix
+programs.fin-assist = {
+  enable = true;
+
+  settings = {
+    general.default_provider = "anthropic";
+    general.default_model = "claude-sonnet-4-6";
+
+    agents.default = {
+      enabled = true;
+      system_prompt = "chain-of-thought";
+      output_type = "text";
+      thinking = "medium";
+      serving_modes = ["do" "talk"];
+    };
+
+    agents.shell = {
+      enabled = true;
+      system_prompt = "shell";
+      output_type = "command";
+      thinking = null;
+      serving_modes = ["do"];
+      requires_approval = true;
+    };
+  };
+
+  # Optional: run hub server as systemd user service
+  server = {
+    enable = true;           # auto-start on login
+    port = 4096;
+  };
+
+  # Optional: fish plugin (when Phase 12 lands)
+  fishIntegration.enable = true;
+};
+```
+
+**Module implementation** would generate:
+- `~/.config/fin/config.toml` from `settings` (Nix → TOML via `formats.toml`)
+- `~/.local/share/fin/` data directory (via `xdg.dataFile` or `systemd.tmpfiles`)
+- `systemd.user.services.fin-assist-hub` if `server.enable = true`
+- Fish plugin files if `fishIntegration.enable = true`
+
+**Credential handling**: API keys stay out of the Nix store (they're secrets). The module would document using `CredentialStore` file or env vars post-install, or integrate with the owner's 1Password CLI setup via `secretspec`.
+
+#### Open Questions
+
+| Question | Notes |
+|----------|-------|
+| PyPI package name | `fin-assist` (matches CLI) or `fin_assist` (matches Python package)? Most tools use the dash form on PyPI |
+| Flake location | Standalone flake in this repo, or add to `~/dotfiles/flake.nix` as an overlay? |
+| Versioning | Start PyPI publishes at `0.1.0` or wait until a stable feature set? |
+| uv2nix vs nixpkgs | Verify `uv2nix` handles `a2a-sdk` and `pydantic-ai` dependency chains correctly before committing |
+| Config validation | Nix → TOML generation needs to match `Config` schema exactly; consider generating from the same schema |
+
+#### Dependencies
+
+- PyPI publish must come first (for `nixpkgs` approach) or be done in parallel (for `uv2nix` which builds from source)
+- Fish plugin module depends on Phase 12
+- systemd service for hub server is independent — can ship as soon as packaging works
+
+---
+
+## AgentBackend Extraction — Accomplished (2026-04-21)
+
+**Status**: Complete
+
+### What Was Accomplished
+
+Extracted pydantic-ai coupling from the hub layer into an `AgentBackend` protocol so the `Executor` orchestrates A2A task lifecycle without knowing which LLM framework is underneath.
+
+**Phase 1: Rename** — `ConfigAgent` → `AgentSpec`, `FinAssistExecutor` → `Executor` across 12 source + test files.
+
+**Phase 2: Backend protocol** — Created `agents/backend.py` with `AgentBackend` protocol, `StreamHandle` protocol, `RunResult` dataclass, and `PydanticAIBackend` concrete implementation. 24 new tests.
+
+**Phase 3: ContextStore** — Changed from `TypeAdapter(list[ModelMessage])` to `bytes`-in/`bytes`-out. Backend owns serialization. Zero framework deps in `context_store.py`.
+
+**Phase 4: Executor refactor** — Executor now takes `AgentBackend` instead of `AgentSpec`. No pydantic-ai imports. Uses `StreamHandle` for streaming and `RunResult` for final results.
+
+**Phase 5: Factory wiring** — `AgentFactory.create_a2a_app()` creates `PydanticAIBackend(agent_spec=agent)` and passes to `Executor(backend=backend, ...)`.
+
+**Phase 6: Move construction** — `build_pydantic_agent()` and `build_model()` moved from `AgentSpec` to `PydanticAIBackend._build_pydantic_agent()` and `_build_model()`. `AgentSpec` is now a pure config object (properties only).
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Streaming API | `StreamHandle` (iterator + result accessor) | Matches two-phase shape of all LLM frameworks. Consumer drives. Backend wraps context manager internally. |
+| ContextStore | `bytes` in/out | Backend owns serialization. Zero framework deps. Adding a new backend automatically gets serialization. |
+| AgentSpec role | Pure config object | No `build_pydantic_agent()` or `build_model()`. All pydantic-ai knowledge in `PydanticAIBackend`. |
+| `RunResult.new_message_parts` | `list[Part]` (A2A type) | Conversion is the backend's job. `Part` is our domain type, not a framework type. |
+| `check_credentials()` | Stays on AgentSpec, backend delegates | Credential checking is a config concern. |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/agent.py` | Renamed `ConfigAgent` → `AgentSpec` |
+| `src/fin_assist/agents/__init__.py` | Updated exports, added backend types |
+| `src/fin_assist/agents/backend.py` | **New** — `AgentBackend`, `StreamHandle`, `RunResult`, `PydanticAIBackend` |
+| `src/fin_assist/agents/metadata.py` | Updated docstring reference |
+| `src/fin_assist/hub/executor.py` | Rewritten — takes `AgentBackend`, zero pydantic-ai imports |
+| `src/fin_assist/hub/factory.py` | Creates `PydanticAIBackend`, passes to `Executor` |
+| `src/fin_assist/hub/app.py` | Updated type hints |
+| `src/fin_assist/hub/context_store.py` | `bytes` in/out, no framework deps |
+| `src/fin_assist/hub/__init__.py` | Updated exports |
+| `src/fin_assist/cli/main.py` | Updated import + construction |
+| `tests/test_agents/test_backend.py` | **New** — 24 backend tests |
+| `tests/test_agents/test_agent.py` | Renamed all references |
+| `tests/test_hub/test_executor.py` | Rewritten — mocks `AgentBackend` instead of pydantic-ai |
+| `tests/test_hub/test_context_store.py` | Uses `bytes` instead of `ModelMessage` |
+| `tests/test_hub/test_factory.py` | Updated imports |
+| `tests/test_hub/test_app.py` | Patches `PydanticAIBackend._build_model` |
+
+### Test Summary
+
+```text
+494 tests passing (467 before + 27 new: 24 backend + 3 executor)
+CI green (fmt, lint, typecheck, all tests)
+```
+
+### Next Steps
+
+- None remaining from backend extraction — all cleanup complete
+
+---
+
+## fasta2a → a2a-sdk Migration (2026-04-20)
+
+**Status**: Complete (Phases 1-7)
+
+### What Was Accomplished
+
+Full migration from `fasta2a` (pydantic's abandoned A2A implementation) to `a2a-sdk` (Google's official A2A Python SDK v1.0.0), plus Phase 9 streaming that was blocked on fasta2a.
+
+**Phase 1: Storage split** — `hub/context_store.py` extracts conversation history (ModelMessage) from `SQLiteStorage`. A2A task storage uses `InMemoryTaskStore` (ephemeral).
+
+**Phase 2: AgentExecutor** — `hub/executor.py` replaces `FinAssistWorker(Worker[Context])`. Uses `TaskUpdater` for all state transitions (`start_work`, `complete`, `failed`, `requires_auth`). `MissingCredentialsError` → `updater.requires_auth()`. Protobuf message types replace TypedDicts.
+
+**Phase 3: Factory + Agent Card** — `hub/factory.py` uses a2a-sdk route factories (`create_jsonrpc_routes`, `create_agent_card_routes`). `AgentExtension(uri="fin_assist:meta")` replaces `Skill(id="fin_assist:meta")` hack. `AgentCapabilities(streaming=True, extensions=[...])`.
+
+**Phase 4: Hub App** — `hub/app.py` is a FastAPI parent app (matching sub-apps from a2a-sdk). No more `AsyncExitStack` lifespan hack. Sub-apps from route factories don't need explicit lifespan management.
+
+**Phase 5: Client** — `cli/client.py` uses `ClientFactory(config=ClientConfig(httpx_client=...))` + `client.send_message(request)` async iterator. `_poll_task()` eliminated. `_task_to_dict()` normalizes protobuf enums (state ints → strings, `ROLE_AGENT` → `agent`).
+
+**Phase 6: Streaming** — Executor uses `pydantic_agent.run_stream()` + `stream.stream_text(delta=True)` → `TaskUpdater.add_artifact(append=True, last_chunk=False)` per delta, final `last_chunk=True`. Client `stream_agent()` yields `StreamEvent` objects (`text_delta`, `completed`, `failed`, `auth_required`). Chat loop uses Rich `Live` for progressive Markdown display.
+
+**Phase 7: Cleanup** — Deleted `hub/worker.py`, `hub/storage.py`, `tests/test_hub/test_worker.py`, `tests/test_hub/test_storage.py`. Removed `fasta2a>=0.6` from `pyproject.toml`. All fasta2a imports eliminated.
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Task persistence | `InMemoryTaskStore` (ephemeral) | Tasks created/resolved in one session; history persisted separately in `ContextStore` |
+| Auth-required state | `TaskUpdater.requires_auth()` | First-class in a2a-sdk (`TaskState.TASK_STATE_AUTH_REQUIRED` = value 8) |
+| Agent card metadata | `AgentExtension(uri="fin_assist:meta")` | Proper A2A extension, eliminates `Skill(id="fin_assist:meta")` hack |
+| Parent app framework | FastAPI | Matches a2a-sdk sub-apps from route factories |
+| Streaming depth | Token-by-token via `stream_text(delta=True)` | Fine-grained progressive output; `add_artifact(append=True, last_chunk=)` for chunking |
+| No broker | `DefaultRequestHandler` handles routing | Eliminates `InMemoryBroker` indirection |
+| No lifespan hack | Route factory sub-apps are self-contained | No `AsyncExitStack` needed |
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Removed `fasta2a>=0.6` |
+| `hub/worker.py` | **Deleted** |
+| `hub/storage.py` | **Deleted** |
+| `hub/context_store.py` | **New** (Phase 1) — extracted from SQLiteStorage |
+| `hub/executor.py` | **New** (Phase 2) — a2a-sdk AgentExecutor + streaming |
+| `hub/factory.py` | Rewritten for a2a-sdk route factories + AgentExtension |
+| `hub/app.py` | Rewritten as FastAPI parent |
+| `hub/__init__.py` | Updated exports |
+| `cli/client.py` | Rewritten for a2a-sdk ClientFactory + StreamEvent |
+| `cli/interaction/chat.py` | Added streaming support via Rich Live |
+| `tests/test_hub/test_worker.py` | **Deleted** |
+| `tests/test_hub/test_storage.py` | **Deleted** |
+| `tests/test_hub/test_executor.py` | **New** — executor + streaming tests |
+| `tests/test_hub/test_context_store.py` | Already existed from Phase 1 |
+| `tests/test_hub/test_factory.py` | Updated for a2a-sdk |
+| `tests/test_hub/test_app.py` | Updated for FastAPI + a2a-sdk |
+| `tests/test_cli/test_client.py` | Rewritten — removed fasta2a, added StreamEvent tests |
+
+### Test Summary
+
+```text
+446 tests passing (23 removed from deleted worker/storage tests, 1 new streaming test added)
+11 protobuf type annotation warnings (inherent to a2a-sdk generated types)
+```
+
+### Known Issues
+
+- 11 `ty` typecheck warnings from protobuf types — `RepeatedCompositeFieldContainer` vs `list`, `Value` vs `Struct`, `MessageToDict` returning untyped dicts. These are inherent to a2a-sdk's protobuf-based API.
+- `_stream_and_render` in chat.py falls back to blocking `send_message_fn` for the `do` command. The `do` command stays blocking (intentional per plan).
 
 ---
 
@@ -983,27 +1389,48 @@ Total: 440 tests, all passing
 
 ---
 
-## Next Session: A2A SDK Migration + Context Injection
+## Next Session
 
-### Goals
+### Recommended sequence
 
-1. **A2A SDK migration**: Replace fasta2a with the official `a2a-sdk` (Google's `a2a-python`). fasta2a lacks protocol completeness (no extensions, no native streaming, no task resubscription). The official SDK implements the full A2A spec including extensions — which should eliminate the custom protocol hacks below.
-2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message.
-3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`.
-4. **Step 9**: Approval "add context" option for structured output in talk mode.
-5. **Manual testing**: Re-verify Chunks A-E after redesign.
+1. **PR review + manual verification baseline.** Review the open PR that's gathered changes since the last merge. Before the Executor rework, run the manual-testing "Pre-Refactor Smoke Set" (`docs/manual-testing.md`): Chunk A (all), B1/B3/B4/B6, C1/C5/C10/C11/C13, F1/F3. This establishes a known-good baseline so any regression from the rework is attributable.
+2. **Executor Loop Rework — design sketch session.** Open a dedicated session. Follow the "Needs Design Sketch" entry above. Produce sketch artifacts; do not implement. End the session with a checked-in sketch in this file.
+3. **HITL research spike.** Separate session. Follow the "Needs Research Spike" entry. Produce a comparison matrix of how Claude Code / opencode / AutoGen / LangGraph / Cursor / Aider handle approval. Do not design yet.
+4. **Executor Loop Rework — implementation session.** Separate session. Implement against the sketch from (2). Re-run the Pre-Refactor Smoke Set to confirm no regression; extend with tests for new loop behavior.
+5. **ContextProviders integration (Steps 7-8).** Only after (4) lands. Wire `FileFinder` first as a vertical slice (`--file` flag → Executor context injection → system prompt). Generalize when `--git-diff` comes along.
+6. **HITL design sketch + implementation.** Informed by (3) and (4). Dedicated sketch session first, then implementation.
 
-### Known Technical Debt (defer to SDK migration)
+The ordering is deliberate: (2) unblocks everything; (3) is cheap but trap-prone and benefits from being independent of (2); (4) has to precede (5) because the loop's shape dictates the injection API.
 
-The following are custom protocol extensions that exist because fasta2a doesn't support them natively. They should be re-evaluated during the SDK migration — not fixed now — since the official SDK may provide native mechanisms that replace them entirely.
+### Deferred / open as external tickets
 
-| Convention | Where | Why it exists | SDK migration impact |
-|------------|-------|---------------|---------------------|
-| `metadata.type == "thinking"` on TextPart | worker writes, client reads | No native thinking support in A2A/fasta2a | A2A extensions or native thinking parts may replace this |
-| `meta_skill` encoding (serving modes, multi-turn) in agent card skills | factory.py writes, client reads | No custom metadata fields on agent card | SDK may support proper agent capabilities/metadata |
-| `metadata.auth_required` flag on AgentResult | client.py | Auth-required is a custom state not in A2A spec | May need to stay as extension, but SDK extensions may formalize it |
+- **AgentBackend protocol simplification.** Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Revisit when a second backend (LangChain, Anthropic SDK, etc.) is actually needed. Not urgent.
+- **ContextStore format versioning.** Before (4) lands, add a version byte to the stored history format so the loop refactor doesn't silently corrupt existing sessions. Tiny change; fits in the (2) sketch or (4) implementation.
+- **Diagram / doc drift defense.** The "citation required" rule in `docs/architecture.md` (2026-04-22) is now the structural guard. If a future session claims something is "Resolved" or "integrated" without a `file:line` citation, push back.
 
-The current implementation serves as a reference translation layer — working code that maps the data flow and edge cases, making the migration easier than building from scratch.
+---
+
+## Historical: A2A SDK Migration + Context Injection Plan (2026-04-20, superseded)
+
+> **Status**: Goals 1-4 below are **complete** (a2a-sdk migration landed 2026-04-20; config-driven redesign Steps 1-6 landed 2026-04-11; Steps 7-9 explicitly deferred — see current Next Session for ordering). Kept as historical record of the migration plan.
+
+### Original Goals
+
+1. ~~**A2A SDK migration**~~: Done. See "fasta2a → a2a-sdk Migration (2026-04-20)" entry above.
+2. **Step 7**: Add `--file`, `--git-diff`, `--git-log` CLI flags to `do` command. Inject as `ContextItem`s into user message. — **Deferred** until Executor Loop Rework lands.
+3. **Step 8**: Extend `FinPrompt` with `@`-triggered fuzzy completion via `ContextProvider.search()`. — **Deferred**, same reason.
+4. **Step 9**: Approval "add context" option for structured output in talk mode. — **Partially obsolete**. Folds into the HITL research spike, not a standalone step.
+5. ~~**Manual testing**~~: Re-verified post-migration; `docs/manual-testing.md` was audited 2026-04-22 and corrected.
+
+### Resolved Technical Debt
+
+The custom protocol extensions below existed because fasta2a didn't support them. The a2a-sdk migration replaced most of them with native mechanisms:
+
+| Convention (fasta2a era) | Resolution under a2a-sdk |
+|--------------------------|--------------------------|
+| `metadata.type == "thinking"` on TextPart | Still used; a2a-sdk has no native thinking part type. Acceptable. |
+| `meta_skill` encoding on agent card skills | Replaced with `AgentExtension(uri="fin_assist:meta", params=Struct)` — proper a2a-sdk extension. |
+| `metadata.auth_required` flag on AgentResult | Replaced with native `TaskState.TASK_STATE_AUTH_REQUIRED`. |
 
 ---
 
@@ -1088,6 +1515,7 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 | 8 | **CLI Client** | ✅ Complete |
 | 8b | **CLI REPL Mode** | ✅ Complete |
 | — | **Config-Driven Redesign** | ✅ Steps 1-6 complete, Steps 7-9 pending |
+| — | **Backend Extraction** | ✅ Complete — AgentSpec pure config, Executor framework-agnostic |
 | 9a | **Progressive Output (polling)** | ↩️ Reverted — jank, tight coupling to pydantic-ai internals |
 | 9b | Full SSE Streaming | ⬜ **Blocked** (fasta2a v0.7+ unreleased) |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (see design sketch) |
@@ -1226,12 +1654,13 @@ To quickly get context in a new session:
 - Config stored in `~/.config/fin/config.toml`
 - Credentials stored in `~/.local/share/fin/credentials.json` (0600 permissions)
 - Server binds to `127.0.0.1` only (local-only)
-- A2A protocol via fasta2a for multi-client support
+- A2A protocol via a2a-sdk v1.0 for multi-client support
 - Multi-path routing: N agents at `/agents/{name}/`, each with own agent card
 - Conversation threading via A2A `context_id`
-- SQLite for task + context storage (shared across agents)
-- Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI deferred
+- SQLite for context storage; InMemoryTaskStore for A2A tasks (ephemeral)
+- Server lifecycle: standalone via `fin-assist serve`; auto-start from CLI
 - Existing TUI widgets set aside — will become A2A client in Phase 11
+- `AgentSpec` is a pure config object (zero framework imports); all LLM coupling in `PydanticAIBackend`
 
 ---
 

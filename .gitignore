@@ -60,5 +60,9 @@ config.toml
 # Test snapshots (generated)
 tests/snapshots/*.svg
 
+# Rendered diagrams (source is README.md ```mermaid blocks; regenerate with `just diagrams`)
+docs/diagrams/*.svg
+docs/diagrams/*.png
+
 # Logging
 hub.log

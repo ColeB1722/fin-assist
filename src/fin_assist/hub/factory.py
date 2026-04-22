@@ -1,101 +1,127 @@
-"""AgentFactory: translates a ConfigAgent into a fasta2a ASGI sub-application.
+"""AgentFactory: translates an AgentSpec into a FastAPI sub-application.
 
-Constructs ``FastA2A`` directly with a ``FinAssistWorker``, eliminating the
-wasted default ``AgentWorker`` that ``pydantic_agent.to_a2a()`` creates.
+Uses the a2a-sdk's route factories (``create_jsonrpc_routes``,
+``create_agent_card_routes``) to construct a per-agent ASGI sub-app.
+Each sub-app is a FastAPI application that handles:
 
-AgentCardMeta transport — why a Skill, not an AgentCapabilities extension
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The A2A spec (protocol version 0.3.0) defines ``AgentCapabilities.extensions`` as
-the correct place to publish structured per-agent metadata.  Extensions support
-is implemented in pydantic/fasta2a PR #44 (not merged as of fasta2a 0.6.0).
+- ``GET /.well-known/agent-card.json`` — agent card with extensions
+- ``POST /`` — JSON-RPC endpoint (message/send, tasks/get, etc.)
 
-Until that PR lands, we encode ``AgentCardMeta`` inside a reserved ``Skill``
-entry (id ``"fin_assist:meta"``).  Clients discover it by filtering
-``agent_card["skills"]`` on that id and JSON-parsing the ``description`` field.
-
-Migration path once fasta2a >= 0.7 (or whatever ships extensions):
-1. Replace the ``meta_skill`` block with an ``AgentExtension`` dict.
-2. Pass it via ``FastA2A(capabilities=AgentCapabilities(extensions=[...]))``.
-3. Update ``cli/client.py`` to read from ``capabilities.extensions`` instead.
-4. Bump ``fasta2a>=0.7`` in ``pyproject.toml``.
+AgentCardMeta transport
+~~~~~~~~~~~~~~~~~~~~~~~
+``AgentCardMeta`` is published as an ``AgentExtension`` in
+``AgentCapabilities.extensions``, keyed by the ``fin_assist:meta`` URI.
+The extension ``params`` field carries the serialised ``AgentCardMeta``
+as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 """
 
 from __future__ import annotations
 
-import json
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes.agent_card_routes import create_agent_card_routes
+from a2a.server.routes.jsonrpc_routes import create_jsonrpc_routes
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import (
+    AgentCapabilities,
+    AgentCard,
+    AgentExtension,
+    AgentInterface,
+    AgentProvider,
+    AgentSkill,
+)
+from fastapi import FastAPI
+from google.protobuf.struct_pb2 import Struct
+
+from fin_assist.agents.backend import PydanticAIBackend
+from fin_assist.hub.executor import Executor
+
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from fasta2a.applications import FastA2A
-    from fasta2a.schema import Skill
-    from fasta2a.storage import Storage
-
-    from fin_assist.agents.agent import ConfigAgent
-
-
-@asynccontextmanager
-async def _worker_lifespan(
-    app: FastA2A,
-    *,
-    worker,
-) -> AsyncIterator[None]:
-    """Custom lifespan that starts ``FinAssistWorker`` and the task manager."""
-    async with app.task_manager, worker.run():
-        yield
+    from fin_assist.agents.spec import AgentSpec
+    from fin_assist.hub.context_store import ContextStore
 
 
 class AgentFactory:
-    """Converts ``ConfigAgent`` instances into mountable fasta2a sub-apps.
+    """Converts ``AgentSpec`` instances into mountable FastAPI sub-apps.
 
     Args:
-        storage: Shared ``Storage`` instance (SQLite or in-memory).
+        context_store: Shared ``ContextStore`` instance for conversation history.
     """
 
-    def __init__(self, storage: Storage) -> None:
-        self._storage = storage
+    def __init__(self, context_store: ContextStore) -> None:
+        self._context_store = context_store
 
-    def create_a2a_app(self, agent: ConfigAgent) -> FastA2A:
-        """Build a fasta2a ASGI sub-app for a single agent.
+    def create_a2a_app(
+        self,
+        agent: AgentSpec,
+        *,
+        base_url: str = "http://127.0.0.1:4096",
+    ) -> FastAPI:
+        """Build a FastAPI sub-app for a single agent.
 
-        Constructs ``FastA2A`` directly with a ``FinAssistWorker`` — no
-        ``pydantic_agent.to_a2a()`` is called, so there's no wasted default
-        ``AgentWorker`` construction.
+        Constructs an ``AgentCard`` with proper extensions, creates a
+        ``Executor`` and ``InMemoryTaskStore``, wires them
+        through ``DefaultRequestHandler``, and returns a FastAPI app
+        with the A2A JSON-RPC and agent-card routes mounted.
 
-        Each agent gets its own ``InMemoryBroker`` so its worker only receives
-        tasks routed to that specific agent endpoint.  Storage is shared
-        (tasks are keyed by unique ID).
+        Args:
+            agent: The ``AgentSpec`` to serve.
+            base_url: Public base URL used in the agent card's supported
+                      interfaces.
         """
-        from fasta2a.applications import FastA2A
-        from fasta2a.broker import InMemoryBroker
-
-        from fin_assist.hub.worker import FinAssistWorker
-
         meta = agent.agent_card_metadata
-        meta_skill: Skill = {
-            "id": "fin_assist:meta",
-            "name": "fin_assist metadata",
-            "description": json.dumps(meta.model_dump()),
-            "tags": list(meta.tags),
-            "input_modes": ["application/json"],
-            "output_modes": ["application/json"],
-        }
+        meta_struct = Struct()
+        meta_struct.update(meta.model_dump())
 
-        broker = InMemoryBroker()
-        worker = FinAssistWorker(
-            agent=agent,
-            broker=broker,
-            storage=self._storage,
-        )
-
-        app = FastA2A(
-            storage=self._storage,
-            broker=broker,
+        agent_card = AgentCard(
             name=agent.name,
             description=agent.description,
-            skills=[meta_skill],
-            lifespan=lambda app: _worker_lifespan(app, worker=worker),
+            version="1.0.0",
+            provider=AgentProvider(organization="fin-assist"),
+            capabilities=AgentCapabilities(
+                streaming=True,
+                extensions=[
+                    AgentExtension(
+                        uri="fin_assist:meta",
+                        params=meta_struct,
+                    )
+                ],
+            ),
+            default_input_modes=["text/plain"],
+            default_output_modes=["text/plain", "application/json"],
+            skills=[
+                AgentSkill(
+                    id=agent.name,
+                    name=agent.name,
+                    description=agent.description,
+                    tags=list(meta.tags),
+                )
+            ],
+            supported_interfaces=[
+                AgentInterface(url=f"{base_url}/agents/{agent.name}/"),
+            ],
         )
+
+        backend = PydanticAIBackend(agent_spec=agent)
+        executor = Executor(
+            backend=backend,
+            context_store=self._context_store,
+        )
+        task_store = InMemoryTaskStore()
+        request_handler = DefaultRequestHandler(
+            agent_executor=executor,
+            task_store=task_store,
+            agent_card=agent_card,
+        )
+
+        app = FastAPI(
+            title=f"fin-assist: {agent.name}",
+            docs_url=None,
+            redoc_url=None,
+        )
+        app.routes.extend(create_agent_card_routes(agent_card))
+        app.routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
+
+        app.state.agent_card = agent_card
         return app

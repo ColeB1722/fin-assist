@@ -51,6 +51,18 @@ install-fish:
 install-dev:
     uv pip install -e .
 
+# ── Diagrams ─────────────────────────────────────────────────────────────────
+
+# Render README ```mermaid blocks to docs/diagrams/*.svg (+ *.png).
+# The README is the single source of truth; each block is named by a preceding
+# `<!-- diagram:<slug> -->` comment. Generated files are gitignored.
+diagrams:
+    python scripts/render_diagrams.py
+
+# Remove generated diagram images.
+diagrams-clean:
+    rm -f docs/diagrams/*.svg docs/diagrams/*.png
+
 # ── Build ────────────────────────────────────────────────────────────────────
 
 build:

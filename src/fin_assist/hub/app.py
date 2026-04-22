@@ -1,83 +1,87 @@
-"""Agent Hub — parent Starlette ASGI application.
+"""Agent Hub — parent FastAPI application.
 
-Mounts each registered agent as a fasta2a sub-app at ``/agents/{name}/``.
+Mounts each registered agent as a FastAPI sub-app at ``/agents/{name}/``.
 Adds two top-level endpoints:
 
 - ``GET /health``  — liveness check
-- ``GET /agents``  — discovery: lists all mounted agents with their card URL and
-                     decoded ``AgentCardMeta`` so clients don't need to fetch
-                     every agent card separately.
+- ``GET /agents``  — discovery: lists all mounted agents with their card URL
+                      and decoded ``AgentCardMeta`` so clients don't need to
+                      fetch every agent card separately.
 
-Lifespan note
-~~~~~~~~~~~~~
-Starlette does not cascade ``lifespan`` events into mounted sub-apps.  Each
-``FastA2A`` sub-app relies on its own lifespan to initialise its
-``TaskManager`` (and broker connection).  We work around this by collecting all
-``FastA2A`` instances and running their ``task_manager`` context managers in a
-single parent lifespan.
+The parent app is FastAPI (matching the sub-apps from a2a-sdk). Each
+sub-app owns its own lifecycle — no manual lifespan orchestration needed.
 """
 
 from __future__ import annotations
 
-import json
-from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING
 
-from starlette.applications import Starlette
-from starlette.responses import JSONResponse
-from starlette.routing import Mount, Route
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from google.protobuf.json_format import MessageToDict
 
+from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
-from fin_assist.hub.storage import SQLiteStorage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from fasta2a.applications import FastA2A
-    from starlette.requests import Request
+    from fin_assist.agents.spec import AgentSpec
 
-    from fin_assist.agents.agent import ConfigAgent
+
+def _extract_card_meta(sub_app: FastAPI) -> dict:
+    """Extract AgentCardMeta from the agent card's extensions."""
+    card = getattr(sub_app.state, "agent_card", None)
+    if card is None:
+        return {}
+    for ext in card.capabilities.extensions:
+        if ext.uri == "fin_assist:meta":
+            return MessageToDict(ext.params, preserving_proto_field_name=True)
+    return {}
 
 
 def create_hub_app(
-    agents: Sequence[ConfigAgent] | None = None,
+    agents: Sequence[AgentSpec] | None = None,
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
-) -> Starlette:
-    """Build and return the parent Starlette hub application.
+) -> FastAPI:
+    """Build and return the parent FastAPI hub application.
 
     Args:
-        agents:   List of initialised ``ConfigAgent`` instances to mount.
+        agents:   List of initialised ``AgentSpec`` instances to mount.
                   If ``None`` an empty hub is created.
-        db_path:  SQLite database path.  Defaults to ``":memory:"`` (tests);
-                  production should pass ``~/.local/share/fin/hub.db``.
-        base_url: Public base URL used to construct per-agent card URLs in the
-                  ``/agents`` discovery response.
+        db_path:  SQLite database path for conversation context storage.
+                  Defaults to ``":memory:"`` (tests); production should
+                  pass ``~/.local/share/fin/hub.db``.
+        base_url: Public base URL used to construct per-agent card URLs
+                  in the ``/agents`` discovery response.
     """
     agents = agents or []
-    storage = SQLiteStorage(db_path=db_path)
-    factory = AgentFactory(storage=storage)
+    context_store = ContextStore(db_path=db_path)
+    factory = AgentFactory(context_store=context_store)
 
-    # Build per-agent sub-apps and collect metadata for discovery
-    sub_apps: list[FastA2A] = []
+    app = FastAPI(
+        title="fin-assist Agent Hub",
+        docs_url=None,
+        redoc_url=None,
+    )
+
     mounted_agents: list[dict] = []
-    routes: list[Route | Mount] = [
-        Route("/health", _health_endpoint, methods=["GET"]),
-        Route("/agents", _make_discovery_endpoint(mounted_agents), methods=["GET"]),
-    ]
+
+    @app.get("/health")
+    async def health_endpoint() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/agents")
+    async def discovery_endpoint() -> JSONResponse:
+        return JSONResponse({"agents": mounted_agents})
 
     for agent in agents:
-        sub_app = factory.create_a2a_app(agent)
-        sub_apps.append(sub_app)
+        sub_app = factory.create_a2a_app(agent, base_url=base_url)
         mount_path = f"/agents/{agent.name}"
-        routes.append(Mount(mount_path, app=sub_app))
+        app.mount(mount_path, sub_app)
 
-        meta_skill = next((s for s in sub_app.skills if s["id"] == "fin_assist:meta"), None)
-        try:
-            card_meta = json.loads(meta_skill["description"]) if meta_skill else {}
-        except json.JSONDecodeError:
-            card_meta = {}
-
+        card_meta = _extract_card_meta(sub_app)
         mounted_agents.append(
             {
                 "name": agent.name,
@@ -87,31 +91,4 @@ def create_hub_app(
             }
         )
 
-    @asynccontextmanager
-    async def _lifespan(app: Starlette) -> AsyncIterator[None]:
-        # Enter each sub-app's full lifespan — this starts the broker, the
-        # pydantic-ai agent context, AND the AgentWorker background loop.
-        # Previously we only entered task_manager (broker) which left the
-        # worker unstarted and caused message/send to hang indefinitely.
-        async with AsyncExitStack() as stack:
-            for sub_app in sub_apps:
-                await stack.enter_async_context(sub_app.router.lifespan_context(sub_app))
-            yield
-
-    return Starlette(routes=routes, lifespan=_lifespan)
-
-
-# ---------------------------------------------------------------------------
-# Endpoint handlers
-# ---------------------------------------------------------------------------
-
-
-async def _health_endpoint(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok"})
-
-
-def _make_discovery_endpoint(mounted_agents: list[dict]):
-    async def _discovery_endpoint(request: Request) -> JSONResponse:
-        return JSONResponse({"agents": mounted_agents})
-
-    return _discovery_endpoint
+    return app

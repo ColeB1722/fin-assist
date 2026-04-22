@@ -1,24 +1,22 @@
-"""Tests for AgentFactory — ConfigAgent → fasta2a ASGI sub-app."""
+"""Tests for AgentFactory — AgentSpec → FastAPI sub-app via a2a-sdk."""
 
 from __future__ import annotations
 
-import json
+from fastapi import FastAPI
 
-from fasta2a.applications import FastA2A
-
-from fin_assist.agents.agent import ConfigAgent
+from fin_assist.agents.spec import AgentSpec
 from fin_assist.config.schema import AgentConfig
+from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
-from fin_assist.hub.storage import SQLiteStorage
 
 
 def _make_factory() -> AgentFactory:
-    storage = SQLiteStorage(db_path=":memory:")
-    return AgentFactory(storage=storage)
+    context_store = ContextStore(db_path=":memory:")
+    return AgentFactory(context_store=context_store)
 
 
-def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_default_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="default",
         agent_config=AgentConfig(
             description="Default agent",
@@ -30,8 +28,8 @@ def _make_default_agent(mock_config, mock_credentials) -> ConfigAgent:
     )
 
 
-def _make_shell_agent(mock_config, mock_credentials) -> ConfigAgent:
-    return ConfigAgent(
+def _make_shell_agent(mock_config, mock_credentials) -> AgentSpec:
+    return AgentSpec(
         name="shell",
         agent_config=AgentConfig(
             description="Shell agent",
@@ -53,59 +51,58 @@ class TestAgentFactoryCreation:
 
 
 class TestCreateA2AApp:
-    def test_returns_fasta2a_instance(self, mock_config, mock_credentials) -> None:
+    def test_returns_fastapi_instance(self, mock_config, mock_credentials) -> None:
         app = _make_factory().create_a2a_app(_make_shell_agent(mock_config, mock_credentials))
-        assert isinstance(app, FastA2A)
+        assert isinstance(app, FastAPI)
 
-    def test_app_name_matches_agent(self, mock_config, mock_credentials) -> None:
+    def test_app_state_has_agent_card(self, mock_config, mock_credentials) -> None:
+        app = _make_factory().create_a2a_app(_make_shell_agent(mock_config, mock_credentials))
+        assert app.state.agent_card is not None
+
+    def test_agent_card_name_matches(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
-        assert app.name == agent.name
+        assert app.state.agent_card.name == agent.name
 
-    def test_app_description_matches_agent(self, mock_config, mock_credentials) -> None:
+    def test_agent_card_description_matches(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
-        assert app.description == agent.description
+        assert app.state.agent_card.description == agent.description
 
-    def test_meta_skill_is_injected(self, mock_config, mock_credentials) -> None:
+    def test_agent_card_has_extensions(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
+        card = app.state.agent_card
+        ext_uris = [e.uri for e in card.capabilities.extensions]
+        assert "fin_assist:meta" in ext_uris
 
-        meta_skill = next((s for s in app.skills if s["id"] == "fin_assist:meta"), None)
-        assert meta_skill is not None
-
-    def test_meta_skill_encodes_serving_modes_for_shell(
-        self, mock_config, mock_credentials
-    ) -> None:
+    def test_extension_encodes_serving_modes_for_shell(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
+        card = app.state.agent_card
+        meta_ext = next(e for e in card.capabilities.extensions if e.uri == "fin_assist:meta")
+        params = dict(meta_ext.params)
+        assert params.get("multi_turn") is False
+        assert params.get("requires_approval") is True
 
-        meta_skill = next(s for s in app.skills if s["id"] == "fin_assist:meta")
-        meta = json.loads(meta_skill["description"])
-        assert meta["multi_turn"] is False
-        assert meta["supports_thinking"] is False
-        assert meta["serving_modes"] == ["do"]
-
-    def test_meta_skill_encodes_multi_turn_true_for_default(
+    def test_extension_encodes_multi_turn_true_for_default(
         self, mock_config, mock_credentials
     ) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
+        card = app.state.agent_card
+        meta_ext = next(e for e in card.capabilities.extensions if e.uri == "fin_assist:meta")
+        params = dict(meta_ext.params)
+        assert params.get("multi_turn") is True
 
-        meta_skill = next(s for s in app.skills if s["id"] == "fin_assist:meta")
-        meta = json.loads(meta_skill["description"])
-        assert meta["multi_turn"] is True
-
-    def test_agent_tags_appear_in_skill_tags(self, mock_config, mock_credentials) -> None:
+    def test_agent_card_has_streaming_capability(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         app = _make_factory().create_a2a_app(agent)
-
-        meta_skill = next(s for s in app.skills if s["id"] == "fin_assist:meta")
-        assert "shell" in meta_skill["tags"]
+        assert app.state.agent_card.capabilities.streaming is True
 
     def test_different_agents_produce_different_apps(self, mock_config, mock_credentials) -> None:
         factory = _make_factory()
         shell_app = factory.create_a2a_app(_make_shell_agent(mock_config, mock_credentials))
         default_app = factory.create_a2a_app(_make_default_agent(mock_config, mock_credentials))
         assert shell_app is not default_app
-        assert shell_app.name != default_app.name
+        assert shell_app.state.agent_card.name != default_app.state.agent_card.name

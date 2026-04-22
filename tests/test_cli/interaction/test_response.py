@@ -8,8 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
-from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.cli.client import AgentResult
+from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 from fin_assist.cli.interaction.response import (
     PostResponseAction,
     PostResponseResult,
@@ -24,6 +23,7 @@ def _make_result(
     warnings: list[str] | None = None,
     metadata: dict | None = None,
     thinking: list[str] | None = None,
+    auth_required: bool = False,
 ) -> AgentResult:
     return AgentResult(
         success=success,
@@ -32,6 +32,7 @@ def _make_result(
         warnings=warnings or [],
         metadata=metadata or {},
         thinking=thinking or [],
+        auth_required=auth_required,
     )
 
 
@@ -69,13 +70,13 @@ class TestPostResponseAction:
 
 class TestHandlePostResponseAuth:
     async def test_auth_required_returns_auth_action(self):
-        result = _make_result(metadata={"auth_required": True})
+        result = _make_result(auth_required=True)
         response = await handle_post_response(result)
         assert response.action == PostResponseAction.AUTH_REQUIRED
         assert response.exit_code == 1
 
     async def test_auth_required_renders_auth_message(self):
-        result = _make_result(output="openai", metadata={"auth_required": True})
+        result = _make_result(output="openai", auth_required=True)
         with patch("fin_assist.cli.interaction.response.render_auth_required") as mock_render:
             await handle_post_response(result)
         mock_render.assert_called_once_with("openai")

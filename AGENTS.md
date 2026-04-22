@@ -49,7 +49,7 @@ After design is sketched, write tests BEFORE writing implementation code:
 
 ```text
 src/fin_assist/       - Main package
-├── hub/              - Agent Hub server (Starlette + fasta2a)
+├── hub/              - Agent Hub server (FastAPI + a2a-sdk)
 ├── cli/              - CLI client (primary client)
 ├── agents/           - Agent protocol, registry, implementations
 ├── llm/              - pydantic-ai integration
@@ -70,7 +70,7 @@ fish/                 - Fish shell plugin (future)
 |----------|--------|-----------|
 | Python | 3.12+ (3.13 in nixpkgs) | Stable, production-ready, good ecosystem |
 | LLM | pydantic-ai | Unified interface for 20+ providers, FallbackModel |
-| Server | Starlette + fasta2a (A2A) | Protocol-native multi-agent hub, agent discovery |
+| Server | FastAPI + a2a-sdk (A2A) | Protocol-native multi-agent hub, agent discovery |
 | Primary client | CLI (Rich + httpx) | Fast iteration; TUI and other clients come later |
 | TUI | Textual | Mature async TUI framework (future A2A client) |
 | Multiplexers | tmux + zellij | Most common; ghostty pending |
