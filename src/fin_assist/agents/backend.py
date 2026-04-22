@@ -48,7 +48,11 @@ from fin_assist.agents.metadata import MissingCredentialsError
 _message_ta = TypeAdapter(list[ModelMessage])
 
 if TYPE_CHECKING:
+    from pydantic_ai import Agent
+    from pydantic_ai.models import Model
+
     from fin_assist.agents.spec import AgentSpec
+    from fin_assist.llm.model_registry import ProviderRegistry
 
 
 @dataclass
@@ -198,7 +202,7 @@ class PydanticAIBackend:
                 pass
         return a2a_parts
 
-    def _build_pydantic_agent(self) -> Any:
+    def _build_pydantic_agent(self) -> Agent:
         from pydantic_ai import Agent
         from pydantic_ai.capabilities import Thinking
 
@@ -214,7 +218,7 @@ class PydanticAIBackend:
             capabilities=capabilities,
         )
 
-    def _build_model(self) -> Any:
+    def _build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel
 
         missing = self.check_credentials()
@@ -242,7 +246,7 @@ class PydanticAIBackend:
 
         return FallbackModel(*models)
 
-    def _get_registry(self) -> Any:
+    def _get_registry(self) -> ProviderRegistry:
         if self._registry is None:
             from fin_assist.llm.model_registry import ProviderRegistry
 
