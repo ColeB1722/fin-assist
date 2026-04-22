@@ -45,42 +45,38 @@ graph TD
     DISC["GET /agents · GET /health<br/>(hub-level discovery)"]
 
     subgraph HUB_PROC["Agent Hub (FastAPI, 127.0.0.1:4096)"]
-        HUB["Hub Router<br/>mounts sub-apps at<br/>/agents/&lcub;name&rcub;/"]
+        HUB["Hub Router<br/>mount table:<br/>· /agents/default/<br/>· /agents/shell/<br/>· /agents/&lcub;name&rcub;/ (future)"]
 
-        subgraph FACTORY_GRP["Startup-time wiring"]
-            FACTORY["AgentFactory<br/>AgentSpec → FastAPI sub-app<br/>+ AgentCard (w/ fin_assist:meta ext)"]
-        end
-
-        subgraph SUBAPPS["Per-Agent A2A Sub-Apps"]
+        subgraph SUBAPP["Per-Agent A2A Sub-App · one instance per enabled agent"]
             direction TB
-            D["/agents/default/<br/>do + talk · chain-of-thought"]
-            S["/agents/shell/<br/>do only · approval gate"]
-            F["/agents/&lcub;name&rcub;/<br/>future agents"]
-            DRH["DefaultRequestHandler<br/>(a2a-sdk) · owns TaskStore"]
-            TS["InMemoryTaskStore<br/>per sub-app · ephemeral"]
+            DRH["DefaultRequestHandler<br/>(a2a-sdk)<br/>JSON-RPC dispatch for this agent"]
+            EXEC["Executor<br/>AgentExecutor + TaskUpdater<br/>wraps this agent's PydanticAIBackend"]
+            TS["InMemoryTaskStore<br/>ephemeral · this sub-app only"]
         end
 
-        EXEC["Executor<br/>AgentExecutor + TaskUpdater"]
-        CS["ContextStore<br/>SQLite · opaque bytes<br/>(shared across sub-apps)"]
+        CS["ContextStore<br/>SQLite · opaque bytes<br/>single instance, shared across sub-apps"]
+
+        FACTORY["AgentFactory<br/>AgentSpec → sub-app<br/>+ AgentCard (w/ fin_assist:meta ext)"]
     end
 
     BACKEND["Backend Layer<br/>(see §3)"]
 
     IN --> HUB
-    HUB --> D & S & F
-    D & S & F --> DRH
-    DRH --> TS
+    HUB -->|"dispatches to matching sub-app"| DRH
     DRH --> EXEC
-    EXEC --> CS
+    DRH <--> TS
+    EXEC -->|"shared store · keyed by context_id"| CS
     EXEC -->|"delegates LLM work"| BACKEND
 
-    FACTORY -.->|"builds at startup"| SUBAPPS
+    FACTORY -.->|"builds at startup<br/>(N instances)"| SUBAPP
     FACTORY -.->|"publishes cards"| DISC
 
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
     class IN,BACKEND,DISC external
     classDef startup fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 3
     class FACTORY startup
+    classDef shared fill:#f0f7ff,stroke:#4a7fb0,stroke-width:2px
+    class CS shared
 ```
 
 ### 3. Backend Layer & Shared Services
