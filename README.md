@@ -16,7 +16,7 @@ graph LR
     User(("User"))
 
     subgraph Clients
-        CLI["CLI Client<br/>Rich + httpx"]
+        CLI["CLI Client<br/>Rich · a2a-sdk ClientFactory"]
         TUI["TUI Client<br/>(planned)"]
     end
 
@@ -42,34 +42,45 @@ Routing, per-agent sub-apps, and the Executor/stores inside the hub process.
 ```mermaid
 graph TD
     IN["A2A request<br/>(from client)"]
+    DISC["GET /agents · GET /health<br/>(hub-level discovery)"]
 
     subgraph HUB_PROC["Agent Hub (FastAPI, 127.0.0.1:4096)"]
-        HUB["Hub Router<br/>GET /agents · GET /health"]
-        FACTORY["AgentFactory<br/>AgentSpec → FastAPI sub-app"]
+        HUB["Hub Router<br/>mounts sub-apps at<br/>/agents/&lcub;name&rcub;/"]
 
-        subgraph "Per-Agent A2A Sub-Apps"
-            D["/default/<br/>do + talk · chain-of-thought"]
-            S["/shell/<br/>do only · approval gate"]
-            F["/{name}/<br/>future agents"]
+        subgraph FACTORY_GRP["Startup-time wiring"]
+            FACTORY["AgentFactory<br/>AgentSpec → FastAPI sub-app<br/>+ AgentCard (w/ fin_assist:meta ext)"]
+        end
+
+        subgraph SUBAPPS["Per-Agent A2A Sub-Apps"]
+            direction TB
+            D["/agents/default/<br/>do + talk · chain-of-thought"]
+            S["/agents/shell/<br/>do only · approval gate"]
+            F["/agents/&lcub;name&rcub;/<br/>future agents"]
+            DRH["DefaultRequestHandler<br/>(a2a-sdk) · owns TaskStore"]
+            TS["InMemoryTaskStore<br/>per sub-app · ephemeral"]
         end
 
         EXEC["Executor<br/>AgentExecutor + TaskUpdater"]
-        TS["InMemoryTaskStore<br/>ephemeral (a2a-sdk)"]
-        CS["ContextStore<br/>SQLite — opaque bytes"]
+        CS["ContextStore<br/>SQLite · opaque bytes<br/>(shared across sub-apps)"]
     end
 
     BACKEND["Backend Layer<br/>(see §3)"]
 
     IN --> HUB
-    HUB --> FACTORY
-    FACTORY --> D & S & F
-    D & S & F --> EXEC
-    EXEC --> TS
+    HUB --> D & S & F
+    D & S & F --> DRH
+    DRH --> TS
+    DRH --> EXEC
     EXEC --> CS
     EXEC -->|"delegates LLM work"| BACKEND
 
+    FACTORY -.->|"builds at startup"| SUBAPPS
+    FACTORY -.->|"publishes cards"| DISC
+
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
-    class IN,BACKEND external
+    class IN,BACKEND,DISC external
+    classDef startup fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 3
+    class FACTORY startup
 ```
 
 ### 3. Backend Layer & Shared Services
@@ -81,21 +92,25 @@ How the Executor reaches the LLM and what cross-cutting services it leans on.
 graph TD
     EXEC["Executor<br/>(from hub)"]
 
-    subgraph "Backend Layer"
+    subgraph BACKEND_GRP["Backend Layer"]
         BEH["«protocol» AgentBackend"]
         PAI["PydanticAIBackend<br/>pydantic-ai Agent · FallbackModel"]
         SH["StreamHandle<br/>async iter (deltas) + result()"]
+        MCE["MissingCredentialsError<br/>raised when API key absent"]
     end
 
-    subgraph "Agent Specification"
+    subgraph SPEC_GRP["Agent Specification"]
         SPEC["AgentSpec<br/>pure config · zero framework deps"]
     end
 
-    subgraph "Shared Services"
+    subgraph SHARED["Shared Services"]
         CREDS["CredentialStore<br/>env → file → keyring"]
-        CONFIG["ConfigLoader<br/>TOML · 4-level priority"]
-        CTXP["ContextProviders<br/>files · git · history · env"]
-        REG["ProviderRegistry<br/>LLM providers"]
+        CONFIG["ConfigLoader<br/>TOML + env (FIN_*)<br/>pydantic-settings"]
+        REG["ProviderRegistry<br/>LLM providers · api_key injected"]
+    end
+
+    subgraph PARKED["Parked (Steps 7–8)"]
+        CTXP["ContextProviders<br/>files · git · history · env<br/>built, not yet wired"]
     end
 
     LLM["LLM Providers<br/>Anthropic · OpenAI · OpenRouter · Google"]
@@ -103,16 +118,20 @@ graph TD
     EXEC --> BEH
     BEH -.->|"implemented by"| PAI
     PAI --> SH
-    PAI --> REG
-    PAI --> LLM
+    PAI -->|"create_model(provider, api_key)"| REG
+    REG --> LLM
     PAI --> SPEC
-    EXEC --> CTXP
-    SPEC --> CREDS
+    PAI -.->|"raises on missing key"| MCE
+    SPEC -->|"get_api_key(provider)"| CREDS
     SPEC --> CONFIG
-    REG --> CREDS
+    EXEC -.->|"planned: context injection"| CTXP
 
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
     class EXEC,LLM external
+    classDef parked fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 3
+    class CTXP,PARKED parked
+    classDef error fill:#fff3f3,stroke:#c66
+    class MCE error
 ```
 
 ### 4. Request Flow
@@ -123,9 +142,9 @@ End-to-end sequence of a single `SendStreamingMessage` call.
 ```mermaid
 sequenceDiagram
     participant C as CLI Client
-    participant H as Agent Hub
+    participant H as Agent Hub<br/>(sub-app + DefaultRequestHandler)
     participant E as Executor
-    participant B as AgentBackend
+    participant B as AgentBackend<br/>(PydanticAIBackend)
     participant SH as StreamHandle
     participant CS as ContextStore
     participant LLM as LLM Provider
@@ -136,28 +155,37 @@ sequenceDiagram
     E->>E: updater.start_work() → WORKING
 
     E->>B: check_credentials()
-    B-->>E: [] (all present) or missing providers
+    B-->>E: [] or [missing providers]
 
     alt Credentials missing
+        Note over E,B: raises MissingCredentialsError
         E->>E: updater.requires_auth() → AUTH_REQUIRED
         H-->>C: SSE: TaskStatusUpdateEvent (auth_required)
     else Credentials present
         E->>CS: load(context_id)
         CS-->>E: bytes or None
         E->>B: deserialize_history(bytes)
-        B-->>E: message_history
+        B-->>E: message_history (prior turns)
 
-        E->>B: convert_history(a2a_messages)
-        B-->>E: framework messages
+        E->>B: convert_history([current_message])
+        B-->>E: framework messages (this turn)
 
-        E->>B: run_stream(messages, model)
+        E->>B: run_stream(messages=history)
         B-->>E: StreamHandle
+        Note over B,LLM: backend holds LLM connection
 
         loop Token-by-token
-            E->>SH: async for delta
-            SH-->>E: text delta
-            E->>H: updater.add_artifact(append=true)
+            SH-->>E: text delta (async iter)
+            E->>H: updater.add_artifact(append=true, last_chunk=false)
             H-->>C: SSE: TaskArtifactUpdateEvent
+        end
+
+        E->>H: updater.add_artifact("", last_chunk=true)
+        H-->>C: SSE: TaskArtifactUpdateEvent (last_chunk=true)
+
+        alt Exception during stream
+            E->>E: updater.failed() → FAILED
+            H-->>C: SSE: TaskStatusUpdateEvent (failed)
         end
 
         E->>SH: await result()
@@ -165,15 +193,20 @@ sequenceDiagram
 
         E->>CS: save(context_id, serialized_history)
 
+        loop new_message_parts (thinking blocks, etc.)
+            E->>H: updater.update_status(WORKING, message=part)
+            H-->>C: SSE: TaskStatusUpdateEvent (WORKING + message)
+        end
+
         alt Structured output (non-str)
             E->>B: convert_result_to_part(output)
-            B-->>E: Part (data + json_schema)
-            E->>H: updater.add_artifact(structured)
+            B-->>E: Part (data + json_schema metadata)
+            E->>H: updater.add_artifact(structured, new artifact_id)
             H-->>C: SSE: TaskArtifactUpdateEvent (structured)
         end
 
         E->>E: updater.complete() → COMPLETED
-        H-->>C: SSE: TaskStatusUpdateEvent (last_chunk=true)
+        H-->>C: SSE: TaskStatusUpdateEvent (completed)
     end
 ```
 
