@@ -215,16 +215,10 @@ class TestRenderAgentOutput:
         output = _capture_output(render_agent_output, result, meta)
         assert "something went wrong" in output
 
-    def test_text_do_mode_uses_panel(self):
+    def test_text_uses_panel(self):
         result = AgentResult(success=True, output="Here is my answer")
         meta = self._make_meta(requires_approval=False)
-        output = _capture_output(render_agent_output, result, meta, mode="do")
-        assert "Here is my answer" in output
-
-    def test_text_talk_mode_uses_markdown(self):
-        result = AgentResult(success=True, output="Here is my answer")
-        meta = self._make_meta(requires_approval=False)
-        output = _capture_output(render_agent_output, result, meta, mode="talk")
+        output = _capture_output(render_agent_output, result, meta)
         assert "Here is my answer" in output
 
     def test_command_renders_syntax_panel(self):

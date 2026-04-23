@@ -30,6 +30,7 @@ class ProviderRegistry:
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.models.google import GoogleModel
         from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.models.openrouter import OpenRouterModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
         from pydantic_ai.providers.google import GoogleProvider
         from pydantic_ai.providers.openai import OpenAIProvider
@@ -41,7 +42,7 @@ class ProviderRegistry:
             case "openai":
                 return OpenAIChatModel(model_name, provider=OpenAIProvider(api_key=api_key))
             case "openrouter":
-                return OpenAIChatModel(model_name, provider=OpenRouterProvider(api_key=api_key))
+                return OpenRouterModel(model_name, provider=OpenRouterProvider(api_key=api_key))
             case "google":
                 return GoogleModel(model_name, provider=GoogleProvider(api_key=api_key))
             case "custom":

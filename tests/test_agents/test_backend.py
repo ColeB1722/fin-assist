@@ -17,6 +17,7 @@ from fin_assist.agents.backend import (
     AgentBackend,
     PydanticAIBackend,
     RunResult,
+    StreamDelta,
     StreamHandle,
 )
 from fin_assist.agents.metadata import MissingCredentialsError
@@ -70,16 +71,31 @@ class TestRunResult:
         assert result.new_message_parts == []
 
 
+# -- StreamDelta tests ---------------------------------------------------------
+
+
+class TestStreamDelta:
+    def test_text_delta(self) -> None:
+        delta = StreamDelta(kind="text", content="hello")
+        assert delta.kind == "text"
+        assert delta.content == "hello"
+
+    def test_thinking_delta(self) -> None:
+        delta = StreamDelta(kind="thinking", content="reasoning...")
+        assert delta.kind == "thinking"
+        assert delta.content == "reasoning..."
+
+
 # -- StreamHandle protocol tests -----------------------------------------------
 
 
 class _FakeStreamHandle:
-    def __init__(self, deltas: list[str], run_result: RunResult) -> None:
+    def __init__(self, deltas: list[StreamDelta], run_result: RunResult) -> None:
         self._deltas = deltas
         self._run_result = run_result
         self._iterated = False
 
-    async def __aiter__(self) -> AsyncIterator[str]:
+    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
         self._iterated = True
         for delta in self._deltas:
             yield delta
@@ -90,18 +106,37 @@ class _FakeStreamHandle:
 
 class TestStreamHandle:
     @pytest.mark.asyncio
-    async def test_yields_deltas(self) -> None:
+    async def test_yields_text_deltas(self) -> None:
         handle = _FakeStreamHandle(
-            deltas=["hel", "lo"],
+            deltas=[
+                StreamDelta(kind="text", content="hel"),
+                StreamDelta(kind="text", content="lo"),
+            ],
             run_result=RunResult(output="hello", serialized_history=b"[]"),
         )
         collected = [d async for d in handle]
-        assert collected == ["hel", "lo"]
+        assert [d.content for d in collected] == ["hel", "lo"]
+        assert all(d.kind == "text" for d in collected)
+
+    @pytest.mark.asyncio
+    async def test_yields_thinking_and_text_deltas(self) -> None:
+        handle = _FakeStreamHandle(
+            deltas=[
+                StreamDelta(kind="thinking", content="let me think"),
+                StreamDelta(kind="text", content="hello"),
+            ],
+            run_result=RunResult(output="hello", serialized_history=b"[]"),
+        )
+        collected = [d async for d in handle]
+        assert [(d.kind, d.content) for d in collected] == [
+            ("thinking", "let me think"),
+            ("text", "hello"),
+        ]
 
     @pytest.mark.asyncio
     async def test_returns_result(self) -> None:
         expected = RunResult(output="hello", serialized_history=b"[]")
-        handle = _FakeStreamHandle(deltas=["hello"], run_result=expected)
+        handle = _FakeStreamHandle(deltas=[], run_result=expected)
         result = await handle.result()
         assert result is expected
 
@@ -231,70 +266,178 @@ class TestPydanticAIBackendConvertResponseParts:
 # -- PydanticAIBackend.run_stream ---------------------------------------------
 
 
+class _FakeAgentRun:
+    """Stand-in for pydantic-ai's AgentRun async context manager.
+
+    Yields a sequence of fake nodes, each of which may optionally expose a
+    ``.stream()`` async context manager that yields a list of events.
+    """
+
+    def __init__(self, nodes: list[Any], final_result: Any) -> None:
+        self._nodes = nodes
+        self.ctx = MagicMock()
+        self.result = final_result
+
+    def __aiter__(self):
+        async def _gen():
+            for node in self._nodes:
+                yield node
+
+        return _gen()
+
+
+def _make_model_request_node(events: list[Any]) -> Any:
+    """Build a node whose ``.stream(ctx)`` yields the given events."""
+
+    async def _event_gen():
+        for ev in events:
+            yield ev
+
+    event_stream = MagicMock()
+    event_stream.__aiter__ = lambda self: _event_gen()
+
+    stream_cm = MagicMock()
+    stream_cm.__aenter__ = AsyncMock(return_value=event_stream)
+    stream_cm.__aexit__ = AsyncMock(return_value=False)
+
+    node = MagicMock()
+    node.stream = MagicMock(return_value=stream_cm)
+    return node
+
+
+def _make_agent_run_cm(nodes: list[Any], final_result: Any) -> Any:
+    """Build an async context manager returning a _FakeAgentRun."""
+    run = _FakeAgentRun(nodes=nodes, final_result=final_result)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=run)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
 class TestPydanticAIBackendRunStream:
     @pytest.mark.asyncio
-    async def test_returns_stream_handle(self, mock_config, mock_credentials) -> None:
+    async def test_yields_text_deltas_from_events(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.messages import (
+            PartDeltaEvent,
+            PartStartEvent,
+            TextPart,
+            TextPartDelta,
+        )
+
         mock_config.general.default_provider = "anthropic"
         mock_config.providers = {}
         mock_credentials.get_api_key.return_value = "sk-test"
 
-        mock_model = MagicMock()
+        events = [
+            PartStartEvent(index=0, part=TextPart(content="hel")),
+            PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="lo")),
+        ]
+        node = _make_model_request_node(events)
+
+        final_result = MagicMock()
+        final_result.output = "hello"
+        final_result.all_messages = MagicMock(return_value=[])
+        final_result.new_messages = MagicMock(return_value=[])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[node], final_result=final_result)
+
         pydantic_agent = MagicMock()
         pydantic_agent.output_type = str
-        pydantic_agent.__aenter__ = AsyncMock(return_value=pydantic_agent)
-        pydantic_agent.__aexit__ = AsyncMock(return_value=False)
-
-        stream_mock = MagicMock()
-        stream_mock.all_messages.return_value = []
-        stream_mock.new_messages.return_value = []
-        stream_mock.get_output = AsyncMock(return_value="hello")
-        stream_mock.stream_text.return_value = _async_gen(["hel", "lo"])
-
-        stream_ctx = MagicMock()
-        stream_ctx.__aenter__ = AsyncMock(return_value=stream_mock)
-        stream_ctx.__aexit__ = AsyncMock(return_value=False)
-        pydantic_agent.run_stream = MagicMock(return_value=stream_ctx)
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
 
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         with (
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
-            patch.object(backend, "_build_model", return_value=mock_model),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
             handle = backend.run_stream(messages=[])
 
-        assert isinstance(handle, StreamHandle)
-        deltas = [d async for d in handle]
-        assert deltas == ["hel", "lo"]
+            assert isinstance(handle, StreamHandle)
+            deltas = [d async for d in handle]
+
+        assert [(d.kind, d.content) for d in deltas] == [
+            ("text", "hel"),
+            ("text", "lo"),
+        ]
 
     @pytest.mark.asyncio
-    async def test_handle_result_returns_run_result(self, mock_config, mock_credentials) -> None:
+    async def test_yields_thinking_deltas_from_events(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.messages import (
+            PartDeltaEvent,
+            PartStartEvent,
+            TextPart,
+            TextPartDelta,
+            ThinkingPart,
+            ThinkingPartDelta,
+        )
+
         mock_config.general.default_provider = "anthropic"
         mock_config.providers = {}
         mock_credentials.get_api_key.return_value = "sk-test"
 
-        mock_model = MagicMock()
+        events = [
+            PartStartEvent(index=0, part=ThinkingPart(content="let")),
+            PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" me think")),
+            PartStartEvent(index=1, part=TextPart(content="hi")),
+            PartDeltaEvent(index=1, delta=TextPartDelta(content_delta=" there")),
+        ]
+        node = _make_model_request_node(events)
+
+        final_result = MagicMock()
+        final_result.output = "hi there"
+        final_result.all_messages = MagicMock(return_value=[])
+        final_result.new_messages = MagicMock(return_value=[])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[node], final_result=final_result)
+
         pydantic_agent = MagicMock()
         pydantic_agent.output_type = str
-        pydantic_agent.__aenter__ = AsyncMock(return_value=pydantic_agent)
-        pydantic_agent.__aexit__ = AsyncMock(return_value=False)
-
-        original_messages = [ModelRequest(parts=[UserPromptPart(content="hi")])]
-
-        stream_mock = MagicMock()
-        stream_mock.all_messages.return_value = original_messages
-        stream_mock.new_messages.return_value = []
-        stream_mock.get_output = AsyncMock(return_value="hello")
-        stream_mock.stream_text.return_value = _async_gen(["hello"])
-
-        stream_ctx = MagicMock()
-        stream_ctx.__aenter__ = AsyncMock(return_value=stream_mock)
-        stream_ctx.__aexit__ = AsyncMock(return_value=False)
-        pydantic_agent.run_stream = MagicMock(return_value=stream_ctx)
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
 
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         with (
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
-            patch.object(backend, "_build_model", return_value=mock_model),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
+        ):
+            handle = backend.run_stream(messages=[])
+            deltas = [d async for d in handle]
+
+        assert [(d.kind, d.content) for d in deltas] == [
+            ("thinking", "let"),
+            ("thinking", " me think"),
+            ("text", "hi"),
+            ("text", " there"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_handle_result_returns_run_result(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.messages import PartStartEvent, TextPart
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.providers = {}
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        original_messages = [ModelRequest(parts=[UserPromptPart(content="hi")])]
+        response_msg = ModelResponse(parts=[PydanticTextPart(content="hello")])
+
+        events = [PartStartEvent(index=0, part=TextPart(content="hello"))]
+        node = _make_model_request_node(events)
+
+        final_result = MagicMock()
+        final_result.output = "hello"
+        final_result.all_messages = MagicMock(return_value=[*original_messages, response_msg])
+        final_result.new_messages = MagicMock(return_value=[response_msg])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[node], final_result=final_result)
+
+        pydantic_agent = MagicMock()
+        pydantic_agent.output_type = str
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        with (
+            patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
             handle = backend.run_stream(messages=original_messages)
             _ = [d async for d in handle]
@@ -303,7 +446,8 @@ class TestPydanticAIBackendRunStream:
         assert isinstance(result, RunResult)
         assert result.output == "hello"
         assert isinstance(result.serialized_history, bytes)
-        assert result.new_message_parts == []
+        assert len(result.new_message_parts) == 1
+        assert result.new_message_parts[0].text == "hello"
 
     @pytest.mark.asyncio
     async def test_raises_missing_credentials(self, mock_config, mock_credentials) -> None:
@@ -314,6 +458,25 @@ class TestPydanticAIBackendRunStream:
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         with pytest.raises(MissingCredentialsError):
             backend.run_stream(messages=[])
+
+    @pytest.mark.asyncio
+    async def test_result_raises_before_iteration(self, mock_config, mock_credentials) -> None:
+        """Calling result() before iterating should raise per the protocol contract."""
+        mock_config.general.default_provider = "anthropic"
+        mock_config.providers = {}
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        pydantic_agent = MagicMock()
+        pydantic_agent.output_type = str
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        with (
+            patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
+        ):
+            handle = backend.run_stream(messages=[])
+            with pytest.raises(RuntimeError, match="Must iterate"):
+                await handle.result()
 
 
 # -- PydanticAIBackend._build_pydantic_agent -----------------------------------
@@ -355,11 +518,3 @@ class TestPydanticAIBackendBuildModel:
             backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
             result = backend._build_model()
             assert result is mock_model
-
-
-# -- Helpers -------------------------------------------------------------------
-
-
-async def _async_gen(items: list[str]) -> AsyncIterator[str]:
-    for item in items:
-        yield item

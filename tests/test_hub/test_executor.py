@@ -10,17 +10,17 @@ import pytest
 
 from a2a.types import TaskState
 
-from fin_assist.agents.backend import RunResult
+from fin_assist.agents.backend import RunResult, StreamDelta
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.hub.executor import Executor
 
 
 class _FakeStreamHandle:
-    def __init__(self, deltas: list[str], run_result: RunResult) -> None:
+    def __init__(self, deltas: list[StreamDelta], run_result: RunResult) -> None:
         self._deltas = deltas
         self._run_result = run_result
 
-    async def __aiter__(self) -> AsyncIterator[str]:
+    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
         for delta in self._deltas:
             yield delta
 
@@ -28,10 +28,15 @@ class _FakeStreamHandle:
         return self._run_result
 
 
+def _as_text_deltas(items: list[str] | list[StreamDelta]) -> list[StreamDelta]:
+    """Lift plain strings into text StreamDeltas; pass StreamDeltas through."""
+    return [d if isinstance(d, StreamDelta) else StreamDelta(kind="text", content=d) for d in items]
+
+
 def _make_backend(
     *,
     missing_providers: list[str] | None = None,
-    deltas: list[str] | None = None,
+    deltas: list[str] | list[StreamDelta] | None = None,
     run_result: RunResult | None = None,
     run_side_effect: Exception | None = None,
 ) -> MagicMock:
@@ -51,7 +56,7 @@ def _make_backend(
             new_message_parts=[],
         )
         handle = _FakeStreamHandle(
-            deltas=deltas or ["hello"],
+            deltas=_as_text_deltas(deltas or ["hello"]),
             run_result=result,
         )
         backend.run_stream.return_value = handle
@@ -226,7 +231,7 @@ class TestExecutorAuthRequired:
 
         backend.convert_result_to_part.assert_called_once_with({"command": "ls"})
 
-    async def test_sends_new_message_parts(self) -> None:
+    async def test_no_working_status_updates_for_message_parts(self) -> None:
         from a2a.types import Part
 
         thinking_part = Part(text="thinking...")
@@ -248,13 +253,119 @@ class TestExecutorAuthRequired:
 
         await executor.execute(ctx, event_queue)
 
-        working_updates = [
+        working_with_message = [
             call
             for call in event_queue.enqueue_event.call_args_list
             if hasattr(call.args[0], "status")
             and call.args[0].status.state == TaskState.TASK_STATE_WORKING
+            and call.args[0].status.HasField("message")
         ]
-        assert len(working_updates) >= 1
+        assert len(working_with_message) == 0
+
+
+class TestExecutorThinkingViaArtifacts:
+    """Thinking deltas route through add_artifact with metadata, not status-update messages."""
+
+    async def test_thinking_delta_produces_artifact_with_metadata(self) -> None:
+        from google.protobuf.json_format import MessageToDict
+
+        thinking_delta = StreamDelta(kind="thinking", content="hmm...")
+        text_delta = StreamDelta(kind="text", content="answer")
+        backend = _make_backend(deltas=[thinking_delta, text_delta])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_calls = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        thinking_artifacts = []
+        for call in artifact_calls:
+            event = call.args[0]
+            for part in event.artifact.parts:
+                meta_dict = (
+                    MessageToDict(part.metadata, preserving_proto_field_name=True)
+                    if part.HasField("metadata")
+                    else {}
+                )
+                if meta_dict.get("type") == "thinking":
+                    thinking_artifacts.append(part)
+
+        assert len(thinking_artifacts) == 1
+        assert thinking_artifacts[0].text == "hmm..."
+
+    async def test_text_delta_artifact_has_no_thinking_metadata(self) -> None:
+        from google.protobuf.json_format import MessageToDict
+
+        text_delta = StreamDelta(kind="text", content="answer")
+        backend = _make_backend(deltas=[text_delta])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_calls = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        for call in artifact_calls:
+            event = call.args[0]
+            for part in event.artifact.parts:
+                if not part.text:
+                    continue
+                meta_dict = (
+                    MessageToDict(part.metadata, preserving_proto_field_name=True)
+                    if part.HasField("metadata")
+                    else {}
+                )
+                assert meta_dict.get("type") != "thinking"
+
+    async def test_no_post_hoc_thinking_status_updates(self) -> None:
+        from a2a.types import Part
+
+        thinking_part = Part(text="thinking...")
+        backend = _make_backend(
+            run_result=RunResult(
+                output="hello",
+                serialized_history=b"[]",
+                new_message_parts=[thinking_part],
+            ),
+        )
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        working_with_message = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_WORKING
+            and call.args[0].status.HasField("message")
+        ]
+        assert len(working_with_message) == 0
 
 
 class TestExecutorCancel:

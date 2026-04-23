@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -10,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 
-from fin_assist.paths import CREDENTIALS_FILE
+from fin_assist.paths import CREDENTIALS_FILE, SESSIONS_DIR
 
 if TYPE_CHECKING:
     from fin_assist.agents.metadata import AgentCardMeta, AgentResult
@@ -50,9 +51,9 @@ def render_response(
     text: str,
     agent_name: str = "agent",
 ) -> None:
-    """Render a general agent text response."""
+    """Render a general agent text response with Markdown formatting."""
     panel = Panel(
-        text,
+        Markdown(text),
         title=f"[bold]{agent_name}[/bold]",
         border_style="blue",
         expand=False,
@@ -120,13 +121,16 @@ def render_info(message: str) -> None:
 
 
 def render_thinking(thinking: list[str]) -> None:
-    """Render agent thinking/reasoning content in a dim italic style."""
+    """Render agent thinking/reasoning content with Markdown formatting."""
     if not thinking:
         return
     for block in thinking:
         console.print(
             Panel(
-                Text(block, style="dim italic"), title="Thinking", border_style="dim", expand=False
+                Markdown(block),
+                title="Thinking",
+                border_style="dim",
+                expand=False,
             )
         )
     console.print()
@@ -142,21 +146,18 @@ def render_agent_output(
     card_meta: AgentCardMeta | None = None,
     *,
     show_thinking: bool = False,
-    mode: str = "do",
 ) -> None:
     """Render an agent result using the shared widget pipeline.
 
     Composes auth, command, text, thinking, and warning widgets based on
-    ``AgentResult`` and ``AgentCardMeta``.  ``mode`` controls the text
-    wrapper (Panel for ``do``, Markdown for ``talk``) but does not affect
-    which widgets render.
+    ``AgentResult`` and ``AgentCardMeta``.
 
     Thinking is rendered only for successful, non-auth-required results
     when ``show_thinking`` is ``True``.
 
-    When ``card_meta`` is ``None``, renders as Markdown (talk) or Panel
-    (do) with standard warning panels — the same output as the card_meta
-    path when ``requires_approval`` is ``False``.
+    When ``card_meta`` is ``None``, renders text in a Panel with standard
+    warning panels — the same output as the card_meta path when
+    ``requires_approval`` is ``False``.
     """
     if result.auth_required:
         render_auth_required(result.output)
@@ -171,10 +172,6 @@ def render_agent_output(
 
     if card_meta is not None and card_meta.requires_approval:
         render_command(result.output, result.warnings, result.metadata)
-        return
-
-    if mode == "talk":
-        render_markdown(result.output)
     else:
         render_response(result.output, agent_name="agent")
 
@@ -206,3 +203,22 @@ def render_agents_list(agents: list[DiscoveredAgent]) -> None:
     for agent in agents:
         render_agent_card(agent)
         console.print()
+
+
+def render_session_list(agent_name: str) -> None:
+    """Render saved sessions for an agent, most-recent first."""
+    sessions_dir = SESSIONS_DIR / agent_name
+    if not sessions_dir.exists():
+        console.print(f"  No saved sessions for {agent_name}")
+        return
+    files = sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        console.print(f"  No saved sessions for {agent_name}")
+        return
+    console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
+    for session_file in files:
+        session = json.loads(session_file.read_text())
+        sid = session.get("session_id", "unknown")
+        cid = session.get("context_id", "unknown")
+        cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid
+        console.print(f"  {sid}  (context: {cid_display})")
