@@ -105,7 +105,6 @@ class Executor(AgentExecutor):
         artifact_id = str(uuid.uuid4())
         try:
             handle = self._backend.run_stream(messages=message_history)
-            accumulated_text = ""
             async for delta in handle:
                 if delta.kind == "thinking":
                     meta = Struct()
@@ -118,7 +117,6 @@ class Executor(AgentExecutor):
                         last_chunk=False,
                     )
                 else:
-                    accumulated_text += delta.content
                     await updater.add_artifact(
                         parts=[Part(text=delta.content)],
                         artifact_id=artifact_id,

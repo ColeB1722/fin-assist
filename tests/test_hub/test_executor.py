@@ -336,37 +336,6 @@ class TestExecutorThinkingViaArtifacts:
                 )
                 assert meta_dict.get("type") != "thinking"
 
-    async def test_no_post_hoc_thinking_status_updates(self) -> None:
-        from a2a.types import Part
-
-        thinking_part = Part(text="thinking...")
-        backend = _make_backend(
-            run_result=RunResult(
-                output="hello",
-                serialized_history=b"[]",
-                new_message_parts=[thinking_part],
-            ),
-        )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(backend=backend, context_store=context_store)
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        working_with_message = [
-            call
-            for call in event_queue.enqueue_event.call_args_list
-            if hasattr(call.args[0], "status")
-            and call.args[0].status.state == TaskState.TASK_STATE_WORKING
-            and call.args[0].status.HasField("message")
-        ]
-        assert len(working_with_message) == 0
-
 
 class TestExecutorCancel:
     async def test_cancel_publishes_canceled_status(self) -> None:

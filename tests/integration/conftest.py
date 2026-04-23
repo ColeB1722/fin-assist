@@ -23,6 +23,25 @@ from fin_assist.config.schema import AgentConfig
 from fin_assist.hub.app import create_hub_app
 
 
+def _make_hub_client(
+    fake_agents: list[AgentSpec],
+    *,
+    backend_factory: Any = None,
+) -> HubClient:
+    """Create a ``HubClient`` wired to an in-process ASGI hub."""
+    kwargs: dict[str, Any] = dict(
+        agents=fake_agents,
+        db_path=":memory:",
+        base_url="http://testserver",
+    )
+    if backend_factory is not None:
+        kwargs["backend_factory"] = backend_factory
+    app = create_hub_app(**kwargs)
+    transport = httpx.ASGITransport(app=app)
+    http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
+    return HubClient(base_url="http://testserver", http_client=http_client)
+
+
 class FakeStreamHandle:
     """Deterministic ``StreamHandle`` that yields pre-set deltas."""
 
@@ -155,14 +174,15 @@ async def hub_client(
     def factory(spec: AgentSpec) -> FakeBackend:
         return FakeBackend(response=f"response from {spec.name}")
 
-    app = create_hub_app(
-        agents=fake_agents,
-        db_path=":memory:",
-        base_url="http://testserver",
-        backend_factory=factory,
-    )
-    transport = httpx.ASGITransport(app=app)
-    http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-    client = HubClient(base_url="http://testserver", http_client=http_client)
+    client = _make_hub_client(fake_agents, backend_factory=factory)
     yield client
     await client.close()
+
+
+@pytest.fixture
+async def raw_client(fake_agents: list[AgentSpec]) -> AsyncIterator[httpx.AsyncClient]:
+    """Raw ``httpx.AsyncClient`` pointed at the ASGI hub (no A2A client layer)."""
+    app = create_hub_app(agents=fake_agents, db_path=":memory:")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+        yield c

@@ -46,7 +46,7 @@ These are now redundant with automated tests for routine refactors:
 | CLI arg parsing | Default agent shortcut, unknown agent error message format | A5, A13 |
 | CLI validation | Serving-mode rejection in `_talk_command` | E2 |
 | Env var propagation | `CredentialStore` → `AgentSpec.check_credentials()` → real env vars | F1, F3 |
-| Rich rendering | Panel titles, markdown formatting, colors | A1, A4 (visual) |
+| Rich rendering | Panel titles, Markdown formatting, colors | A1, A4 (visual) |
 | TTY interaction | Approval widget, REPL, prompt completions | All Part 2 |
 
 ---
@@ -103,8 +103,7 @@ Integration tests can't cover subprocess management. Run all of these.
 | ~~E3~~ | Default supports do | `fin do default "hello"` | Works — `default.serving_modes = ["do", "talk"]` | Covered by `TestOneShotDispatch` + `TestAgentCardExtensions` |
 
 > E1 (`fin do shell …`) requires the approval widget — tested interactively in Part 2a. E4 (`fin talk default`) enters the REPL — tested interactively in Part 2b.
-
-> **Debug**: Validation bypassed → check `_do_command` / `_talk_command` in `cli/main.py`.
+> Debug: Validation bypassed → check `_do_command` / `_talk_command` in `cli/main.py`.
 
 ### 1e. Credentials / Auth-Required — protocol covered, env var not
 
@@ -114,8 +113,7 @@ Integration tests can't cover subprocess management. Run all of these.
 | ~~F3~~ | Recovery | Restore the env var, repeat F1 | `fin do default "hello"` | Normal response | Protocol covered by `TestAuthRequired` |
 
 > F2 (talk mode, missing key) enters the REPL — tested interactively in Part 2b.
-
-> **Debug**: Auth panel not appearing → check `MissingCredentialsError` propagation and `render_auth_required` in `display.py`.
+> Debug: Auth panel not appearing → check `MissingCredentialsError` propagation and `render_auth_required` in `display.py`.
 
 ---
 
@@ -164,7 +162,7 @@ Tests the full chat loop with FinPrompt, streaming, session persistence, and res
 | C9 | Session file exists | After C2, check `~/.local/share/fin/sessions/default/<slug>.json` | File exists, JSON with `context_id` and metadata |
 | C10 | Resume session | `fin talk default --resume <slug>` (use slug from C2) | Chat resumes; prior context is in history; no new `Session saved` message on exit |
 | C11 | Resume nonexistent | `fin talk default --resume ghost-banana` | `Error: Session ghost-banana not found`, exit 1 |
-| C12 | List sessions (--list) | `fin talk default --list` | Lists saved sessions for `default`: `  <slug>  (context: <cid[:8]>...)`. Or `No sessions for default` if empty. |
+| C12 | List sessions (--list) | `fin talk default --list` | Lists saved sessions for `default`: `<slug> (context: <cid[:8]>...)`. Or `No sessions for default` if empty. |
 | C13 | Initial message | `fin talk default "what time is it"` | First turn auto-sent, response streams, then enters REPL for follow-up |
 | C14 | `/sessions` slash command | Inside REPL, type `/sessions` | Lists saved sessions for the current agent (same format as `--list`) |
 | C15 | `/help` slash command | Inside REPL, type `/help` | Prints available slash commands |
@@ -188,9 +186,8 @@ Tests FinPrompt features: fuzzy slash completion and persistent history. Run aft
 | D7 | History persists | Exit (`/exit`), re-launch `fin talk default`, press Up | Previous session's input available |
 | D8 | History file | `cat ~/.local/share/fin/history` | File exists; format is prompt_toolkit `FileHistory` (entries prefixed with `+`, timestamp comments with `#`) — not bare lines |
 
-> **Debug**: Completion issues → `cli/interaction/prompt.py` completion config. History issues → `FileHistory` wiring in same file.
-
-> **Note**: Slash commands that used to be planned (`/quit`, `/q`, `/switch`) do **not** exist. Don't test them.
+> Debug: Completion issues → cli/interaction/prompt.py completion config. History issues → FileHistory wiring in same file.
+> Note: Slash commands that used to be planned (`/quit`, `/q`, `/switch`) do **not** exist. Don't test them.
 
 ---
 

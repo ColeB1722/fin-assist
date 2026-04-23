@@ -545,18 +545,17 @@ class TestTalkListCommand:
 
     def test_talk_list_sorts_most_recent_first(self, tmp_path):
         import json
-        import time
+        import os
 
         sessions_dir = tmp_path / "default"
         sessions_dir.mkdir(parents=True)
 
-        (sessions_dir / "older.json").write_text(
-            json.dumps({"session_id": "older", "context_id": "ctx-aaaaaaaa"})
-        )
-        time.sleep(0.05)
-        (sessions_dir / "newer.json").write_text(
-            json.dumps({"session_id": "newer", "context_id": "ctx-bbbbbbbb"})
-        )
+        older_file = sessions_dir / "older.json"
+        older_file.write_text(json.dumps({"session_id": "older", "context_id": "ctx-aaaaaaaa"}))
+        newer_file = sessions_dir / "newer.json"
+        newer_file.write_text(json.dumps({"session_id": "newer", "context_id": "ctx-bbbbbbbb"}))
+        os.utime(older_file, (1000, 1000))
+        os.utime(newer_file, (2000, 2000))
 
         captured = []
 

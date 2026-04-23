@@ -12,10 +12,11 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
+from a2a.client.errors import AgentCardResolutionError
+
 from fin_assist.agents.spec import AgentSpec
 from fin_assist.cli.client import HubClient
-from fin_assist.hub.app import create_hub_app
-from tests.integration.conftest import FakeBackend
+from tests.integration.conftest import FakeBackend, _make_hub_client
 
 
 # -----------------------------------------------------------------------
@@ -74,7 +75,7 @@ class TestUnknownAgent:
     """Covers manual test A13: ``fin do nonexistent "hi"`` fails."""
 
     async def test_unknown_agent_raises(self, hub_client: HubClient) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(AgentCardResolutionError):
             await hub_client.run_agent("nonexistent", "hi")
 
 
@@ -91,15 +92,7 @@ class TestAuthRequired:
         def factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(missing_providers=["anthropic"])
 
-        app = create_hub_app(
-            agents=fake_agents,
-            db_path=":memory:",
-            base_url="http://testserver",
-            backend_factory=factory,
-        )
-        transport = httpx.ASGITransport(app=app)
-        http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-        client = HubClient(base_url="http://testserver", http_client=http_client)
+        client = _make_hub_client(fake_agents, backend_factory=factory)
         yield client
         await client.close()
 
@@ -115,28 +108,12 @@ class TestAuthRequired:
         def good_factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(response="all good")
 
-        app_bad = create_hub_app(
-            agents=fake_agents,
-            db_path=":memory:",
-            base_url="http://testserver",
-            backend_factory=bad_factory,
-        )
-        transport_bad = httpx.ASGITransport(app=app_bad)
-        http_bad = httpx.AsyncClient(transport=transport_bad, base_url="http://testserver")
-        bad_client = HubClient(base_url="http://testserver", http_client=http_bad)
+        bad_client = _make_hub_client(fake_agents, backend_factory=bad_factory)
         result = await bad_client.run_agent("default", "hello")
         await bad_client.close()
         assert result.auth_required is True
 
-        app_good = create_hub_app(
-            agents=fake_agents,
-            db_path=":memory:",
-            base_url="http://testserver",
-            backend_factory=good_factory,
-        )
-        transport_good = httpx.ASGITransport(app=app_good)
-        http_good = httpx.AsyncClient(transport=transport_good, base_url="http://testserver")
-        good_client = HubClient(base_url="http://testserver", http_client=http_good)
+        good_client = _make_hub_client(fake_agents, backend_factory=good_factory)
         result = await good_client.run_agent("default", "hello")
         await good_client.close()
         assert result.success is True
@@ -173,15 +150,7 @@ class TestStreamingRoundTrip:
         def factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(response="answer", thinking=["hmm", "let me think"])
 
-        app = create_hub_app(
-            agents=fake_agents,
-            db_path=":memory:",
-            base_url="http://testserver",
-            backend_factory=factory,
-        )
-        transport = httpx.ASGITransport(app=app)
-        http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-        client = HubClient(base_url="http://testserver", http_client=http_client)
+        client = _make_hub_client(fake_agents, backend_factory=factory)
 
         events = []
         async for event in client.stream_agent("default", "hello"):
@@ -197,15 +166,7 @@ class TestStreamingRoundTrip:
         def factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(missing_providers=["anthropic"])
 
-        app = create_hub_app(
-            agents=fake_agents,
-            db_path=":memory:",
-            base_url="http://testserver",
-            backend_factory=factory,
-        )
-        transport = httpx.ASGITransport(app=app)
-        http_client = httpx.AsyncClient(transport=transport, base_url="http://testserver")
-        client = HubClient(base_url="http://testserver", http_client=http_client)
+        client = _make_hub_client(fake_agents, backend_factory=factory)
 
         events = []
         async for event in client.stream_agent("default", "hello"):
@@ -247,13 +208,6 @@ class TestMultiTurnConversation:
 class TestHealthEndpoint:
     """Covers manual test A7's health check (in-process, not subprocess)."""
 
-    @pytest.fixture
-    async def raw_client(self, fake_agents: list[AgentSpec]) -> AsyncIterator[httpx.AsyncClient]:
-        app = create_hub_app(agents=fake_agents, db_path=":memory:")
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            yield c
-
     async def test_health_returns_ok(self, raw_client: httpx.AsyncClient) -> None:
         resp = await raw_client.get("/health")
         assert resp.status_code == 200
@@ -268,13 +222,6 @@ class TestHealthEndpoint:
 class TestAgentCardExtensions:
     """Verify agent card extensions carry ``fin_assist:meta`` correctly."""
 
-    @pytest.fixture
-    async def raw_client(self, fake_agents: list[AgentSpec]) -> AsyncIterator[httpx.AsyncClient]:
-        app = create_hub_app(agents=fake_agents, db_path=":memory:")
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
-            yield c
-
     async def test_shell_card_has_meta_extension(self, raw_client: httpx.AsyncClient) -> None:
         resp = await raw_client.get("/agents/shell/.well-known/agent-card.json")
         data = resp.json()
@@ -286,7 +233,8 @@ class TestAgentCardExtensions:
         resp = await raw_client.get("/agents/default/.well-known/agent-card.json")
         data = resp.json()
         extensions = data["capabilities"]["extensions"]
-        meta = next(e for e in extensions if e["uri"] == "fin_assist:meta")
+        meta = next((e for e in extensions if e["uri"] == "fin_assist:meta"), None)
+        assert meta is not None, "Expected 'fin_assist:meta' extension not found"
         params = meta.get("params", {})
         assert params.get("serving_modes") == ["do", "talk"]
 
@@ -294,6 +242,7 @@ class TestAgentCardExtensions:
         resp = await raw_client.get("/agents/shell/.well-known/agent-card.json")
         data = resp.json()
         extensions = data["capabilities"]["extensions"]
-        meta = next(e for e in extensions if e["uri"] == "fin_assist:meta")
+        meta = next((e for e in extensions if e["uri"] == "fin_assist:meta"), None)
+        assert meta is not None, "Expected 'fin_assist:meta' extension not found"
         params = meta.get("params", {})
         assert params.get("requires_approval") is True

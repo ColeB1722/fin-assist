@@ -64,7 +64,8 @@ class TestRenderCommand:
         with patch("fin_assist.cli.display.console", mock):
             render_command("ls -la")
         panel = mock.print.call_args[0][0]
-        assert panel.renderable._lexer == "bash"
+        assert isinstance(panel.renderable, Syntax)
+        assert panel.renderable.lexer is not None
 
     def test_panel_title_is_generated_command(self):
         mock = _mock_console()

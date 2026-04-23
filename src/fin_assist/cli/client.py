@@ -270,6 +270,12 @@ class HubClient:
         """Send a message to an agent (multi-turn) and wait for the result."""
         return await self._send_and_wait(agent_name, prompt, context_id=context_id)
 
+    @staticmethod
+    def _apply_status_update(task: Task, status_update) -> None:
+        task.status.CopyFrom(status_update.status)
+        if status_update.status.HasField("message"):
+            task.history.append(status_update.status.message)
+
     async def stream_agent(
         self,
         agent_name: str,
@@ -310,10 +316,7 @@ class HubClient:
             if resp_task is not None:
                 task = resp_task
             if response.HasField("status_update") and task is not None:
-                status_update = response.status_update.status
-                task.status.CopyFrom(status_update)
-                if status_update.HasField("message"):
-                    task.history.append(status_update.message)
+                self._apply_status_update(task, response.status_update)
             if is_terminal:
                 break
 
@@ -358,10 +361,7 @@ class HubClient:
             if resp_task is not None:
                 task = resp_task
             if response.HasField("status_update") and task is not None:
-                status_update = response.status_update.status
-                task.status.CopyFrom(status_update)
-                if status_update.HasField("message"):
-                    task.history.append(status_update.message)
+                self._apply_status_update(task, response.status_update)
             if artifact is not None:
                 artifacts.append(artifact)
             if is_terminal:

@@ -102,14 +102,15 @@ class TestRunChatLoop:
         result = _make_result()
         call_count = 0
 
-        async def _failing_then_success(agent_name, prompt, context_id=None):
+        async def _stream_gen(agent_name, prompt, context_id=None):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise Exception("network error")
-            return _stream_fn_returning(result)
+            yield StreamEvent(kind="text_delta", text=result.output)
+            yield StreamEvent(kind="completed", result=result)
 
-        stream_fn = AsyncMock(side_effect=_failing_then_success)
+        stream_fn = MagicMock(side_effect=_stream_gen)
         mock_fp = MagicMock()
         mock_fp.ask = AsyncMock(side_effect=["first", "second", "/exit"])
 
