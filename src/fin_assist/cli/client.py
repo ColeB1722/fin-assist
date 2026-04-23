@@ -101,10 +101,11 @@ class HubClient:
         self,
         base_url: str,
         timeout: float = DEFAULT_TIMEOUT,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._http: httpx.AsyncClient | None = None
+        self._http: httpx.AsyncClient | None = http_client
         self._factory: ClientFactory | None = None
         self._a2a_clients: dict[str, Any] = {}
 

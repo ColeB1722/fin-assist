@@ -2,13 +2,52 @@
 
 **When to run**: Before merging a change that touches CLI commands, server lifecycle, approval widget, chat loop, agent configuration, or the Executor/streaming path. Run the full suite before a big refactor to establish a baseline.
 
-**Purpose**: Verify CLI integration end-to-end in ways unit tests can't. Designed so an AI agent can run all non-interactive tests autonomously, leaving only TTY-dependent tests for the human.
+**Purpose**: Verify CLI integration end-to-end in ways automated tests can't — specifically subprocess lifecycle, CLI arg parsing, env var propagation, and TTY interaction. Designed so an AI agent can run the non-interactive tests autonomously, leaving only TTY-dependent tests for the human.
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
 >
 > **Architecture note**: `shell` and `default` are TOML config entries (`[agents.shell]`, `[agents.default]`) consumed by a single `AgentSpec` class. No per-agent Python subclasses. CLI and UX are unchanged from the user's perspective; what differs is how agents are defined.
 >
 > **Currently-implemented slash commands** in the REPL: `/exit`, `/help`, `/sessions`. Anything else will print `Unknown command: <x>`.
+
+## Integration test coverage (2026-04-23)
+
+`tests/integration/test_client_hub.py` exercises the HubClient → ASGI hub → FakeBackend path in-process (no subprocesses, no LLM, no network). This covers the **protocol layer** — A2A JSON-RPC, task state machine, artifact assembly, event streaming — but not the **process layer** (subprocess management, PID files, env vars) or the **CLI layer** (arg parsing, error messages, Rich rendering).
+
+### What integration tests cover (no manual testing needed for these scenarios)
+
+These are now redundant with automated tests for routine refactors:
+
+| Manual test | Integration test | What's covered |
+|-------------|-----------------|----------------|
+| A1, A2 (agent discovery) | `TestAgentDiscovery` | `discover_agents()` returns both agents with correct card_meta, serving_modes, requires_approval |
+| A4 (do default one-shot) | `TestOneShotDispatch` | `run_agent("default", ...)` returns successful result through full A2A round-trip |
+| A13 (unknown agent) | `TestUnknownAgent` | Requesting a non-existent agent raises an error |
+| E3 (default supports do) | `TestOneShotDispatch` | Same as A4 |
+| F1 (missing API key) | `TestAuthRequired` | `FakeBackend(missing_providers=...)` → executor sets AUTH_REQUIRED → client extracts auth_required=True |
+| F3 (credential recovery) | `TestAuthRequired` | Swapping to a backend without missing_providers → successful result |
+
+### What integration tests cover (no manual equivalent — new coverage)
+
+| Scenario | Integration test | What it verifies |
+|----------|-----------------|------------------|
+| Streaming round-trip | `TestStreamingRoundTrip` | `stream_agent()` yields text_delta → completed events |
+| Streaming with thinking | `TestStreamingRoundTrip` | Thinking deltas appear in stream, accumulated into result |
+| Streaming auth-required | `TestStreamingRoundTrip` | `stream_agent()` yields auth_required terminal event |
+| Multi-turn context | `TestMultiTurnConversation` | `send_message()` with `context_id` preserves conversation |
+| Agent card extensions | `TestAgentCardExtensions` | `fin_assist:meta` extension carries serving_modes, requires_approval |
+| Health endpoint | `TestHealthEndpoint` | `GET /health` returns `{"status": "ok"}` |
+
+### What integration tests don't cover (still needs manual testing)
+
+| Layer | What's not covered | Manual tests affected |
+|-------|-------------------|-----------------------|
+| Subprocess lifecycle | `fin start`/`stop`/`status`, PID files, signal handling, socket binding | A7–A15 |
+| CLI arg parsing | Default agent shortcut, unknown agent error message format | A5, A13 |
+| CLI validation | Serving-mode rejection in `_talk_command` | E2 |
+| Env var propagation | `CredentialStore` → `AgentSpec.check_credentials()` → real env vars | F1, F3 |
+| Rich rendering | Panel titles, markdown formatting, colors | A1, A4 (visual) |
+| TTY interaction | Approval widget, REPL, prompt completions | All Part 2 |
 
 ---
 
@@ -17,10 +56,12 @@
 An AI agent can run these from a terminal, verify output, and debug failures. No TTY interaction required.
 
 > If any of these fail, fix before moving to Part 2.
+>
+> **Skip if `just test` passes**: Tests marked with ~~strikethrough~~ are covered by integration tests. You only need to run them manually if you're changing the process/CLI layer (subprocess management, arg parsing, env vars, Rich rendering). For routine hub/executor/client refactors, `just test` is sufficient.
 
-### 1a. Server Lifecycle
+### 1a. Server Lifecycle — all manual
 
-Run these in order — each depends on the server state left by the previous test.
+Integration tests can't cover subprocess management. Run all of these.
 
 | # | Test | Command | Expected |
 |---|------|---------|----------|
@@ -35,44 +76,42 @@ Run these in order — each depends on the server state left by the previous tes
 
 > **Debug**: Server startup → `cli/server.py` (PID file, socket binding). Status → `cli/main.py` status command. Orphan detection → `cli/server.py` `_is_orphan`.
 
-### 1b. Agent Listing
+### 1b. Agent Listing — protocol covered, process not
 
-| # | Test | Command | Expected |
-|---|------|---------|----------|
-| A1 | List agents (auto-start) | `fin agents` (hub stopped) | Auto-starts server; prints `default` and `shell` agent cards with capability chips from `serving_modes` (`default`: `do | talk`; `shell`: `do | requires approval`) |
-| A2 | List agents (reuse) | `fin agents` (hub up) | Same output, no restart — `ensure_server_running` short-circuits on healthy hub |
+| # | Test | Command | Expected | Status |
+|---|------|---------|----------|--------|
+| ~~A1~~ | List agents (auto-start) | `fin agents` (hub stopped) | Auto-starts server; prints `default` and `shell` agent cards with capability chips | Protocol covered by `TestAgentDiscovery`; run manually only to test subprocess auto-start |
+| ~~A2~~ | List agents (reuse) | `fin agents` (hub up) | Same output, no restart — `ensure_server_running` short-circuits on healthy hub | Same as A1 |
 
 > **Debug**: Auto-start failures → run `fin start` manually to see logs. Card rendering → `cli/display.py`.
 
-### 1c. One-Shot Dispatch
+### 1c. One-Shot Dispatch — protocol covered, CLI not
 
-| # | Test | Command | Expected |
-|---|------|---------|----------|
-| A4 | Do default one-shot | `fin do default "hello"` | Text panel with response, no approval widget |
-| A5 | Default agent shortcut | `fin do "hello"` (no agent arg) | Same as A4 — resolves to `[agents.default]` |
-| A13 | Unknown agent | `fin do nonexistent "hi"` | `Unknown agent 'nonexistent'. Available: default, shell`, exit 1 |
+| # | Test | Command | Expected | Status |
+|---|------|---------|----------|--------|
+| ~~A4~~ | Do default one-shot | `fin do default "hello"` | Text panel with response, no approval widget | Protocol covered by `TestOneShotDispatch`; run manually only to test Rich rendering |
+| A5 | Default agent shortcut | `fin do "hello"` (no agent arg) | Same as A4 — resolves to `[agents.default]` | **Not covered** — CLI arg parsing only |
+| ~~A13~~ | Unknown agent | `fin do nonexistent "hi"` | `Unknown agent 'nonexistent'. Available: default, shell`, exit 1 | Protocol covered by `TestUnknownAgent`; run manually only to test error message format |
 
 > **Debug**: Dispatch failures → hub logs (`~/.local/share/fin/hub.log`). Empty response → check LLM credentials and `Executor` wiring.
 
-### 1d. Serving Mode Validation
+### 1d. Serving Mode Validation — metadata covered, validation not
 
-| # | Test | Command | Expected |
-|---|------|---------|----------|
-| E2 | Shell rejects talk | `fin talk shell` | `Agent 'shell' does not support multi-turn (talk) mode. Available modes: do`, exit 1 |
-| E3 | Default supports do | `fin do default "hello"` | Works — `default.serving_modes = ["do", "talk"]` |
+| # | Test | Command | Expected | Status |
+|---|------|---------|----------|--------|
+| E2 | Shell rejects talk | `fin talk shell` | `Agent 'shell' does not support multi-turn (talk) mode. Available modes: do`, exit 1 | **Not covered** — CLI validation logic in `_talk_command` |
+| ~~E3~~ | Default supports do | `fin do default "hello"` | Works — `default.serving_modes = ["do", "talk"]` | Covered by `TestOneShotDispatch` + `TestAgentCardExtensions` |
 
 > E1 (`fin do shell …`) requires the approval widget — tested interactively in Part 2a. E4 (`fin talk default`) enters the REPL — tested interactively in Part 2b.
 
 > **Debug**: Validation bypassed → check `_do_command` / `_talk_command` in `cli/main.py`.
 
-### 1e. Credentials / Auth-Required
+### 1e. Credentials / Auth-Required — protocol covered, env var not
 
-> Requires temporarily removing credentials. Run in a subshell or restore after.
-
-| # | Test | Setup | Command | Expected |
-|---|------|-------|---------|----------|
-| F1 | Missing API key | Unset `ANTHROPIC_API_KEY` (and other configured provider env vars) | `fin do default "hello"` | Yellow "Authentication required" panel listing missing providers and env-var hints; exit 1 |
-| F3 | Recovery | Restore the env var, repeat F1 | `fin do default "hello"` | Normal response |
+| # | Test | Setup | Command | Expected | Status |
+|---|------|-------|---------|----------|--------|
+| ~~F1~~ | Missing API key | Unset `ANTHROPIC_API_KEY` (and other configured provider env vars) | `fin do default "hello"` | Yellow "Authentication required" panel listing missing providers and env-var hints; exit 1 | Protocol covered by `TestAuthRequired`; run manually only to test env var → CredentialStore → AgentSpec propagation |
+| ~~F3~~ | Recovery | Restore the env var, repeat F1 | `fin do default "hello"` | Normal response | Protocol covered by `TestAuthRequired` |
 
 > F2 (talk mode, missing key) enters the REPL — tested interactively in Part 2b.
 
@@ -189,13 +228,15 @@ Tests FinPrompt features: fuzzy slash completion and persistent history. Run aft
 ## Running Order
 
 ```
-Part 1 (Automated) — agent runs these first
+just test  ←  covers A1/A2/A4/A13/E3/F1/F3 protocol layer
+              + streaming, multi-turn, card extensions (new coverage)
+
+Part 1 (Manual) — agent runs only the uncovered tests
 ┌──────────────────────────────────────────────┐
-│ 1a. Server Lifecycle (A7-A15)                │
-│ 1b. Agent Listing (A1, A2)                   │
-│ 1c. One-Shot Dispatch (A4, A5, A13)          │
-│ 1d. Serving Mode Validation (E2, E3)         │
-│ 1e. Credentials (F1, F3)                     │
+│ 1a. Server Lifecycle (A7-A15) — all manual   │
+│ A5  (default agent shortcut — CLI arg parse) │
+│ E2  (shell rejects talk — CLI validation)    │
+│ F1/F3 (optional — env var propagation only)  │
 └──────────────────┬───────────────────────────┘
                    │ all pass
                    ▼
@@ -218,9 +259,11 @@ Chunks G and H are NOT YET IMPLEMENTED — skip.
 
 Before a big refactor, run the minimum set most likely to catch regressions:
 
-**Automated** (agent runs): A1, A4, A5, A7-A15, E2, E3, F1, F3
+**Automated** (`just test`): Covers A1, A2, A4, A13, E3, F1, F3 protocol layer + streaming + multi-turn + card extensions
 
-**Interactive** (human runs):
+**Manual (agent runs)**: A7–A15 (server lifecycle), A5 (default shortcut), E2 (shell rejects talk)
+
+**Interactive (human runs)**:
 - Approval: B1, B3, B4, B6 (Enter-default, Cancel, and two cancel-binding variants)
 - REPL: C1, C5, C10, C11, C13 (streaming, multi-turn, resume, resume-missing, initial-message)
 - Credentials: F2 (auth-required in talk mode)

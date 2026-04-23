@@ -1,11 +1,25 @@
-"""Tests for cli/display.py — Rich output rendering."""
+"""Tests for cli/display.py — Rich output rendering.
+
+Two testing strategies:
+
+1. **Leaf renderers** (``render_command``, ``render_response``, etc.) — tested
+   by mocking ``console.print`` and asserting on the Rich objects passed to it.
+   This tests *what* is rendered, not *how* Rich formats it — resilient to
+   Rich version changes or theme tweaks.
+
+2. **Dispatcher** (``render_agent_output``) — tested by mocking the leaf
+   renderers and asserting on which sub-renderer was called with what args.
+   This tests routing logic in isolation, not formatting.
+"""
 
 from __future__ import annotations
 
-from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
-from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.text import Text
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 from fin_assist.cli.client import DiscoveredAgent
@@ -25,91 +39,189 @@ from fin_assist.cli.display import (
 )
 
 
-def _capture_output(fn, *args, **kwargs) -> str:
-    """Run a display function with a StringIO console and capture output."""
-    buf = StringIO()
-    test_console = Console(file=buf, force_terminal=False, highlight=False)
-    with patch("fin_assist.cli.display.console", test_console):
-        fn(*args, **kwargs)
-    return buf.getvalue()
+def _mock_console():
+    """Return a MagicMock to patch over ``fin_assist.cli.display.console``."""
+    return MagicMock()
+
+
+# -----------------------------------------------------------------------
+# Leaf renderers — assert on console.print arguments
+# -----------------------------------------------------------------------
 
 
 class TestRenderCommand:
-    def test_renders_without_error(self):
-        # Should not raise
-        output = _capture_output(render_command, "ls -la")
-        assert len(output) > 0
+    def test_prints_panel_with_syntax(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_command("ls -la")
+        mock.print.assert_called_once()
+        panel = mock.print.call_args[0][0]
+        assert isinstance(panel, Panel)
+        assert isinstance(panel.renderable, Syntax)
 
-    def test_includes_command_text(self):
-        output = _capture_output(render_command, "echo hello")
-        assert "echo hello" in output
+    def test_passes_bash_language(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_command("ls -la")
+        panel = mock.print.call_args[0][0]
+        assert panel.renderable._lexer == "bash"
 
-    def test_renders_warnings_when_present(self):
-        output = _capture_output(render_command, "ls", warnings=["might be slow"])
-        assert "might be slow" in output
+    def test_panel_title_is_generated_command(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_command("ls -la")
+        panel = mock.print.call_args[0][0]
+        assert panel.title == "Generated Command"
 
-    def test_no_warnings_when_empty(self):
-        output = _capture_output(render_command, "ls", warnings=[])
-        assert "Warnings" not in output
+    def test_calls_render_warnings_when_present(self):
+        mock = _mock_console()
+        with (
+            patch("fin_assist.cli.display.console", mock),
+            patch("fin_assist.cli.display.render_warnings") as mock_warn,
+        ):
+            render_command("ls", warnings=["might be slow"])
+        mock_warn.assert_called_once_with(["might be slow"])
+
+    def test_no_warnings_call_when_empty(self):
+        mock = _mock_console()
+        with (
+            patch("fin_assist.cli.display.console", mock),
+            patch("fin_assist.cli.display.render_warnings") as mock_warn,
+        ):
+            render_command("ls", warnings=[])
+        mock_warn.assert_not_called()
 
 
 class TestRenderResponse:
-    def test_renders_text(self):
-        output = _capture_output(render_response, "Here is my response")
-        assert "Here is my response" in output
+    def test_prints_panel_with_markdown(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_response("Here is my response")
+        mock.print.assert_called_once()
+        panel = mock.print.call_args[0][0]
+        assert isinstance(panel, Panel)
+        assert isinstance(panel.renderable, Markdown)
 
-    def test_includes_agent_name(self):
-        output = _capture_output(render_response, "hello", agent_name="default")
-        assert "default" in output
+    def test_panel_title_includes_agent_name(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_response("hello", agent_name="default")
+        panel = mock.print.call_args[0][0]
+        assert "default" in str(panel.title)
 
 
 class TestRenderWarnings:
-    def test_renders_each_warning(self):
-        output = _capture_output(render_warnings, ["warning one", "warning two"])
-        assert "warning one" in output
-        assert "warning two" in output
+    def test_prints_panel_when_warnings_present(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_warnings(["warning one", "warning two"])
+        mock.print.assert_called_once()
+        panel = mock.print.call_args[0][0]
+        assert isinstance(panel, Panel)
 
-    def test_no_output_for_empty_warnings(self):
-        output = _capture_output(render_warnings, [])
-        assert output == ""
+    def test_no_print_when_empty(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_warnings([])
+        mock.print.assert_not_called()
 
 
 class TestRenderError:
-    def test_renders_message(self):
-        output = _capture_output(render_error, "something went wrong")
-        assert "something went wrong" in output
+    def test_prints_error_message(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_error("something went wrong")
+        mock.print.assert_called_once()
+        rendered = str(mock.print.call_args[0][0])
+        assert "something went wrong" in rendered
 
 
 class TestRenderSuccess:
-    def test_renders_message(self):
-        output = _capture_output(render_success, "operation succeeded")
-        assert "operation succeeded" in output
+    def test_prints_success_message(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_success("operation succeeded")
+        mock.print.assert_called_once()
+        rendered = str(mock.print.call_args[0][0])
+        assert "operation succeeded" in rendered
 
 
 class TestRenderInfo:
-    def test_renders_message(self):
-        output = _capture_output(render_info, "loading...")
-        assert "loading..." in output
+    def test_prints_info_message(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_info("loading...")
+        mock.print.assert_called_once()
+        rendered = str(mock.print.call_args[0][0])
+        assert "loading..." in rendered
 
 
 class TestRenderAuthRequired:
-    def test_renders_provider_name(self):
-        output = _capture_output(render_auth_required, "anthropic")
-        assert "anthropic" in output.lower()
+    def test_prints_yellow_panel(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_auth_required("anthropic")
+        mock.print.assert_called_once()
+        panel = mock.print.call_args[0][0]
+        assert isinstance(panel, Panel)
+        assert panel.border_style == "yellow"
 
-    def test_renders_env_var_hint(self):
-        output = _capture_output(render_auth_required, "anthropic")
-        assert "ANTHROPIC_API_KEY" in output
+    def test_panel_content_mentions_provider(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_auth_required("anthropic")
+        panel = mock.print.call_args[0][0]
+        text = panel.renderable
+        assert isinstance(text, Text)
+        rendered = text.plain
+        assert "anthropic" in rendered.lower()
 
-    def test_renders_distinct_from_generic_error(self):
-        """Should use 'Authentication required' or similar, not 'Error:'."""
-        output = _capture_output(render_auth_required, "anthropic")
-        assert "auth" in output.lower()
+    def test_panel_content_includes_env_var_hint(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_auth_required("anthropic")
+        panel = mock.print.call_args[0][0]
+        rendered = panel.renderable.plain
+        assert "ANTHROPIC_API_KEY" in rendered
 
-    def test_renders_multiple_providers(self):
-        output = _capture_output(render_auth_required, "anthropic, openrouter")
-        assert "anthropic" in output.lower()
-        assert "openrouter" in output.lower()
+
+class TestRenderThinking:
+    def test_prints_panel_per_block(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_thinking(["block one", "block two"])
+        positional_calls = [c for c in mock.print.call_args_list if c[0]]
+        panels = [c[0][0] for c in positional_calls]
+        thinking_panels = [p for p in panels if isinstance(p, Panel)]
+        assert len(thinking_panels) == 2
+
+    def test_panel_title_is_thinking(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_thinking(["hmm"])
+        panel = mock.print.call_args_list[0][0][0]
+        assert isinstance(panel, Panel)
+        assert "Thinking" in str(panel.title)
+
+    def test_no_print_when_empty(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_thinking([])
+        mock.print.assert_not_called()
+
+
+class TestRenderMarkdown:
+    def test_prints_markdown_object(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_markdown("Hello **world**")
+        mock.print.assert_called_once()
+        assert isinstance(mock.print.call_args[0][0], Markdown)
+
+
+# -----------------------------------------------------------------------
+# Agent card / list — structural tests on console.print calls
+# -----------------------------------------------------------------------
 
 
 class TestRenderAgentCard:
@@ -123,125 +235,136 @@ class TestRenderAgentCard:
         defaults.update(kwargs)
         return DiscoveredAgent(**defaults)
 
-    def test_renders_agent_name(self):
-        agent = self._make_agent(name="shell")
-        output = _capture_output(render_agent_card, agent)
-        assert "shell" in output
+    def test_prints_agent_name(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_agent_card(self._make_agent(name="shell"))
+        first_line = str(mock.print.call_args_list[0][0][0])
+        assert "shell" in first_line
 
-    def test_renders_agent_description(self):
-        agent = self._make_agent(description="Runs shell commands")
-        output = _capture_output(render_agent_card, agent)
-        assert "Runs shell commands" in output
+    def test_prints_description(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_agent_card(self._make_agent(description="Runs shell commands"))
+        first_line = str(mock.print.call_args_list[0][0][0])
+        assert "Runs shell commands" in first_line
 
-    def test_renders_serving_modes(self):
-        agent = self._make_agent(card_meta=AgentCardMeta(serving_modes=["do", "talk"]))
-        output = _capture_output(render_agent_card, agent)
-        assert "do" in output
-        assert "talk" in output
+    def test_prints_serving_modes(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_agent_card(
+                self._make_agent(card_meta=AgentCardMeta(serving_modes=["do", "talk"]))
+            )
+        second_line = str(mock.print.call_args_list[1][0][0])
+        assert "do" in second_line
+        assert "talk" in second_line
 
-    def test_renders_requires_approval_flag(self):
-        agent = self._make_agent(card_meta=AgentCardMeta(requires_approval=True))
-        output = _capture_output(render_agent_card, agent)
-        assert "requires approval" in output
+    def test_prints_requires_approval(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_agent_card(self._make_agent(card_meta=AgentCardMeta(requires_approval=True)))
+        second_line = str(mock.print.call_args_list[1][0][0])
+        assert "approval" in second_line.lower()
 
 
 class TestRenderAgentsList:
-    def test_renders_all_agents(self):
+    def test_calls_render_agent_card_per_agent(self):
         agents = [
             DiscoveredAgent(
                 name="shell",
                 description="Shell",
                 url="http://localhost/agents/shell/",
-                card_meta=AgentCardMeta(),
             ),
             DiscoveredAgent(
                 name="default",
                 description="Default",
                 url="http://localhost/agents/default/",
-                card_meta=AgentCardMeta(),
             ),
         ]
-        output = _capture_output(render_agents_list, agents)
-        assert "shell" in output
-        assert "default" in output
+        with patch("fin_assist.cli.display.render_agent_card") as mock_card:
+            render_agents_list(agents)
+        assert mock_card.call_count == 2
 
-    def test_renders_header(self):
-        output = _capture_output(render_agents_list, [])
-        assert "Available agents" in output
-
-
-class TestRenderThinking:
-    def test_renders_thinking_content(self):
-        output = _capture_output(render_thinking, ["Let me think about this..."])
-        assert "Let me think about this..." in output
-
-    def test_includes_thinking_label(self):
-        output = _capture_output(render_thinking, ["hmm"])
-        assert "Thinking" in output
-
-    def test_no_output_for_empty_list(self):
-        output = _capture_output(render_thinking, [])
-        assert output == ""
-
-    def test_renders_multiple_blocks(self):
-        output = _capture_output(render_thinking, ["first", "second"])
-        assert "first" in output
-        assert "second" in output
+    def test_prints_header(self):
+        mock = _mock_console()
+        with patch("fin_assist.cli.display.console", mock):
+            render_agents_list([])
+        first_print = str(mock.print.call_args_list[0][0][0])
+        assert "Available agents" in first_print
 
 
-class TestRenderMarkdown:
-    def test_renders_markdown_text(self):
-        output = _capture_output(render_markdown, "Hello **world**")
-        assert "world" in output
-
-    def test_no_panel_wrapper(self):
-        output = _capture_output(render_markdown, "plain text")
-        assert "──" not in output
+# -----------------------------------------------------------------------
+# Dispatcher — test routing logic by mocking sub-renderers
+# -----------------------------------------------------------------------
 
 
 class TestRenderAgentOutput:
     def _make_meta(self, **kwargs) -> AgentCardMeta:
         return AgentCardMeta(**kwargs)
 
-    def test_auth_required_renders_auth_panel(self):
+    def test_auth_required_calls_render_auth_required(self):
         result = AgentResult(success=False, output="anthropic", auth_required=True)
-        meta = self._make_meta()
-        output = _capture_output(render_agent_output, result, meta)
-        assert "auth" in output.lower()
+        with patch("fin_assist.cli.display.render_auth_required") as mock:
+            render_agent_output(result, self._make_meta())
+        mock.assert_called_once_with("anthropic")
 
-    def test_failed_result_renders_error(self):
+    def test_failed_result_calls_render_error(self):
         result = AgentResult(success=False, output="something went wrong")
-        meta = self._make_meta()
-        output = _capture_output(render_agent_output, result, meta)
-        assert "something went wrong" in output
+        with patch("fin_assist.cli.display.render_error") as mock:
+            render_agent_output(result, self._make_meta())
+        mock.assert_called_once_with("something went wrong")
 
-    def test_text_uses_panel(self):
+    def test_text_result_calls_render_response(self):
         result = AgentResult(success=True, output="Here is my answer")
-        meta = self._make_meta(requires_approval=False)
-        output = _capture_output(render_agent_output, result, meta)
-        assert "Here is my answer" in output
+        with patch("fin_assist.cli.display.render_response") as mock:
+            render_agent_output(result, self._make_meta(requires_approval=False))
+        mock.assert_called_once_with("Here is my answer", agent_name="agent")
 
-    def test_command_renders_syntax_panel(self):
+    def test_approval_result_calls_render_command(self):
         result = AgentResult(success=True, output="ls -la", warnings=[], metadata={})
-        meta = self._make_meta(requires_approval=True)
-        output = _capture_output(render_agent_output, result, meta)
-        assert "ls -la" in output
-        assert "Generated Command" in output
+        with patch("fin_assist.cli.display.render_command") as mock:
+            render_agent_output(result, self._make_meta(requires_approval=True))
+        mock.assert_called_once_with("ls -la", [], {})
 
-    def test_thinking_shown_when_flag_set(self):
+    def test_thinking_calls_render_thinking_when_flag_set(self):
         result = AgentResult(success=True, output="answer", thinking=["hmm"])
-        meta = self._make_meta()
-        output = _capture_output(render_agent_output, result, meta, show_thinking=True)
-        assert "hmm" in output
+        with (
+            patch("fin_assist.cli.display.render_response"),
+            patch("fin_assist.cli.display.render_thinking") as mock,
+        ):
+            render_agent_output(result, self._make_meta(), show_thinking=True)
+        mock.assert_called_once_with(["hmm"])
 
-    def test_thinking_not_shown_by_default(self):
+    def test_thinking_not_called_by_default(self):
         result = AgentResult(success=True, output="answer", thinking=["hmm"])
-        meta = self._make_meta()
-        output = _capture_output(render_agent_output, result, meta)
-        assert "hmm" not in output
+        with (
+            patch("fin_assist.cli.display.render_response"),
+            patch("fin_assist.cli.display.render_thinking") as mock,
+        ):
+            render_agent_output(result, self._make_meta())
+        mock.assert_not_called()
 
-    def test_warnings_shown_for_text_response(self):
+    def test_warnings_calls_render_warnings(self):
         result = AgentResult(success=True, output="answer", warnings=["be careful"])
-        meta = self._make_meta(requires_approval=False)
-        output = _capture_output(render_agent_output, result, meta)
-        assert "be careful" in output
+        with (
+            patch("fin_assist.cli.display.render_response"),
+            patch("fin_assist.cli.display.render_warnings") as mock,
+        ):
+            render_agent_output(result, self._make_meta(requires_approval=False))
+        mock.assert_called_once_with(["be careful"])
+
+    def test_auth_required_takes_precedence_over_failure(self):
+        result = AgentResult(success=False, output="msg", auth_required=True)
+        with (
+            patch("fin_assist.cli.display.render_auth_required") as mock_auth,
+            patch("fin_assist.cli.display.render_error") as mock_err,
+        ):
+            render_agent_output(result, self._make_meta())
+        mock_auth.assert_called_once()
+        mock_err.assert_not_called()
+
+    def test_no_card_meta_defaults_to_response(self):
+        result = AgentResult(success=True, output="answer")
+        with patch("fin_assist.cli.display.render_response") as mock:
+            render_agent_output(result, None)
+        mock.assert_called_once()

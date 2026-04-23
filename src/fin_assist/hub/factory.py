@@ -38,6 +38,7 @@ from fin_assist.agents.backend import PydanticAIBackend
 from fin_assist.hub.executor import Executor
 
 if TYPE_CHECKING:
+    from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
     from fin_assist.hub.context_store import ContextStore
 
@@ -57,6 +58,7 @@ class AgentFactory:
         agent: AgentSpec,
         *,
         base_url: str = "http://127.0.0.1:4096",
+        backend: AgentBackend | None = None,
     ) -> FastAPI:
         """Build a FastAPI sub-app for a single agent.
 
@@ -69,6 +71,9 @@ class AgentFactory:
             agent: The ``AgentSpec`` to serve.
             base_url: Public base URL used in the agent card's supported
                       interfaces.
+            backend: Optional pre-constructed ``AgentBackend``.  When
+                     ``None`` (default) a ``PydanticAIBackend`` is created
+                     from *agent*.  Inject a fake for integration tests.
         """
         meta = agent.agent_card_metadata
         meta_struct = Struct()
@@ -106,7 +111,7 @@ class AgentFactory:
             ],
         )
 
-        backend = PydanticAIBackend(agent_spec=agent)
+        backend = backend or PydanticAIBackend(agent_spec=agent)
         executor = Executor(
             backend=backend,
             context_store=self._context_store,
