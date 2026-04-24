@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import struct
-
 import pytest
 
-from fin_assist.hub.context_store import _CONTEXT_STORE_VERSION, ContextStore
-
-_VERSION_PACK = struct.Struct("!B")
+from fin_assist.hub.context_store import (
+    _CONTEXT_STORE_VERSION,
+    _VERSION_PACK,
+    ContextStore,
+)
 
 
 @pytest.fixture

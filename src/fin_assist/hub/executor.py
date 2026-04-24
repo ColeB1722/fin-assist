@@ -183,8 +183,9 @@ class Executor(AgentExecutor):
                         **event.metadata,
                     }
                 )
+                args_text = str(event.metadata.get("args", {}))
                 await updater.add_artifact(
-                    parts=[Part(text=str(event.content), metadata=tool_meta)],
+                    parts=[Part(text=args_text, metadata=tool_meta)],
                     artifact_id=artifact_id,
                     name="result",
                     append=True,
@@ -198,8 +199,9 @@ class Executor(AgentExecutor):
                         "tool_name": event.tool_name or "",
                     }
                 )
+                result_text = str(event.content) if isinstance(event.content, str) else ""
                 await updater.add_artifact(
-                    parts=[Part(text=str(event.content), metadata=result_meta)],
+                    parts=[Part(text=result_text, metadata=result_meta)],
                     artifact_id=artifact_id,
                     name="result",
                     append=True,
