@@ -23,10 +23,12 @@ from fin_assist.cli.display import (
     render_agents_list,
     render_error,
     render_info,
+    render_session_list,
 )
 from fin_assist.cli.interaction.chat import run_chat_loop
 from fin_assist.cli.interaction.prompt import FinPrompt
 from fin_assist.cli.interaction.response import handle_post_response
+from fin_assist.cli.interaction.streaming import render_stream
 from fin_assist.cli.server import (
     ServerStartupError,
     check_status,
@@ -192,12 +194,14 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 return 1
 
             prompt = " ".join(args.prompt)
-            result = await client.run_agent(args.agent, prompt)
+            result = await render_stream(
+                client.stream_agent(args.agent, prompt),
+                show_thinking=args.show_thinking,
+            )
 
             response = await handle_post_response(
                 result,
                 discovered.card_meta,
-                show_thinking=args.show_thinking,
                 mode="do",
             )
             return response.exit_code
@@ -208,15 +212,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
 async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
     if args.list_sessions:
-        sessions_dir = SESSIONS_DIR / args.agent
-        if sessions_dir.exists():
-            for session_file in sessions_dir.glob("*.json"):
-                session = json.loads(session_file.read_text())
-                sid = session.get("session_id", "unknown")
-                cid = session.get("context_id", "unknown")
-                console.print(f"  {sid}  (context: {cid[:8]}...)")
-        else:
-            console.print(f"  No sessions for {args.agent}")
+        render_session_list(args.agent)
         return 0
 
     context_id: str | None = None
@@ -244,14 +240,13 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
             fp = FinPrompt(agents=[a.name for a in agents])
             initial_message = " ".join(args.message) if args.message else None
             final_context_id = await run_chat_loop(
-                client.send_message,
+                client.stream_agent,
                 args.agent,
                 context_id,
                 fp,
                 initial_message=initial_message,
                 show_thinking=args.show_thinking,
                 card_meta=discovered.card_meta,
-                stream_fn=client.stream_agent,
             )
     except Exception:
         return 1

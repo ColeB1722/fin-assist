@@ -9,12 +9,13 @@ from a running event loop" error that occurs in pytest-asyncio contexts.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
-from fin_assist.cli.client import DiscoveredAgent
+from fin_assist.cli.client import DiscoveredAgent, StreamEvent
 from fin_assist.cli.interaction.response import PostResponseAction, PostResponseResult
 from fin_assist.cli.main import main
 
@@ -59,12 +60,23 @@ def _mock_client(
     client = AsyncMock()
     client.discover_agents = AsyncMock(return_value=agents or [])
     client.close = AsyncMock()
+
     if run_error:
-        client.run_agent = AsyncMock(side_effect=run_error)
+
+        async def _failing_stream(*args, **kwargs):
+            raise run_error
+            yield
+
+        client.stream_agent = MagicMock(side_effect=_failing_stream)
     else:
-        client.run_agent = AsyncMock(
-            return_value=run_result or AgentResult(success=True, output="")
-        )
+        result = run_result or AgentResult(success=True, output="")
+
+        async def _streaming_result(*args, **kwargs) -> AsyncIterator[StreamEvent]:
+            yield StreamEvent(kind="text_delta", text=result.output)
+            yield StreamEvent(kind="completed", result=result)
+
+        client.stream_agent = MagicMock(side_effect=_streaming_result)
+
     return client
 
 
@@ -347,6 +359,11 @@ class TestDoCommandNoApproval:
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
+                "fin_assist.cli.main.render_stream",
+                new_callable=AsyncMock,
+                return_value=AgentResult(success=True, output="ls -la"),
+            ),
+            patch(
                 "fin_assist.cli.main.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
@@ -356,7 +373,7 @@ class TestDoCommandNoApproval:
 
         assert result == 0
         assert mock_client.discover_agents.call_count >= 1
-        mock_client.run_agent.assert_called_once_with("shell", "list files")
+        mock_client.stream_agent.assert_called_once()
 
     def test_returns_1_for_unknown_agent(self):
         mock_client = _mock_client(agents=[_make_discovered("default")])
@@ -374,7 +391,7 @@ class TestDoCommandNoApproval:
             result = _run_main("do", "nonexistent", "do something")
 
         assert result == 1
-        mock_client.run_agent.assert_not_called()
+        mock_client.stream_agent.assert_not_called()
 
     def test_returns_1_on_server_startup_error(self):
         from fin_assist.cli.server import ServerStartupError
@@ -439,6 +456,11 @@ class TestDoCommandApproval:
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
+                "fin_assist.cli.main.render_stream",
+                new_callable=AsyncMock,
+                return_value=AgentResult(success=True, output="rm -rf /tmp/x"),
+            ),
+            patch(
                 "fin_assist.cli.main.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.CANCELLED, exit_code=0),
@@ -465,6 +487,11 @@ class TestDoCommandApproval:
             ),
             patch("fin_assist.cli.main.HubClient", return_value=mock_client),
             patch(
+                "fin_assist.cli.main.render_stream",
+                new_callable=AsyncMock,
+                return_value=AgentResult(success=True, output="echo hi"),
+            ),
+            patch(
                 "fin_assist.cli.main.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.EXECUTED, exit_code=0),
@@ -486,7 +513,7 @@ class TestTalkListCommand:
 
         with (
             _patch_asyncio_run(),
-            patch("fin_assist.cli.main.SESSIONS_DIR", tmp_path),
+            patch("fin_assist.cli.display.SESSIONS_DIR", tmp_path),
             patch("fin_assist.cli.main.ensure_server_running", mock_ensure),
         ):
             result = _run_main("talk", "default", "--list")
@@ -507,14 +534,43 @@ class TestTalkListCommand:
 
         with (
             _patch_asyncio_run(),
-            patch("fin_assist.cli.main.SESSIONS_DIR", tmp_path),
-            patch("fin_assist.cli.main.console") as mock_console,
+            patch("fin_assist.cli.display.SESSIONS_DIR", tmp_path),
+            patch("fin_assist.cli.display.console") as mock_console,
         ):
             mock_console.print.side_effect = lambda msg: captured.append(msg)
             result = _run_main("talk", "default", "--list")
 
         assert result == 0
         assert any("swift-harbor" in str(m) for m in captured)
+
+    def test_talk_list_sorts_most_recent_first(self, tmp_path):
+        import json
+        import os
+
+        sessions_dir = tmp_path / "default"
+        sessions_dir.mkdir(parents=True)
+
+        older_file = sessions_dir / "older.json"
+        older_file.write_text(json.dumps({"session_id": "older", "context_id": "ctx-aaaaaaaa"}))
+        newer_file = sessions_dir / "newer.json"
+        newer_file.write_text(json.dumps({"session_id": "newer", "context_id": "ctx-bbbbbbbb"}))
+        os.utime(older_file, (1000, 1000))
+        os.utime(newer_file, (2000, 2000))
+
+        captured = []
+
+        with (
+            _patch_asyncio_run(),
+            patch("fin_assist.cli.display.SESSIONS_DIR", tmp_path),
+            patch("fin_assist.cli.display.console") as mock_console,
+        ):
+            mock_console.print.side_effect = lambda msg: captured.append(msg)
+            result = _run_main("talk", "default", "--list")
+
+        assert result == 0
+        slugs = [m for m in captured if "context:" in str(m)]
+        assert "newer" in str(slugs[0])
+        assert "older" in str(slugs[1])
 
 
 # ---------------------------------------------------------------------------

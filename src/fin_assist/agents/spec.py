@@ -103,7 +103,6 @@ class AgentSpec:
         cfg = self._agent_config
         return AgentCardMeta(
             serving_modes=cfg.serving_modes,
-            multi_turn="talk" in cfg.serving_modes,
             supports_thinking=cfg.thinking is not None and cfg.thinking != "off",
             tags=cfg.tags,
             requires_approval=cfg.requires_approval,

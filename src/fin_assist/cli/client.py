@@ -58,7 +58,7 @@ class DiscoveredAgent(BaseModel):
 class StreamEvent(BaseModel):
     """A single event from a streaming agent response."""
 
-    kind: Literal["text_delta", "completed", "failed", "auth_required"]
+    kind: Literal["text_delta", "thinking_delta", "completed", "failed", "auth_required"]
     text: str = ""
     result: AgentResult | None = None
 
@@ -101,10 +101,11 @@ class HubClient:
         self,
         base_url: str,
         timeout: float = DEFAULT_TIMEOUT,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self._http: httpx.AsyncClient | None = None
+        self._http: httpx.AsyncClient | None = http_client
         self._factory: ClientFactory | None = None
         self._a2a_clients: dict[str, Any] = {}
 
@@ -167,6 +168,8 @@ class HubClient:
 
         for artifact in reversed(task.artifacts):
             for part in artifact.parts:
+                if _is_thinking(part):
+                    continue
                 data = _part_struct_data(part)
                 if data is not None:
                     inner = data.get("result", data)
@@ -194,6 +197,10 @@ class HubClient:
     @staticmethod
     def _extract_thinking(task: Task) -> list[str]:
         thinking: list[str] = []
+        for artifact in task.artifacts:
+            for part in artifact.parts:
+                if _is_thinking(part) and part.text:
+                    thinking.append(part.text)
         for item in task.history:
             if item.role != Role.ROLE_AGENT:
                 continue
@@ -263,6 +270,12 @@ class HubClient:
         """Send a message to an agent (multi-turn) and wait for the result."""
         return await self._send_and_wait(agent_name, prompt, context_id=context_id)
 
+    @staticmethod
+    def _apply_status_update(task: Task, status_update) -> None:
+        task.status.CopyFrom(status_update.status)
+        if status_update.status.HasField("message"):
+            task.history.append(status_update.status.message)
+
     async def stream_agent(
         self,
         agent_name: str,
@@ -271,8 +284,9 @@ class HubClient:
     ) -> AsyncIterator[StreamEvent]:
         """Stream an agent response, yielding progressive text deltas.
 
-        Yields ``StreamEvent`` objects — one ``text_delta`` per artifact chunk,
-        then a final ``completed``, ``failed``, or ``auth_required`` event.
+        Yields ``StreamEvent`` objects — ``text_delta`` for normal text chunks,
+        ``thinking_delta`` for thinking chunks, then a final ``completed``,
+        ``failed``, or ``auth_required`` event.
         """
         client = await self._get_a2a(agent_name)
         msg = Message(
@@ -286,20 +300,30 @@ class HubClient:
         request = SendMessageRequest(message=msg)
 
         task: Task | None = None
+        accumulated_thinking: list[str] = []
 
         async for response in client.send_message(request):
             is_terminal, resp_task, artifact = self._process_response(response)
             if artifact is not None:
                 for part in artifact.parts:
-                    if part.text:
+                    if not part.text:
+                        continue
+                    if _is_thinking(part):
+                        accumulated_thinking.append(part.text)
+                        yield StreamEvent(kind="thinking_delta", text=part.text)
+                    else:
                         yield StreamEvent(kind="text_delta", text=part.text)
             if resp_task is not None:
                 task = resp_task
+            if response.HasField("status_update") and task is not None:
+                self._apply_status_update(task, response.status_update)
             if is_terminal:
                 break
 
         if task is not None:
             result = self._extract_result(task)
+            if accumulated_thinking and not result.thinking:
+                result.thinking = accumulated_thinking
             if result.auth_required:
                 yield StreamEvent(kind="auth_required", result=result)
             elif result.success:
@@ -336,6 +360,8 @@ class HubClient:
             is_terminal, resp_task, artifact = self._process_response(response)
             if resp_task is not None:
                 task = resp_task
+            if response.HasField("status_update") and task is not None:
+                self._apply_status_update(task, response.status_update)
             if artifact is not None:
                 artifacts.append(artifact)
             if is_terminal:

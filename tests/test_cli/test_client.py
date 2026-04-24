@@ -22,6 +22,7 @@ from fin_assist.agents.metadata import AgentCardMeta, AgentResult
 from fin_assist.cli.client import (
     DiscoveredAgent,
     HubClient,
+    StreamEvent,
     _Extraction,
     _is_thinking,
     _part_struct_data,
@@ -402,7 +403,7 @@ class TestDiscoverAgents:
                     "description": "Shell command generator",
                     "url": "http://localhost/agents/shell/",
                     "card_meta": {
-                        "multi_turn": False,
+                        "serving_modes": ["do"],
                         "requires_approval": True,
                         "supports_thinking": False,
                         "supports_model_selection": True,
@@ -426,7 +427,7 @@ class TestDiscoverAgents:
 
         assert len(agents) == 1
         assert agents[0].name == "shell"
-        assert agents[0].card_meta.multi_turn is False
+        assert agents[0].card_meta.serving_modes == ["do"]
         assert agents[0].card_meta.requires_approval is True
 
     async def test_returns_empty_when_no_agents(self):
@@ -467,7 +468,7 @@ class TestDiscoverAgents:
 
         agents = await client.discover_agents()
 
-        assert agents[0].card_meta.multi_turn is True
+        assert agents[0].card_meta.serving_modes == ["do", "talk"]
         assert agents[0].card_meta.requires_approval is False
 
 
@@ -637,3 +638,83 @@ class TestProcessResponse:
         assert is_terminal is False
         assert resp_task is None
         assert artifact is None
+
+
+class TestStreamEventThinkingDelta:
+    def test_thinking_delta_kind(self):
+        event = StreamEvent(kind="thinking_delta", text="hmm...")
+        assert event.kind == "thinking_delta"
+        assert event.text == "hmm..."
+
+    def test_thinking_delta_result_is_none_by_default(self):
+        event = StreamEvent(kind="thinking_delta", text="hmm...")
+        assert event.result is None
+
+
+class TestExtractFromArtifactsSkipsThinking:
+    def test_skips_thinking_parts_in_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part("Let me reason...", metadata={"type": "thinking"}),
+                        _make_text_part("Here is the answer."),
+                    ],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "Here is the answer."
+        assert result.thinking == ["Let me reason..."]
+
+    def test_thinking_only_artifacts_produce_empty_output(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_text_part("just thinking", metadata={"type": "thinking"})],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == ""
+        assert result.thinking == ["just thinking"]
+
+
+class TestExtractThinkingFromArtifacts:
+    def test_extracts_thinking_from_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_text_part("artifact thought", metadata={"type": "thinking"})],
+                )
+            ]
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert thinking == ["artifact thought"]
+
+    def test_combines_artifact_and_history_thinking(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_text_part("artifact thought", metadata={"type": "thinking"})],
+                )
+            ],
+            history=[
+                Message(
+                    message_id="m1",
+                    role=Role.ROLE_AGENT,
+                    parts=[_make_text_part("history thought", metadata={"type": "thinking"})],
+                )
+            ],
+        )
+        thinking = HubClient._extract_thinking(task)
+        assert "artifact thought" in thinking
+        assert "history thought" in thinking

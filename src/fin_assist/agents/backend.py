@@ -14,11 +14,19 @@ Protocol shape
 - ``convert_response_parts()`` — framework response parts → A2A ``Part`` list
 
 ``StreamHandle`` is a two-phase protocol:
-1. Iterate (``async for delta in handle``) for streaming text deltas
-2. Call ``await handle.result()`` after iteration for the ``RunResult``
+1. Iterate (``async for delta in handle``) for streaming ``StreamDelta`` values —
+   each delta has ``kind`` (``"text"`` or ``"thinking"``) and ``content``.
+2. Call ``await handle.result()`` after iteration for the ``RunResult``.
 
 This matches the two-phase shape of all LLM streaming APIs — tokens first,
-then the completed result.
+then the completed result.  Thinking and text deltas are interleaved as the
+model produces them; consumers pattern-match on ``kind`` to route each delta.
+
+Implementation uses pydantic-ai's ``agent.iter()`` API, which exposes the
+agent graph node-by-node.  For each ``ModelRequestNode`` we open
+``node.stream(ctx)`` and map ``PartStartEvent`` / ``PartDeltaEvent`` events
+onto ``StreamDelta`` values.  After iteration completes, the final
+``AgentRun.result`` gives us output and message history for ``RunResult``.
 """
 
 from __future__ import annotations
@@ -26,7 +34,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator, Sequence  # noqa: TC003
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from a2a.types import Part
 from google.protobuf.struct_pb2 import Struct, Value
@@ -37,7 +45,11 @@ from pydantic_ai.messages import (
     ModelRequestPart,
     ModelResponse,
     ModelResponsePart,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPartDelta,
     ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     UserPromptPart,
 )
@@ -55,6 +67,19 @@ if TYPE_CHECKING:
     from fin_assist.llm.model_registry import ProviderRegistry
 
 
+@dataclass(frozen=True)
+class StreamDelta:
+    """A single progressive chunk from a streaming agent run.
+
+    ``kind`` discriminates between normal response text and chain-of-thought
+    reasoning.  ``content`` is the incremental text (the *delta*, not the
+    accumulated buffer).
+    """
+
+    kind: Literal["text", "thinking"]
+    content: str
+
+
 @dataclass
 class RunResult:
     output: Any
@@ -64,7 +89,7 @@ class RunResult:
 
 @runtime_checkable
 class StreamHandle(Protocol):
-    def __aiter__(self) -> AsyncIterator[str]: ...
+    def __aiter__(self) -> AsyncIterator[StreamDelta]: ...
     async def result(self) -> RunResult: ...
 
 
@@ -80,6 +105,21 @@ class AgentBackend(Protocol):
 
 
 class _PydanticAIStreamHandle:
+    """Streams ``StreamDelta`` values from a pydantic-ai ``agent.iter()`` run.
+
+    The iteration walks the agent graph node-by-node.  For each
+    ``ModelRequestNode`` (identified via ``Agent.is_model_request_node``),
+    we open an event stream and map ``PartStartEvent`` / ``PartDeltaEvent``
+    onto ``StreamDelta``.
+    Text and thinking parts are distinguished by the underlying event payload;
+    tool-related events are ignored here (tool output handling is elsewhere).
+
+    When ``output_type`` is structured (non-``str``), text deltas are still
+    yielded — it's up to the consumer to decide whether to render them.  Most
+    callers for structured-output agents simply drop them since the final
+    parsed output is what matters.
+    """
+
     def __init__(
         self,
         pydantic_agent: Any,
@@ -91,27 +131,39 @@ class _PydanticAIStreamHandle:
         self._model = model
         self._message_history = message_history
         self._backend = backend
-        self._stream: Any = None
         self._result: RunResult | None = None
 
-    async def __aiter__(self) -> AsyncIterator[str]:
-        async with (
-            self._pydantic_agent,
-            self._pydantic_agent.run_stream(
-                model=self._model, message_history=self._message_history
-            ) as stream,
-        ):
-            self._stream = stream
-            async for delta in stream.stream_text(delta=True):
-                yield delta
-            output = await stream.get_output()
-            all_msgs = stream.all_messages()
-            new_msgs = stream.new_messages()
+    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
+        from pydantic_ai import Agent
+
+        async with self._pydantic_agent.iter(
+            model=self._model,
+            message_history=self._message_history,
+        ) as run:
+            async for node in run:
+                if not Agent.is_model_request_node(node):
+                    continue
+                async with node.stream(run.ctx) as event_stream:
+                    async for event in event_stream:
+                        delta = _event_to_delta(event)
+                        if delta is not None:
+                            yield delta
+
+            final = run.result
+            if final is None:
+                # Defensive: should be set once the graph reaches End.
+                self._result = RunResult(
+                    output="", serialized_history=self._backend.serialize_history([])
+                )
+                return
+
+            all_msgs = final.all_messages()
+            new_msgs = final.new_messages()
             new_parts = self._backend.convert_response_parts(
                 [p for m in new_msgs if not isinstance(m, ModelRequest) for p in m.parts]
             )
             self._result = RunResult(
-                output=output,
+                output=final.output,
                 serialized_history=self._backend.serialize_history(all_msgs),
                 new_message_parts=new_parts,
             )
@@ -120,6 +172,27 @@ class _PydanticAIStreamHandle:
         if self._result is None:
             raise RuntimeError("Must iterate StreamHandle before calling result()")
         return self._result
+
+
+def _event_to_delta(event: Any) -> StreamDelta | None:
+    """Map a pydantic-ai stream event onto a ``StreamDelta``, or ``None`` to skip.
+
+    ``PartStartEvent`` carries the initial ``.content`` of a new part; we emit
+    that as the first delta for text/thinking parts.  ``PartDeltaEvent`` carries
+    incremental ``.content_delta`` updates.  All other event types (tool calls,
+    final-result markers, etc.) return ``None`` and are ignored by the stream.
+    """
+    match event:
+        case PartStartEvent(part=PydanticTextPart(content=c)) if c:
+            return StreamDelta(kind="text", content=c)
+        case PartStartEvent(part=ThinkingPart(content=c)) if c:
+            return StreamDelta(kind="thinking", content=c)
+        case PartDeltaEvent(delta=TextPartDelta(content_delta=d)) if d:
+            return StreamDelta(kind="text", content=d)
+        case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=d)) if d:
+            return StreamDelta(kind="thinking", content=d)
+        case _:
+            return None
 
 
 class PydanticAIBackend:

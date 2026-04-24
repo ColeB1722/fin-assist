@@ -1,17 +1,15 @@
-"""Unified post-response pipeline: rendering, approval, and action dispatch.
+"""Unified post-response pipeline: auth, error handling, and approval.
 
 Every code path that receives an ``AgentResult`` — one-shot (``do``) or
 multi-turn (``talk``) — needs the same sequence of concerns handled:
 
 1. Auth-required detection
-2. Output rendering (thinking, command/text, warnings)
-3. Error handling
-4. Approval widget (for agents that ``requires_approval``)
+2. Error handling
+3. Approval widget (for agents that ``requires_approval``)
 
-Before this module, that logic was duplicated across ``main.py``
-(``_do_command``) and ``chat.py``.  ``handle_post_response`` centralises
-it into a single async function that returns a typed action the caller
-can branch on.
+Output rendering (thinking, command/text, warnings) is handled by
+``render_stream`` during streaming; ``handle_post_response`` is responsible
+only for auth/error/approval — concerns that cannot be rendered progressively.
 """
 
 from __future__ import annotations
@@ -23,7 +21,6 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 
 from fin_assist.cli.display import (
-    render_agent_output,
     render_auth_required,
     render_error,
     render_info,
@@ -62,34 +59,25 @@ async def handle_post_response(
     result: AgentResult,
     card_meta: AgentCardMeta | None = None,
     *,
-    show_thinking: bool = False,
     mode: str = "talk",
 ) -> PostResponseResult:
-    """Run the full post-response pipeline and return what happened.
+    """Run the post-response pipeline and return what happened.
 
     Args:
         result: The ``AgentResult`` to process.
-        card_meta: Agent capability metadata.  ``None`` is safe — rendering
-            falls back to plain Markdown output with Panel warnings.
-        show_thinking: Whether to render thinking content.
-        mode: ``"do"`` or ``"talk"`` — controls rendering style and whether
-            a "Cancelled" info message is printed on approval rejection.
+        card_meta: Agent capability metadata.  ``None`` is safe — approval
+            widget is skipped.
+        mode: ``"do"`` or ``"talk"`` — controls whether a "Cancelled" info
+            message is printed on approval rejection.
     """
-    # 1. Auth required — always takes priority
     if result.auth_required:
         render_auth_required(result.output)
         return PostResponseResult(action=PostResponseAction.AUTH_REQUIRED, exit_code=1)
 
-    # 2. Error
     if not result.success:
         render_error(result.output or "Unknown error")
         return PostResponseResult(action=PostResponseAction.ERROR, exit_code=1)
 
-    # 3. Render output
-    console.print()
-    render_agent_output(result, card_meta, show_thinking=show_thinking, mode=mode)
-
-    # 4. Approval widget — only when the agent requires it and succeeded
     if card_meta is not None and card_meta.requires_approval:
         action = await run_approve_widget(
             command=result.output,

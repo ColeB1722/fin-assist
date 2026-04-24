@@ -87,7 +87,6 @@ class TestAgentCardMeta:
     def test_defaults(self) -> None:
         meta = AgentCardMeta()
         assert meta.serving_modes == ["do", "talk"]
-        assert meta.multi_turn is True
         assert meta.supports_thinking is True
         assert meta.supports_model_selection is True
         assert meta.supported_providers is None
@@ -96,11 +95,11 @@ class TestAgentCardMeta:
 
     def test_equality(self) -> None:
         assert AgentCardMeta() == AgentCardMeta()
-        assert AgentCardMeta(multi_turn=False) != AgentCardMeta()
+        assert AgentCardMeta(serving_modes=["do"]) != AgentCardMeta()
 
     def test_one_shot_meta(self) -> None:
-        meta = AgentCardMeta(multi_turn=False, supports_thinking=False)
-        assert meta.multi_turn is False
+        meta = AgentCardMeta(serving_modes=["do"], supports_thinking=False)
+        assert meta.serving_modes == ["do"]
         assert meta.supports_thinking is False
         assert meta.supports_model_selection is True
 
@@ -185,12 +184,10 @@ class TestAgentSpecCardMetadata:
     def test_default_serving_modes(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
         assert agent.agent_card_metadata.serving_modes == ["do", "talk"]
-        assert agent.agent_card_metadata.multi_turn is True
 
     def test_shell_serving_modes(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)
         assert agent.agent_card_metadata.serving_modes == ["do"]
-        assert agent.agent_card_metadata.multi_turn is False
 
     def test_shell_requires_approval(self, mock_config, mock_credentials) -> None:
         agent = _make_shell_agent(mock_config, mock_credentials)

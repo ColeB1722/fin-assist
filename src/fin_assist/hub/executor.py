@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Message, Part, Task, TaskState, TaskStatus
+from a2a.types import Part, Task, TaskState, TaskStatus
+from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.metadata import MissingCredentialsError
 
@@ -41,11 +42,11 @@ class Executor(AgentExecutor):
        via ``backend.deserialize_history()``.
     3. Converts A2A messages via ``backend.convert_history()``.
     4. Runs the backend with streaming via ``backend.run_stream()``.
-    5. Sends streaming deltas as A2A artifacts.
+    5. Sends streaming deltas (text and thinking) as A2A artifacts.
+       Thinking deltas include ``metadata.type = "thinking"``.
     6. Saves updated history via ``ContextStore.save()`` with
        ``RunResult.serialized_history`` from the backend.
-    7. Sends new message parts (thinking, etc.) as A2A messages.
-    8. If structured output, adds as a separate artifact.
+    7. If structured output, adds as a separate artifact.
 
     If ``check_credentials()`` returns missing providers, the task is set
     to ``auth-required`` with a helpful message instead of failing.
@@ -104,16 +105,25 @@ class Executor(AgentExecutor):
         artifact_id = str(uuid.uuid4())
         try:
             handle = self._backend.run_stream(messages=message_history)
-            accumulated_text = ""
             async for delta in handle:
-                accumulated_text += delta
-                await updater.add_artifact(
-                    parts=[Part(text=delta)],
-                    artifact_id=artifact_id,
-                    name="result",
-                    append=True,
-                    last_chunk=False,
-                )
+                if delta.kind == "thinking":
+                    meta = Struct()
+                    meta.update({"type": "thinking"})
+                    await updater.add_artifact(
+                        parts=[Part(text=delta.content, metadata=meta)],
+                        artifact_id=artifact_id,
+                        name="result",
+                        append=True,
+                        last_chunk=False,
+                    )
+                else:
+                    await updater.add_artifact(
+                        parts=[Part(text=delta.content)],
+                        artifact_id=artifact_id,
+                        name="result",
+                        append=True,
+                        last_chunk=False,
+                    )
             # Final chunk signals completion
             await updater.add_artifact(
                 parts=[Part(text="")],
@@ -131,15 +141,7 @@ class Executor(AgentExecutor):
         if raw_context_id:
             await self._context_store.save(raw_context_id, result.serialized_history)
 
-        # 6. Send agent messages (thinking, etc.)
-        a2a_messages: list[Message] = []
-        for part in result.new_message_parts:
-            a2a_messages.append(updater.new_agent_message(parts=[part]))
-
-        for msg in a2a_messages:
-            await updater.update_status(TaskState.TASK_STATE_WORKING, message=msg)
-
-        # 7. If structured output, add as a separate artifact
+        # 6. If structured output, add as a separate artifact
         if not isinstance(result.output, str):
             part = self._backend.convert_result_to_part(result.output)
             structured_artifact_id = str(uuid.uuid4())

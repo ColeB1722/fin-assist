@@ -24,8 +24,9 @@ from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
+    from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
 
 
@@ -44,17 +45,22 @@ def create_hub_app(
     agents: Sequence[AgentSpec] | None = None,
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
+    backend_factory: Callable[[AgentSpec], AgentBackend] | None = None,
 ) -> FastAPI:
     """Build and return the parent FastAPI hub application.
 
     Args:
-        agents:   List of initialised ``AgentSpec`` instances to mount.
-                  If ``None`` an empty hub is created.
-        db_path:  SQLite database path for conversation context storage.
-                  Defaults to ``":memory:"`` (tests); production should
-                  pass ``~/.local/share/fin/hub.db``.
-        base_url: Public base URL used to construct per-agent card URLs
-                  in the ``/agents`` discovery response.
+        agents:          List of initialised ``AgentSpec`` instances to mount.
+                         If ``None`` an empty hub is created.
+        db_path:         SQLite database path for conversation context storage.
+                         Defaults to ``":memory:"`` (tests); production should
+                         pass ``~/.local/share/fin/hub.db``.
+        base_url:        Public base URL used to construct per-agent card URLs
+                         in the ``/agents`` discovery response.
+        backend_factory: Optional callable that produces an ``AgentBackend``
+                         for each ``AgentSpec``.  When ``None`` (default) each
+                         agent gets a ``PydanticAIBackend``.  Inject fakes for
+                         integration tests.
     """
     agents = agents or []
     context_store = ContextStore(db_path=db_path)
@@ -77,7 +83,9 @@ def create_hub_app(
         return JSONResponse({"agents": mounted_agents})
 
     for agent in agents:
-        sub_app = factory.create_a2a_app(agent, base_url=base_url)
+        sub_app = factory.create_a2a_app(
+            agent, base_url=base_url, backend=backend_factory(agent) if backend_factory else None
+        )
         mount_path = f"/agents/{agent.name}"
         app.mount(mount_path, sub_app)
 

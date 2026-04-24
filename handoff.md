@@ -15,6 +15,91 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ## Design Sketches
 
+### Streaming UX Refactor (2026-04-23) — Complete
+
+**Status: All phases (A–E) complete. 510 tests passing, CI green.**
+
+**Problem.** Agent output is half-streamed: text deltas stream, but thinking appears *after* the answer, as post-hoc a2a status-update messages. There's no spinner while waiting for the first token. Markdown doesn't render inside thinking blocks or inside `do`-mode panels. `fin do` is fully blocking — no streaming at all. The half-streamed state has leaked into the rendering layer as `streamed`/`skip_text` flags.
+
+**Design.**
+
+1. **`StreamDelta`** — typed stream chunks from backend: `kind: Literal["text", "thinking"]`, `content: str`. Replaces raw `str` deltas in `StreamHandle.__aiter__`.
+2. **pydantic-ai `agent.iter()`** — backend rewritten to walk the agent graph node-by-node. For each node that exposes `.stream(ctx)`, iterate `PartStartEvent`/`PartDeltaEvent` and map `TextPart`/`TextPartDelta` → `StreamDelta("text", ...)` and `ThinkingPart`/`ThinkingPartDelta` → `StreamDelta("thinking", ...)`. After iteration, `AgentRun.result` supplies `output` + `all_messages` + `new_messages` for `RunResult`. Chosen over `event_stream_handler` + queue to avoid async-bridge complexity.
+3. **Executor thinking-in-artifacts** (Phase B) — branch on `delta.kind` and send thinking deltas as artifact chunks with `metadata.type = "thinking"`. Remove the post-hoc status-update loop at `executor.py:134-140`.
+4. **Client `thinking_delta` event** (Phase C) — `StreamEvent.kind` gains `"thinking_delta"`; `stream_agent` accumulates thinking client-side and injects into terminal `AgentResult.thinking`.
+5. **Shared `render_stream`** (Phase D) — new `cli/interaction/streaming.py`. Rich `Live` widget with initial `Status("Processing…")` spinner, replaced by `Group(thinking_panel?, answer_markdown)` once deltas arrive. Thinking panel only in the Group when `show_thinking=True`; otherwise thinking is silently dropped. Returns final `AgentResult` with thinking buffer applied.
+6. **Wire into talk + do + display cleanup** (Phase E) — both modes use `render_stream`. Delete `streamed`/`skip_text`/`was_streamed` flags. `handle_post_response` narrows to auth/error/approval. `render_response` and `render_thinking` wrap with `Markdown(...)` inside their panels.
+7. **Branches deleted.** `stream_fn is not None` in chat; `was_streamed` in chat; `streamed`/`skip_text` in response/display; `mode == "talk"` markdown branch in display; post-hoc thinking status-update loop in executor.
+
+**Branches kept (necessary).** `auth_required`/`error`/`success` in `handle_post_response`; `card_meta.requires_approval` for approval widget; `kind == "text"` vs `"thinking"` in `render_stream`; `show_thinking` toggle.
+
+**Phase A accomplished (2026-04-23).**
+
+- `StreamDelta` dataclass added to `backend.py` with `kind`/`content` fields.
+- `StreamHandle.__aiter__` protocol updated to `AsyncIterator[StreamDelta]`.
+- `_PydanticAIStreamHandle` rewritten to use `agent.iter()` + per-node `.stream(ctx)`. Event-to-delta mapping in a pure `_event_to_delta` helper, easily testable.
+- Executor gets a minimal shim (`if delta.kind != "text": continue; text += delta.content`) to keep pre-existing integration tests green. Phase B will do the proper thinking-through-artifacts routing.
+- Executor tests' `_FakeStreamHandle` updated to use `StreamDelta`; `_as_text_deltas` helper lifts plain strings for existing test call sites.
+- Added `StreamDelta` tests + event-handling tests (text-only deltas, thinking-and-text interleaved, `result()` before iteration raises).
+- Full CI green: 496 tests passing, lint/typecheck/fmt clean.
+
+**Phase B accomplished (2026-04-23).**
+
+- Executor routes thinking deltas through `add_artifact` with `metadata.type = "thinking"` via `Struct`.
+- Deleted the post-hoc status-update loop that sent `new_message_parts` as WORKING status updates.
+- Updated docstring to reflect new step numbering (thinking now in artifacts, not messages).
+- Added `TestExecutorThinkingViaArtifacts` test class: thinking delta produces artifact with metadata, text delta has no thinking metadata, no post-hoc WORKING-with-message status updates.
+- Updated `test_sends_new_message_parts` → `test_no_working_status_updates_for_message_parts`.
+- Full CI green: 499 tests passing.
+
+**Phase C accomplished (2026-04-23).**
+
+- `StreamEvent.kind` now includes `"thinking_delta"` alongside `"text_delta"`, `"completed"`, `"failed"`, `"auth_required"`.
+- `stream_agent()` checks `_is_thinking(part)` on artifact parts and yields `thinking_delta` events for thinking, `text_delta` for text.
+- Accumulates thinking client-side and injects into terminal `AgentResult.thinking` when the result doesn't already have thinking.
+- `_extract_from_artifacts` now skips thinking parts (so they don't pollute output).
+- `_extract_thinking` now checks both artifacts and history (artifacts first).
+- Added tests: `TestStreamEventThinkingDelta`, `TestExtractFromArtifactsSkipsThinking`, `TestExtractThinkingFromArtifacts`.
+- Full CI green: 505 tests passing.
+
+**Phase D accomplished (2026-04-23).**
+
+- New `cli/interaction/streaming.py` with `render_stream()` function.
+- Uses Rich `Live` with initial `Status("Processing…")` spinner while waiting for first delta.
+- Transitions to `Group(thinking_panel?, answer_markdown)` once deltas arrive.
+- Thinking panel only rendered when `show_thinking=True`; otherwise thinking silently accumulated into result.
+- Returns terminal `AgentResult` with accumulated thinking applied.
+- New `tests/test_cli/interaction/test_streaming.py`: text-only, thinking accumulation, failed/auth events, interleaved thinking+text.
+- Updated `cli/interaction/__init__.py` to export `render_stream`.
+- Full CI green: 514 tests passing.
+
+**Phase E accomplished (2026-04-23).**
+
+- `display.py::render_response` now uses `Panel(Markdown(text), ...)` instead of `Panel(text, ...)`.
+- `display.py::render_thinking` now uses `Markdown(block)` inside Panel instead of `Text(block, style="dim italic")`.
+- `display.py::render_agent_output` simplified: removed `mode` and `skip_text` params. No more `mode == "talk"` markdown branch or `skip_text` double-render guard.
+- `response.py::handle_post_response` narrowed to auth/error/approval only. Removed `show_thinking` and `streamed` params. Removed `render_agent_output` call and `console.print()` spacer.
+- `chat.py::run_chat_loop` now takes `stream_fn` as first arg (was `send_message_fn`). Always streams via `render_stream`. Deleted `_stream_and_render` helper, `was_streamed` tracking, and `send_message_fn` fallback.
+- `main.py::_do_command` now uses `render_stream(client.stream_agent(...), show_thinking=args.show_thinking)` instead of `client.run_agent(...)`.
+- `main.py::_talk_command` passes `client.stream_agent` as `stream_fn` to `run_chat_loop`.
+- Updated all test files for the API changes.
+- Full CI green: 510 tests passing, lint/typecheck/fmt clean.
+
+**Branches deleted (per design).**
+- `stream_fn is not None` / `was_streamed` in `chat.py`
+- `streamed`/`skip_text` in `response.py` and `display.py`
+- `mode == "talk"` markdown branch in `display.py::render_agent_output`
+- Post-hoc `new_message_parts` status-update loop in `executor.py`
+- `send_message_fn` fallback in `chat.py::run_chat_loop`
+
+**Branches kept (per design).**
+- `auth_required`/`error`/`success` in `handle_post_response`
+- `card_meta.requires_approval` for approval widget
+- `kind == "text"` vs `"thinking"` in `render_stream`
+- `show_thinking` toggle
+
+---
+
 ### Executor Loop Rework (2026-04-22) — Needs Design Sketch
 
 **Status: Design not yet sketched. Do not implement without a sketch pass first.**
@@ -86,7 +171,43 @@ Write up findings as a comparison matrix. From that, identify the minimum gate p
 
 ---
 
-### ContextProviders — Parked State (2026-04-22)
+### QA/Testing Agent (2026-04-22) — Idea Capture
+
+**Status: Idea capture, no design yet.**
+
+**Concept.** A specialized agent designed to test software — not unit tests, but exploratory and integration testing from a user's perspective. The agent is given documentation (README, API docs, CLI help), creates a test plan, then executes it against a live system.
+
+**Core capabilities envisioned:**
+
+- **Interactive REPL testing.** Agent can drive REPL sessions (Python, Node, custom CLIs) — send input, read output, assert on response content. Not just "run a script and check exit code" but actual interactive dialogue with a running process.
+- **Scoped bash access.** Agent can run shell commands within a scoped working directory (and possibly a container/sandbox). Reads are unrestricted; writes and destructive operations go through HITL gates (→ depends on HITL Approval Model design).
+- **Documentation ingestion.** Agent accepts documentation as context — README, man pages, API specs, CLI `--help` output. It uses this to understand what the software *should* do before testing what it *actually* does.
+- **Plan-and-execute workflow.** Agent produces a test plan (list of scenarios, expected behaviors), presents it for approval, then executes step-by-step. Plan is a first-class artifact — human can review, edit, approve before execution begins.
+
+**Why this is interesting for fin-assist.**
+
+- Proves the executor loop can support plan-and-execute (not just one-shot chat).
+- Exercises tool calling (REPL I/O, bash) end-to-end.
+- Exercises HITL gates at plan-approval and destructive-action boundaries.
+- Distinct from the shell agent: shell is "tell me a command", this is "here's software, test it."
+- Natural fit for the A2A agent card model — its capabilities (REPL driver, bash, plan output) would be declared as metadata.
+
+**Open design questions:**
+
+1. **REPL session management.** How does the agent hold an open REPL session? Options: (a) a `REPLSession` tool that starts a subprocess, sends lines, reads stdout/stderr; (b) delegate to a tmux/zellij pane via the existing multiplexer concept; (c) use `pexpect`/`pty` for pseudo-terminal control. Each has tradeoffs around reliability, timeout handling, and output parsing.
+2. **Scoping / sandboxing.** How far does "scoped bash" go? Working directory restriction is trivial. Container isolation (Docker, Nix) is safer but adds latency and config complexity. Is a chroot or Nix shell sufficient for MVP?
+3. **Test plan schema.** What does a test plan look like as a structured artifact? Needs to be machine-readable (for step-by-step execution tracking) and human-readable (for approval). Probably a list of `{scenario, steps[], expected_outcomes[]}` objects surfaced as an A2A artifact.
+4. **Assertion language.** How does the agent express "the output should contain X" or "the exit code should be 0"? Inline in the plan? A mini assertion DSL? Plain English that the LLM evaluates?
+5. **Result reporting.** How are test results surfaced? Per-step pass/fail in artifacts? A summary artifact at the end? Both? How does a client render a test run in progress vs. completed?
+6. **Relationship to SDD/TDD agents.** The architecture doc lists SDD and TDD agents as future work (Phase 16). Is the testing agent *the* TDD agent, a separate thing, or do they share a base? TDD implies "write tests for code I'm building"; this agent is "test software that already exists." Different scope, possibly shared tooling.
+
+**Dependencies (must land before implementation):**
+
+- Executor Loop Rework (tool calling, multi-step turns)
+- HITL Approval Model (plan approval, destructive-action gates)
+- ContextProviders integration (documentation ingestion)
+
+**Recommended next action.** Research spike: survey existing tools in this space (SWE-agent, OpenHands, Aider's test runner, Codex's eval harness). Identify which REPL/session management pattern they use and what works. Then sketch the tool interface (`REPLSession`, `BashRunner`, etc.) and test plan artifact schema.
 
 **Status: Classes built and unit-tested; integration deferred.**
 

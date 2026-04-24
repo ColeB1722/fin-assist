@@ -51,11 +51,6 @@ class AgentCardMeta(BaseModel):
     """Which CLI invocation modes this agent supports. Determines whether
     ``fin do <agent>`` and/or ``fin talk <agent>`` are valid."""
 
-    multi_turn: bool = True
-    """True if the agent supports multi-turn conversation (context_id threading).
-    Computed from serving_modes at construction time (True when "talk" is present);
-    the default here is a fallback for direct instantiation."""
-
     supports_thinking: bool = True
     """True if the agent benefits from chain-of-thought / thinking effort selector."""
 

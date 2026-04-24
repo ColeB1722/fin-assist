@@ -226,28 +226,17 @@ class TestHandlePostResponseApproval:
 
 
 class TestHandlePostResponseRendering:
-    async def test_renders_output_via_render_agent_output(self):
+    async def test_no_rendering_call_for_continue(self):
         result = _make_result(output="hello world")
         card_meta = AgentCardMeta()
 
-        with patch("fin_assist.cli.interaction.response.render_agent_output") as mock_render:
-            await handle_post_response(result, card_meta, mode="talk")
+        response = await handle_post_response(result, card_meta, mode="talk")
 
-        mock_render.assert_called_once_with(result, card_meta, show_thinking=False, mode="talk")
+        assert response.action == PostResponseAction.CONTINUE
 
-    async def test_passes_show_thinking_flag(self):
-        result = _make_result(thinking=["hmm"])
-        card_meta = AgentCardMeta()
-
-        with patch("fin_assist.cli.interaction.response.render_agent_output") as mock_render:
-            await handle_post_response(result, card_meta, show_thinking=True, mode="do")
-
-        mock_render.assert_called_once_with(result, card_meta, show_thinking=True, mode="do")
-
-    async def test_renders_with_card_meta_none(self):
+    async def test_no_rendering_call_with_card_meta_none(self):
         result = _make_result()
 
-        with patch("fin_assist.cli.interaction.response.render_agent_output") as mock_render:
-            await handle_post_response(result, None, mode="talk")
+        response = await handle_post_response(result, None, mode="talk")
 
-        mock_render.assert_called_once_with(result, None, show_thinking=False, mode="talk")
+        assert response.action == PostResponseAction.CONTINUE
