@@ -287,7 +287,7 @@ class _FakeAgentRun:
 
 
 def _make_model_request_node(events: list[Any]) -> Any:
-    """Build a node whose ``.stream(ctx)`` yields the given events."""
+    """Build a ``ModelRequestNode`` whose ``.stream(ctx)`` yields the given events."""
 
     async def _event_gen():
         for ev in events:
@@ -300,7 +300,10 @@ def _make_model_request_node(events: list[Any]) -> Any:
     stream_cm.__aenter__ = AsyncMock(return_value=event_stream)
     stream_cm.__aexit__ = AsyncMock(return_value=False)
 
-    node = MagicMock()
+    from pydantic_ai._agent_graph import ModelRequestNode
+    from pydantic_ai.messages import ModelRequest
+
+    node = ModelRequestNode(request=ModelRequest(parts=[]))
     node.stream = MagicMock(return_value=stream_cm)
     return node
 

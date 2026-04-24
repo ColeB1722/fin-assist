@@ -107,9 +107,10 @@ class AgentBackend(Protocol):
 class _PydanticAIStreamHandle:
     """Streams ``StreamDelta`` values from a pydantic-ai ``agent.iter()`` run.
 
-    The iteration walks the agent graph node-by-node.  For each node that
-    exposes ``.stream(ctx)`` (i.e. ``ModelRequestNode``), we open an event
-    stream and map ``PartStartEvent`` / ``PartDeltaEvent`` onto ``StreamDelta``.
+    The iteration walks the agent graph node-by-node.  For each
+    ``ModelRequestNode`` (identified via ``Agent.is_model_request_node``),
+    we open an event stream and map ``PartStartEvent`` / ``PartDeltaEvent``
+    onto ``StreamDelta``.
     Text and thinking parts are distinguished by the underlying event payload;
     tool-related events are ignored here (tool output handling is elsewhere).
 
@@ -133,15 +134,14 @@ class _PydanticAIStreamHandle:
         self._result: RunResult | None = None
 
     async def __aiter__(self) -> AsyncIterator[StreamDelta]:
+        from pydantic_ai import Agent
+
         async with self._pydantic_agent.iter(
             model=self._model,
             message_history=self._message_history,
         ) as run:
             async for node in run:
-                # Only nodes that produce model output expose ``.stream(ctx)``.
-                # UserPromptNode / End don't; CallToolsNode does but emits
-                # tool-related events we don't care about here.
-                if not hasattr(node, "stream"):
+                if not Agent.is_model_request_node(node):
                     continue
                 async with node.stream(run.ctx) as event_stream:
                     async for event in event_stream:
@@ -182,29 +182,17 @@ def _event_to_delta(event: Any) -> StreamDelta | None:
     incremental ``.content_delta`` updates.  All other event types (tool calls,
     final-result markers, etc.) return ``None`` and are ignored by the stream.
     """
-    if isinstance(event, PartStartEvent):
-        part = event.part
-        if isinstance(part, PydanticTextPart):
-            return StreamDelta(kind="text", content=part.content) if part.content else None
-        if isinstance(part, ThinkingPart):
-            return StreamDelta(kind="thinking", content=part.content) if part.content else None
-        return None
-    if isinstance(event, PartDeltaEvent):
-        delta = event.delta
-        if isinstance(delta, TextPartDelta):
-            return (
-                StreamDelta(kind="text", content=delta.content_delta)
-                if delta.content_delta
-                else None
-            )
-        if isinstance(delta, ThinkingPartDelta):
-            return (
-                StreamDelta(kind="thinking", content=delta.content_delta)
-                if delta.content_delta
-                else None
-            )
-        return None
-    return None
+    match event:
+        case PartStartEvent(part=PydanticTextPart(content=c)) if c:
+            return StreamDelta(kind="text", content=c)
+        case PartStartEvent(part=ThinkingPart(content=c)) if c:
+            return StreamDelta(kind="thinking", content=c)
+        case PartDeltaEvent(delta=TextPartDelta(content_delta=d)) if d:
+            return StreamDelta(kind="text", content=d)
+        case PartDeltaEvent(delta=ThinkingPartDelta(content_delta=d)) if d:
+            return StreamDelta(kind="thinking", content=d)
+        case _:
+            return None
 
 
 class PydanticAIBackend:
