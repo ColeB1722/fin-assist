@@ -2,14 +2,21 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-22)**: Doc alignment complete. README diagrams are canonical (inline Mermaid, rendered to `docs/diagrams/` on demand via `just diagrams`). `docs/architecture.md` prose reconciled with code — no known diagram/prose drift. Backend extraction (2026-04-21) stable: `AgentSpec` is pure config, `Executor` is framework-agnostic via `AgentBackend` protocol, `ContextStore` is `bytes`-in/out, `PydanticAIBackend` uses only public `AgentSpec` API. 489 tests passing, CI green.
+**Current state (2026-04-24)**: Unified design sketch complete. Key open question #1 resolved: event-driven StepHandle with Executor verification (defense in depth). Ready for Phase A implementation. 489 tests passing, CI green. README diagrams canonical; architecture.md prose reconciled with code. Backend extraction stable.
 
-**Four known structural gaps**, documented below under Design Sketches and Next Session:
+**Three known structural gaps** (down from four — HITL folded into the unified sketch):
 
-1. **Executor rework** (one-shot → looping) — **Needs design sketch before implementation.** Prerequisite for tool calling, context injection, and most experimental loop patterns.
-2. **ContextProviders integration** (Steps 7-8, parked) — Classes built and tested; wiring deferred until after Executor loop lands.
-3. **Human-in-the-loop (HITL)** — Needs research spike. Current approval is agent-level only; real experimentation needs finer-grained gates (per-tool, per-plan, per-effect). Design space wide; think before building.
-4. **AgentBackend protocol simplification** — Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Not urgent; revisit when a second backend is actually needed.
+1. **Executor rework + tool calling** — Sketch complete, Q1 resolved. Phase A (foundation) next.
+2. **ContextProviders → dual path** — Design resolved (user-driven `@`/flags + model-driven tool calls). Implementation depends on Phase B.
+3. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
+
+**Resolved by the unified sketch:**
+- HITL approval model → platform-level `ApprovalPolicy`, backend enforces, Executor verifies
+- ContextProviders integration → dual path: user-driven (existing design) + model-driven (tool calls)
+- StepHandle iteration model → event-driven (Option A) with Executor verification of approval compliance
+
+**Still deferred:**
+- AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)) — revisit when a second backend is needed
 
 ---
 
@@ -100,35 +107,463 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
-### Executor Loop Rework (2026-04-22) — Needs Design Sketch
+### Unified Executor & Agent Platform Sketch (2026-04-24) — Design Sketch
 
-**Status: Design not yet sketched. Do not implement without a sketch pass first.**
+**Status: Design sketch (revised). Do not implement without a review pass.**
 
-**Problem.** The current `Executor.execute()` is a single-pass pipeline: load history → convert messages → `backend.run_stream()` → drain deltas → save history → complete. It has no concept of a multi-step turn. That's fine for free-form chat but structurally insufficient for:
+This sketch replaces the previous "Executor Loop Rework (2026-04-22)" entry. It unifies five structural gaps into one coherent abstraction:
 
-- **Tool calling** (the dominant pattern in modern agent harnesses): stream → tool_use → run tool → tool_result → stream → possibly more tools → end_turn.
-- **Context injection triggered by agent choice** (e.g. agent asks for a file, loop fetches it, resumes).
-- **Self-critique or plan-and-execute loops** (generate → critique → revise).
-- **Multi-agent orchestration within one turn** (delegate sub-task to peer agent, resume on result).
+1. Executor loop (multi-step turns)
+2. Tool calling (core capability)
+3. ContextProviders — dual path: user-driven (`@`/flags) + model-driven (tool calls)
+4. HITL approval gates (platform-level, backend-agnostic)
+5. Observability / tracing (OpenTelemetry spans aligned with step boundaries)
 
-**Why a sketch is required before coding.** The refactor touches the hottest path in the system. Specific open design questions:
+**Guiding principle: the platform owns the abstractions, backends adapt them.**
 
-1. **Strategy vs. inline.** Does the loop live inside `Executor`, or does `Executor` delegate to a pluggable `LoopStrategy` protocol (one-shot, tool-using, plan-execute, …)? Strategy gives us flexibility for experimental patterns — which is the stated goal of the project — but adds an abstraction.
-2. **Backend contract changes.** `AgentBackend.run_stream()` currently returns one `StreamHandle` per turn. Tool-using loops need mid-stream events (`tool_use` parts, not just text deltas). Either `StreamHandle` grows a richer event type, or the backend gains a separate `run_step()` call that returns one iteration, or we lean entirely on pydantic-ai's agent-level loop and the Executor's job shrinks.
-3. **TaskUpdater semantics.** a2a-sdk's `TaskUpdater.add_artifact(append=True)` assumes a single artifact per task. Multi-step turns probably want one artifact per step, or a mixed artifact-plus-status-update stream. Needs verification against a2a-sdk's state model.
-4. **ContextStore format versioning.** Today the store holds opaque `bytes` of pydantic-ai history. A looping Executor that introduces tool calls changes the serialized shape. Before the rework lands, add a version byte to the stored format so we can migrate rather than lose history.
-5. **Streaming contract for clients.** Clients (CLI + future TUI) consume `TaskArtifactUpdateEvent` deltas. Do they need to distinguish "model-output delta" from "tool-call event"? If yes, that's A2A extension territory.
+fin-assist is a **pluggable agentic experimentation platform**. It exposes shared agentic capabilities (tools, approval, context, tracing) in a framework-agnostic way, and different LLM frameworks or providers plug in via backend implementations. This mirrors how the project already uses open protocols (A2A for transport, OTel for observability) — the platform defines the shape, backends fill in the framework-specific details.
 
-**Dependencies unblocked by this work.**
+This principle drives every design decision below: tools, approval, and step events are platform concepts, not pydantic-ai concepts. PydanticAIBackend implements them for pydantic-ai; a future LangChainBackend or AnthropicBackend would implement them for its framework.
 
-- Tool calling (core capability, currently missing)
-- ContextProviders integration (Steps 7-8)
-- SDD/TDD agent workflows (both will need tools)
-- Any future experimental loop pattern
+**Key insight: the executor loop is the spine, and everything else hangs off its step boundaries.** Tools are the reason the loop iterates. Approval gates hook into tool execution. Tracing spans align with steps. This is better than designing each gap in isolation because they share the same shape — they're all "things that happen between LLM calls."
 
-**Recommended next action.** Open a fresh session specifically to sketch this. No implementation in the same session. Expected sketch artifacts: a `LoopStrategy` protocol signature, a revised `AgentBackend` shape, a TaskUpdater flow diagram for a tool-using turn, and a ContextStore format migration plan.
+---
 
-**Scope explicitly excluded.** Do not try to design HITL gates in the same sketch (HITL has its own research spike — see below). The loop refactor should define *where* gates can be inserted (hook points in the loop) but not *what* the gate semantics are.
+#### Research Summary
+
+**LangGraph** — `interrupt()` + `Command(resume=...)` pattern. Execution genuinely pauses at a graph node, state is check pointed, caller resumes with a value. No custom state management. The graph IS the loop; nodes are steps. HITL is native, not retrofitted. Our takeaway: the step boundary is the right abstraction for gates, and resume semantics (not polling) are the right model.
+
+**pydantic-ai** — Has native tool calling via `@agent.tool` / `@agent.tool_plain`. `agent.iter()` walks the graph node-by-node (ModelRequestNode → CallToolsNode → …). **Deferred Tools** (`requires_approval=True` / `ApprovalRequired` exception / `CallDeferred` exception) end the run with `DeferredToolRequests`, then you resume with `DeferredToolResults`. This is pydantic-ai's HITL story — useful as a backend implementation, but not our platform abstraction. **Hooks** (`Hooks` capability) intercept at every lifecycle point: `before_model_request`, `before_tool_execute`, `after_tool_execute`, etc. — perfect for tracing. **OpenTelemetry** is built-in: `Agent.instrument_all()` emits spans for each model request and tool call; compatible with any OTel backend (Logfire, Phoenix, Jaeger, etc.).
+
+**Arize Phoenix** — Python-native, self-hosted, OpenTelemetry-compatible. Uses `OpenInference` semantic conventions (extends OTLP). `auto_instrument=True` captures traces. Sessions track multi-turn conversations. Free and open-source; fits local-first philosophy.
+
+**Claude Code** — Tool-approval prompts per tool type. `--dangerously-skip-permissions` for CI. Hooks run before/after actions. Not protocol-native — approval is client-side, not A2A-integrated.
+
+**Pattern that emerges across all frameworks:**
+
+| Concept | LangGraph | pydantic-ai | fin-assist (platform) |
+|---------|-----------|-------------|----------------------|
+| Step boundary | Graph node | `agent.iter()` node | **Platform `StepEvent`** (backend adapts) |
+| Tool calling | Native | Native (`@agent.tool`) | **Platform `ToolRegistry`** (backend registers) |
+| HITL | `interrupt()` + resume | Deferred Tools | **Platform `ApprovalPolicy`** (backend may optimize) |
+| Tracing | OTel spans per node | `Hooks` + OTel | **OTel spans at step boundaries** (backend may add detail) |
+| Loop strategy | Graph topology | Agent graph (built-in) | Executor drives loop via StepEvents |
+
+---
+
+#### Architecture: Platform Layer / Backend Layer
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Platform Layer (fin-assist owns these — framework-agnostic)    │
+│                                                                 │
+│  ToolRegistry     — tool definitions: name, schema, callable,   │
+│                     approval_policy. Shared across agents.      │
+│  ApprovalPolicy   — what needs approval, how. Evaluated by      │
+│                     the Executor at step boundaries.             │
+│  ContextProviders — existing (files, git, history, env).        │
+│                     Serve both user-driven and model-driven.    │
+│  StepEvent        — universal step boundary events. Any backend  │
+│                     emits the same event types.                 │
+│  OTel spans       — at Executor step boundaries. Backend may    │
+│                     add framework-specific child spans.          │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │  Backend adapts platform concepts
+                           │  to its framework
+┌──────────────────────────┴──────────────────────────────────────┐
+│  Backend Layer (framework-specific)                              │
+│                                                                 │
+│  PydanticAIBackend:                                             │
+│    - Registers tools from ToolRegistry as @agent.tool /         │
+│      @agent.tool_plain (or via toolsets)                        │
+│    - Implements ApprovalPolicy via pydantic-ai's                 │
+│      requires_approval / ApprovalRequired (optimization —       │
+│      lets pydantic-ai handle deferral natively when possible)   │
+│    - Wraps ContextProviders as tool functions for model-driven   │
+│      context; user-driven context injected via user message      │
+│    - Emits StepEvents from agent.iter() nodes                    │
+│    - Adds pydantic-ai Hooks for detailed OTel child spans       │
+│                                                                 │
+│  FutureBackend (LangChain, raw Anthropic, etc.):                │
+│    - Same ToolRegistry, different registration mechanism         │
+│    - Same ApprovalPolicy, different enforcement mechanism        │
+│    - Same StepEvents, different event source                     │
+│    - Same OTel spans, different child span detail               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The key boundary: **platform types never import from backends.** `StepEvent`, `ToolRegistry`, and `ApprovalPolicy` live in `agents/` alongside `AgentSpec`. They have zero pydantic-ai imports. The backend implements them, but the platform doesn't depend on the implementation.
+
+---
+
+#### Architecture: The Step-Driven Executor
+
+**Current state (single-pass):**
+
+```
+load_history → convert_messages → run_stream → drain_deltas → save_history → complete
+```
+
+**Proposed state (step-driven loop):**
+
+```
+load_history → convert_messages → [STEP LOOP] → save_history → complete
+
+STEP LOOP:
+  1. Run backend (one model call) → get response
+  2. Emit streaming deltas (text/thinking) as artifacts
+  3. If response contains tool calls:
+     a. For each tool call:
+        i.   Emit tool_call StepEvent (artifact with metadata)
+        ii.  Evaluate ApprovalPolicy → if deferred, pause task
+        iii. Execute tool → emit tool_result StepEvent
+     b. Feed tool results back to backend → go to 1
+  4. If response is final (no tool calls) → exit loop
+```
+
+The Executor drives the loop. The backend produces `StepEvent`s. The Executor dispatches based on event kind — the loop logic lives in the Executor, not the backend.
+
+---
+
+#### Component Changes
+
+**1. `StreamHandle` → `StepHandle` (platform-level)**
+
+The current `StreamHandle` yields `StreamDelta` values and returns one `RunResult`. This collapses the entire agent graph into one stream. Instead, we need a handle that yields **step events**, not just text deltas:
+
+```python
+@dataclass
+class StepEvent:
+    """Platform-level event emitted during one step of the agent loop.
+
+    Any backend must emit these same event types. The content field
+    carries framework-specific payloads (e.g., pydantic-ai ToolCallPart)
+    but the Executor treats them opaquely — it only dispatches on kind.
+    """
+    kind: Literal[
+        "text_delta",       # incremental text
+        "thinking_delta",   # incremental thinking
+        "tool_call",        # model requests a tool
+        "tool_result",      # tool execution result
+        "step_start",       # beginning of a new model request
+        "step_end",         # model response complete for this step
+        "deferred",         # run paused for approval / external execution
+    ]
+    content: Any           # framework-specific payload
+    step: int              # which step in the loop (0-indexed)
+    tool_name: str | None  # set for tool_call / tool_result / deferred events
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@runtime_checkable
+class StepHandle(Protocol):
+    def __aiter__(self) -> AsyncIterator[StepEvent]: ...
+    async def result(self) -> RunResult: ...
+```
+
+This replaces `StreamHandle`. The Executor iterates `StepHandle` and dispatches based on `kind`. The `content` field is opaque at the platform level — only the backend knows the framework-specific type.
+
+**2. `AgentBackend` contract update**
+
+```python
+@runtime_checkable
+class AgentBackend(Protocol):
+    def check_credentials(self) -> list[str]: ...
+    def convert_history(self, a2a_messages: Sequence[Any]) -> list[Any]: ...
+    def run_steps(self, *, messages: list[Any], model: Any = None) -> StepHandle: ...
+    def serialize_history(self, messages: list[Any]) -> bytes: ...
+    def deserialize_history(self, data: bytes) -> list[Any]: ...
+    def convert_result_to_part(self, result: Any) -> Part: ...
+    def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
+    def register_tools(self, registry: ToolRegistry) -> None: ...
+    def set_approval_policy(self, policy: ApprovalPolicy) -> None: ...
+```
+
+Changes from current:
+- `run_stream()` → `run_steps()`: returns `StepHandle` instead of `StreamHandle`
+- New `register_tools()`: backend registers platform tools onto its framework (pydantic-ai: `@agent.tool`; future: different mechanism)
+- New `set_approval_policy()`: backend adapts platform approval policy to its framework (pydantic-ai: maps to `requires_approval` / `ApprovalRequired`; future: different mechanism)
+- Removed `execute_tool()` from the protocol — tool execution is framework-internal. The Executor gates execution via the `tool_call` event + `ApprovalPolicy` check, but the backend owns *how* the tool runs.
+
+**3. `ToolRegistry` (platform-level, in `agents/`)**
+
+Framework-agnostic tool registry. Maps tool names to definitions:
+
+```python
+@dataclass
+class ToolDefinition:
+    """A platform-level tool definition. Framework-agnostic."""
+    name: str
+    description: str
+    callable: Callable[..., Awaitable[str] | str]
+    parameters_schema: dict[str, Any]   # JSON Schema for parameters
+    approval_policy: ApprovalPolicy | None  # None = no gate required
+
+
+class ToolRegistry:
+    """Global registry of tool definitions. Shared across all agents."""
+
+    def register(self, definition: ToolDefinition) -> None: ...
+    def get(self, name: str) -> ToolDefinition | None: ...
+    def list_tools(self) -> list[ToolDefinition]: ...
+```
+
+Tools are **shareable between agents** — agents opt-in via config (`tools = ["read_file", "git_diff"]`). The registry is global; each agent's `AgentSpec` references tool names, and the backend registers only the tools the agent needs.
+
+**MCP integration** (#84): A future `MCPToolset` would wrap an MCP client and register discovered tools into the `ToolRegistry` with appropriate schemas and approval policies. The platform abstraction doesn't need to know about MCP — it's just another tool source.
+
+**4. `ApprovalPolicy` (platform-level, in `agents/`)**
+
+Framework-agnostic approval specification. The Executor evaluates it at the `tool_call` step boundary:
+
+```python
+@dataclass
+class ApprovalPolicy:
+    """Declares what approval a tool call requires.
+
+    The Executor checks this before allowing tool execution.
+    If a gate fails, the task pauses (A2A input-required state).
+    The backend may use this to optimize (e.g., pydantic-ai
+    Deferred Tools natively support deferral), but the Executor's
+    check is the canonical gate.
+    """
+    mode: Literal["never", "always", "conditional"]
+    # For "conditional" mode: a callable that returns True if approval is needed
+    condition: Callable[[str, dict[str, Any]], bool] | None = None
+    reason: str | None = None  # human-readable reason shown in approval UI
+```
+
+The Executor's approval flow:
+1. On `tool_call` event, look up the tool's `ApprovalPolicy` from `ToolRegistry`
+2. If `mode == "never"` → proceed to execution
+3. If `mode == "always"` → pause task, emit deferred event
+4. If `mode == "conditional"` → evaluate `condition(tool_name, args)` → pause or proceed
+5. When paused, set A2A task to `TASK_STATE_INPUT_REQUIRED`, include tool call details in artifact metadata
+6. Client shows approval UI, sends decision back via `SendMessage` with same `context_id`
+7. Executor resumes: if approved, backend executes tool; if denied, model gets denial message
+
+**Backend optimization:** If the backend natively supports approval (pydantic-ai's `DeferredToolRequests`), it can handle the deferral internally and emit a `deferred` StepEvent. If the backend doesn't support it natively, the Executor's gate is the enforcement point. Either way, the platform `ApprovalPolicy` is the source of truth.
+
+**5. Context: dual path (user-driven + model-driven)**
+
+Context is accessible via two complementary paths:
+
+**User-driven** (the user knows what the model needs):
+- `@file:path.py` in talk mode → `FinPrompt` calls `ContextProvider.search()`, injects result into user message
+- `--file path.py` / `--git-diff` / `--git-log` on `do` → injects `ContextItem` content into user message
+- Pre-injection: context is in the prompt before the model sees it
+
+**Model-driven** (the model discovers what it needs):
+- `read_file`, `git_diff`, `git_log`, `shell_history` registered as tools in `ToolRegistry`
+- The model calls them on demand during the step loop
+- On-demand: context is fetched at tool-call time, always fresh
+
+Both paths use the **same `ContextProvider` classes**. For user-driven, the CLI calls the provider and injects the result. For model-driven, the tool callable wraps the provider:
+
+```python
+# Platform-level tool definition wrapping a ContextProvider:
+async def read_file(path: str) -> str:
+    """Read a file and return its contents."""
+    items = FileFinder(max_file_size=...).search(path)
+    return items[0].content if items else f"File not found: {path}"
+
+registry.register(ToolDefinition(
+    name="read_file",
+    description="Read a file and return its contents.",
+    callable=read_file,
+    parameters_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+    approval_policy=None,  # read-only, no gate
+))
+```
+
+The user-driven path was the original design (Steps 7-8 in config redesign). It stays. The model-driven path is new and additive — it doesn't replace user-driven context, it supplements it.
+
+**6. `_PydanticAIStepHandle` (replaces `_PydanticAIStreamHandle`)**
+
+Uses `agent.iter()` to walk the graph node-by-node. Currently we only stream from `ModelRequestNode` and skip everything else. The new handle emits platform `StepEvent`s for every node type:
+
+- `ModelRequestNode` → `step_start`, then stream `text_delta`/`thinking_delta`, then `step_end`
+- `CallToolsNode` → for each `ToolCallPart`, emit `tool_call`; for each `ToolReturnPart`, emit `tool_result`
+- If `ApprovalRequired` / `CallDeferred` is raised → emit `deferred`
+
+**7. Executor rework (event-driven with approval verification)**
+
+```python
+class Executor(AgentExecutor):
+    async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        # ... setup, credential check, load history (unchanged) ...
+
+        expecting_deferral: str | None = None  # tool name if approval required
+
+        handle = self._backend.run_steps(messages=message_history)
+        async for event in handle:
+            match event.kind:
+                case "text_delta" | "thinking_delta":
+                    await self._emit_delta(event, updater, artifact_id)
+                case "tool_call":
+                    policy = self._tool_registry.get(event.tool_name).approval_policy
+                    if policy and policy.mode != "never":
+                        expecting_deferral = event.tool_name
+                    await self._emit_tool_call(event, updater)
+                case "tool_result":
+                    if expecting_deferral == event.tool_name:
+                        # Backend bug: tool executed without required approval
+                        logger.warning("Tool %s executed without required approval", event.tool_name)
+                    expecting_deferral = None
+                    await self._emit_tool_result(event, updater)
+                case "step_start":
+                    self._start_step_span(event)
+                case "step_end":
+                    self._end_step_span(event)
+                case "deferred":
+                    expecting_deferral = None
+                    await self._handle_deferred(event, updater)
+                    return  # task pauses; client will resume
+
+        result = await handle.result()
+        # ... save history, emit structured output, complete (unchanged) ...
+```
+
+The backend is the primary enforcer of `ApprovalPolicy`. When a tool needs approval, the backend emits `tool_call` followed by `deferred` (not `tool_result`). The Executor verifies this: if a `tool_result` arrives for a tool that should have been deferred, it logs a warning. This is **defense in depth** — the platform catches backend bugs without being the primary gate.
+
+**8. Observability: OTel at platform step boundaries**
+
+The Executor wraps each step in an OTel span (`fin_assist.executor.step`). This is platform-level — any backend produces the same span structure. The backend may add framework-specific child spans (pydantic-ai: `Agent.instrument_all()` + `Hooks`; future backends: their own instrumentation).
+
+Configuration in `config.toml`:
+
+```toml
+[observability]
+backend = "phoenix"   # "phoenix", "logfire", "otlp", or "none"
+endpoint = "http://127.0.0.1:6006"  # Phoenix default
+auto_instrument = true
+```
+
+**9. ContextStore format versioning**
+
+Before the loop rework lands, add a version byte prefix to stored history:
+
+```python
+_CONTEXT_STORE_VERSION = 1  # increment when format changes
+
+def serialize_history(self, messages: list[Any]) -> bytes:
+    payload = _message_ta.dump_json(messages)
+    return struct.pack("!B", _CONTEXT_STORE_VERSION) + payload
+
+def deserialize_history(self, data: bytes) -> list[Any]:
+    version = struct.unpack("!B", data[:1])[0]
+    if version != _CONTEXT_STORE_VERSION:
+        raise ValueError(f"Unsupported context store version {version}")
+    return _message_ta.validate_json(data[1:])
+```
+
+Existing stores without a version prefix need a migration path (try deserializing without prefix on version mismatch, then re-save with prefix).
+
+---
+
+#### Implementation Phases
+
+**Phase A: Foundation (must land first)**
+1. Add `ContextStore` version byte (tiny, low-risk)
+2. Add `StepEvent` dataclass to `agents/` (platform-level, not backend.py)
+3. Add `StepHandle` protocol to `agents/`
+4. Implement `_PydanticAIStepHandle` in `backend.py` (replaces `_PydanticAIStreamHandle`)
+5. Update `AgentBackend` protocol: `run_stream()` → `run_steps()`, add `register_tools()` + `set_approval_policy()`
+6. Update `Executor` to iterate `StepHandle` and dispatch on `StepEvent.kind`
+7. Update all tests
+
+**Phase B: Tool Calling (depends on Phase A)**
+1. Create `ToolRegistry` + `ToolDefinition` in `agents/` (platform-level)
+2. Add `tools` field to `AgentConfig` + `AgentSpec`
+3. Wire `PydanticAIBackend.register_tools()` to register platform tools as pydantic-ai tools
+4. Implement context-as-tools: `read_file`, `git_diff`, `git_log`, `shell_history` in ToolRegistry
+5. Wire CLI `--file` / `--git-diff` flags as user-driven context injection (existing design)
+6. Update `AgentCardMeta` with `supported_context_types` (architecture doc already plans this)
+7. End-to-end test: default agent reads a file via tool call
+
+**Phase C: HITL / Approval (depends on Phase B)**
+1. Create `ApprovalPolicy` in `agents/` (platform-level)
+2. Wire `PydanticAIBackend.set_approval_policy()` to map platform policy to pydantic-ai Deferred Tools
+3. Implement `deferred` event handling in Executor → A2A task pause (`TASK_STATE_INPUT_REQUIRED`)
+4. Implement client-side approval flow (resume with `SendMessage` on same `context_id`)
+5. Test: shell agent proposes command → approval widget → approve/deny
+6. Generalize: any tool can declare `ApprovalPolicy` via config or registration
+
+**Phase D: Observability (can proceed in parallel with B/C)**
+1. Add `[observability]` config section
+2. Wire Arize Phoenix (or generic OTLP) in `hub/app.py` startup
+3. Add Executor-level step spans (platform-level, any backend)
+4. Enable `Agent.instrument_all()` for pydantic-ai-specific child spans
+5. Verify traces appear in Phoenix UI
+
+---
+
+#### Open Issues Addressed
+
+| Issue | How this sketch addresses it |
+|-------|----------------------------|
+| [#79](https://github.com/ColeB1722/fin-assist/issues/79) (commit agent) | Directly enabled: `git_diff` tool + `CommandResult` output + approval. Great first vertical slice for Phase B+C. |
+| [#80](https://github.com/ColeB1722/fin-assist/issues/80) (backend protocol) | Protocol reworked: tools, approval, and step events move to platform layer, simplifying the backend contract. The backend now adapts platform concepts instead of exposing pydantic-ai shapes. |
+| [#84](https://github.com/ColeB1722/fin-assist/issues/84) (MCP toolset) | Natural enhancement: MCPToolset registers into ToolRegistry. ToolRegistry interface designed so MCP is a natural plugin. |
+| [#65](https://github.com/ColeB1722/fin-assist/issues/65) (private pydantic-ai access) | Resolves organically as we push framework coupling into the backend. Platform types have zero pydantic-ai imports. |
+| [#63](https://github.com/ColeB1722/fin-assist/issues/63) (workflow chaining) | Enabled by step boundaries — the loop is the foundation for per-step handoffs between agents. |
+
+---
+
+#### Open Questions
+
+1. ~~**StepHandle vs. two-pass.**~~ **RESOLVED: Event-driven (Option A) with Executor verification.**
+
+   Two approaches were evaluated:
+
+   **Option A: Event-driven (chosen)** — Single `run_steps()` call, backend walks the full agent graph, emits `StepEvent`s continuously. The Executor iterates and dispatches. Approval: backend enforces `ApprovalPolicy` (emits `deferred` for gated tools). Executor verifies compliance (defense in depth).
+
+   **Option B: Two-pass (rejected)** — Multiple `run_steps()` calls, one per model response. Executor feeds tool results between calls. Approval: Executor owns the gate entirely.
+
+   | Dimension | Event-driven (A) | Two-pass (B) |
+   |-----------|-------------------|--------------|
+   | Streaming | Seamless within and across tool calls | Round-trip gaps between steps |
+   | Approval ownership | Backend enforces, Executor verifies | Executor enforces exclusively |
+   | Backend contract | Richer — full graph walk, event emission, approval deferral | Simpler — one model request per call |
+   | pydantic-ai alignment | Natural — `agent.iter()` does this | Unnatural — must stop/resume manually, fights the framework |
+   | Non-pydantic-ai backends | More work per backend (must implement graph walk) | Less work per backend |
+   | Latency between tool call and tool result | Zero (inline execution) | One round-trip per tool call |
+   | Error recovery | Backend handles within graph walk | Executor has more control |
+
+   **Why A:** Fighting pydantic-ai is the worse outcome (coupling, private imports, #68/#80 repeat risk). Latency matters — agents that call 5-10 tools per turn would have 5-10 unnecessary round-trips under B. Streaming is non-negotiable for UX. The approval guarantee is strengthened by the Executor's verification layer (logs warning if `tool_result` arrives for a tool that should have been deferred).
+
+   **Contract for backends:** `set_approval_policy(policy)` — backend MUST check the policy before executing any tool. If a tool needs approval, emit `deferred` instead of executing. The Executor verifies compliance.
+
+2. **A2A task pause for deferred tools.** A2A has `TASK_STATE_INPUT_REQUIRED` (value 7). Is this the right state for "paused for approval"? Or should we use a custom extension? `TASK_STATE_AUTH_REQUIRED` is already used for credentials. `INPUT_REQUIRED` semantically fits "waiting for human input about whether to approve this tool." **Needs resolution in Phase C.**
+
+3. **Deferred tool resume protocol.** When a task is paused for approval and the client sends a decision, does the client:
+   - (a) Send a new `SendMessage` with the same `context_id`, and the Executor picks up where it left off?
+   - (b) Use a custom A2A extension method?
+   Option (a) is protocol-native but requires the Executor to detect "this is a resume, not a new request" from the message content or metadata. Option (b) is cleaner but non-standard. The Executor would need to detect resume context from the A2A message — possibly via a `Part` with `metadata.type = "approval_result"`. **Needs a concrete proposal in Phase C.**
+
+4. **StepHandle `deferred` event semantics.** When a deferred tool is encountered, does the `StepHandle` iteration end (run is over, need to re-invoke), or does it pause and wait for external resolution? pydantic-ai's model is "run ends with `DeferredToolRequests` output" — so the iteration should end for that backend. But the platform should support both: backends with native deferral end the iteration; backends without it rely on the Executor's `ApprovalPolicy` gate, which blocks *before* the tool executes (so the `tool_call` event is emitted, but `tool_result` never appears until the client resumes). **Needs reconciliation in Phase C.**
+
+5. **Tool dependencies injection.** Tools need config (file size limits, working directory, etc.). What goes in the tool's context? A typed `ToolDeps` dataclass with only what tools need — not the full `AgentSpec`. The backend maps `ToolDeps` to its framework's context type (pydantic-ai: `RunContext[ToolDeps]`). **Needs design in Phase B.**
+
+6. **ToolRegistry scoping.** Should tools be globally registered (one `read_file` definition shared by all agents) or per-agent (different `read_file` configs per agent)? Global definitions with per-agent config overrides (via `ToolDeps`) seems right, but needs validation. **Needs design in Phase B.**
+
+---
+
+#### Scope Explicitly Excluded
+
+- **LoopStrategy pluggability.** For now, the Executor IS the loop. If we later need different loop behaviors (plan-execute, self-critique), we can extract a strategy then. Premature abstraction.
+- **Multi-agent orchestration.** One agent calling another agent as a tool. Interesting but out of scope — this is a future A2A-level feature (#63), not an Executor feature.
+- **Sandboxing / tool isolation.** Tool functions run in the hub process. Sandboxing (containers, Nix shells) is a future concern for the QA/testing agent.
+- **Tool result streaming.** Tool results are currently atomic (one `tool_result` event). Streaming tool results (e.g., a long-running bash command) is a future enhancement.
+
+---
+
+#### Supersedes
+
+This sketch supersedes the following previous entries:
+- "Executor Loop Rework (2026-04-22)" — the loop design is now specified here, with platform/backend separation
+- "HITL Approval Model (2026-04-22)" — HITL is now a platform-level `ApprovalPolicy`, not backend-specific
+- "ContextProviders Integration (Steps 7-8, parked)" — context has a dual path: user-driven (existing design) + model-driven (tool calls)
 
 ---
 
@@ -1514,20 +1949,18 @@ Total: 440 tests, all passing
 
 ### Recommended sequence
 
-1. **PR review + manual verification baseline.** Review the open PR that's gathered changes since the last merge. Before the Executor rework, run the manual-testing "Pre-Refactor Smoke Set" (`docs/manual-testing.md`): Chunk A (all), B1/B3/B4/B6, C1/C5/C10/C11/C13, F1/F3. This establishes a known-good baseline so any regression from the rework is attributable.
-2. **Executor Loop Rework — design sketch session.** Open a dedicated session. Follow the "Needs Design Sketch" entry above. Produce sketch artifacts; do not implement. End the session with a checked-in sketch in this file.
-3. **HITL research spike.** Separate session. Follow the "Needs Research Spike" entry. Produce a comparison matrix of how Claude Code / opencode / AutoGen / LangGraph / Cursor / Aider handle approval. Do not design yet.
-4. **Executor Loop Rework — implementation session.** Separate session. Implement against the sketch from (2). Re-run the Pre-Refactor Smoke Set to confirm no regression; extend with tests for new loop behavior.
-5. **ContextProviders integration (Steps 7-8).** Only after (4) lands. Wire `FileFinder` first as a vertical slice (`--file` flag → Executor context injection → system prompt). Generalize when `--git-diff` comes along.
-6. **HITL design sketch + implementation.** Informed by (3) and (4). Dedicated sketch session first, then implementation.
+1. **Manual verification baseline.** Run the Pre-Refactor Smoke Set (`docs/manual-testing.md`): Chunk A (all), B1/B3/B4/B6, C1/C5/C10/C11/C13, F1/F3. Establishes a known-good baseline before the refactor.
+2. **Phase A: Foundation.** ContextStore version byte + `StepEvent` + `StepHandle` + `_PydanticAIStepHandle` + Executor rewrite (event-driven with approval verification) + all tests updated. This is the core refactor — the loop becomes step-driven.
+3. **Phase B: Tool Calling.** `ToolRegistry` + `ToolDefinition` + `tools` config field + context-as-tools (`read_file`, `git_diff`, `git_log`, `shell_history`) + CLI `--file` / `--git-diff` flags (user-driven). End-to-end test: default agent reads a file via tool call.
+4. **Phase C: HITL / Approval.** `ApprovalPolicy` + shell command tool with `requires_approval=True` + deferred event handling + client approval flow. Resolve open questions #2-4 (A2A pause state, resume protocol, deferred semantics).
+5. **Phase D: Observability.** `[observability]` config + Arize Phoenix wiring + `Agent.instrument_all()` + Executor step spans. Can proceed in parallel with B/C.
 
-The ordering is deliberate: (2) unblocks everything; (3) is cheap but trap-prone and benefits from being independent of (2); (4) has to precede (5) because the loop's shape dictates the injection API.
+Phases B–D can overlap once Phase A lands. The recommended vertical slice for a first implementation session is **Phase A + a minimal Phase B** (one tool: `read_file`) — this proves the loop works end-to-end with tool calling.
 
 ### Deferred / open as external tickets
 
-- **AgentBackend protocol simplification.** Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Revisit when a second backend (LangChain, Anthropic SDK, etc.) is actually needed. Not urgent.
-- **ContextStore format versioning.** Before (4) lands, add a version byte to the stored history format so the loop refactor doesn't silently corrupt existing sessions. Tiny change; fits in the (2) sketch or (4) implementation.
-- **Diagram / doc drift defense.** The "citation required" rule in `docs/architecture.md` (2026-04-22) is now the structural guard. If a future session claims something is "Resolved" or "integrated" without a `file:line` citation, push back.
+- **AgentBackend protocol simplification.** Filed as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt). Revisit when a second backend is actually needed.
+- **Diagram / doc drift defense.** The "citation required" rule in `docs/architecture.md` (2026-04-22) is now the structural guard.
 
 ---
 
@@ -1652,9 +2085,9 @@ Build the core "turnstile" of agents: a Starlette server that mounts N specializ
 
 ---
 
-## Design Sketch: Interactive Task State Machine (Phase 10)
+## Design Sketch: Interactive Task State Machine (Phase 10) — Superseded
 
-**Status**: Pre-design — no implementation. Depends on Chunks B-D (manual testing) and Phase 9 (streaming) being complete first. Sketched here so the intent is captured.
+**Status**: Superseded by "Unified Executor & Agent Platform Sketch (2026-04-24)" Phase C (HITL / Deferred Tools). The `input-required` state machine and `InputRequiredError` pattern below remain valid reference material; the unified sketch refines the approach using pydantic-ai Deferred Tools instead of a custom gate protocol.
 
 ### Problem
 
@@ -1785,9 +2218,9 @@ To quickly get context in a new session:
 
 ---
 
-## Design Sketch: Tracing Integration (Phoenix Arize)
+## Design Sketch: Tracing Integration (Phoenix Arize) — Superseded
 
-**Status**: Pre-design — no implementation started. To be addressed when tracing is added (likely alongside Phase 14: Deep Evals or Phase 16: Additional Agents).
+**Status**: Superseded by "Unified Executor & Agent Platform Sketch (2026-04-24)" Phase D. The Phoenix wiring details below remain valid reference material for implementation.
 
 ### What Phoenix Is
 

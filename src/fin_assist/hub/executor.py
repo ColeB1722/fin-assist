@@ -10,6 +10,17 @@ streaming, message conversion, and history serialization.
 A2A task storage is handled by ``InMemoryTaskStore`` while conversation
 history lives in our ``ContextStore``.  Message conversion uses protobuf
 types (``Part(text=...)``).
+
+Step-driven dispatch
+~~~~~~~~~~~~~~~~~~~~
+The Executor iterates a ``StepHandle`` and dispatches based on
+``StepEvent.kind``:
+
+- ``text_delta`` / ``thinking_delta`` → streaming artifacts
+- ``tool_call`` → tool call artifact (future: approval gate)
+- ``tool_result`` → tool result artifact
+- ``step_start`` / ``step_end`` → step boundary markers (future: OTel spans)
+- ``deferred`` → task pauses for human approval (Phase C)
 """
 
 from __future__ import annotations
@@ -28,6 +39,7 @@ if TYPE_CHECKING:
     from a2a.server.events import EventQueue
 
     from fin_assist.agents.backend import AgentBackend, RunResult
+    from fin_assist.agents.step import StepEvent
     from fin_assist.hub.context_store import ContextStore
 
 
@@ -41,7 +53,7 @@ class Executor(AgentExecutor):
     2. Loads serialized history from ``ContextStore`` and deserializes
        via ``backend.deserialize_history()``.
     3. Converts A2A messages via ``backend.convert_history()``.
-    4. Runs the backend with streaming via ``backend.run_stream()``.
+    4. Runs the backend with step-driven dispatch via ``backend.run_steps()``.
     5. Sends streaming deltas (text and thinking) as A2A artifacts.
        Thinking deltas include ``metadata.type = "thinking"``.
     6. Saves updated history via ``ContextStore.save()`` with
@@ -101,29 +113,12 @@ class Executor(AgentExecutor):
             a2a_history = [context.message]
             message_history.extend(self._backend.convert_history(a2a_history))
 
-        # 4. Run backend with streaming
+        # 4. Run backend with step-driven dispatch
         artifact_id = str(uuid.uuid4())
         try:
-            handle = self._backend.run_stream(messages=message_history)
-            async for delta in handle:
-                if delta.kind == "thinking":
-                    meta = Struct()
-                    meta.update({"type": "thinking"})
-                    await updater.add_artifact(
-                        parts=[Part(text=delta.content, metadata=meta)],
-                        artifact_id=artifact_id,
-                        name="result",
-                        append=True,
-                        last_chunk=False,
-                    )
-                else:
-                    await updater.add_artifact(
-                        parts=[Part(text=delta.content)],
-                        artifact_id=artifact_id,
-                        name="result",
-                        append=True,
-                        last_chunk=False,
-                    )
+            handle = self._backend.run_steps(messages=message_history)
+            async for event in handle:
+                await self._dispatch_step_event(event, updater, artifact_id)
             # Final chunk signals completion
             await updater.add_artifact(
                 parts=[Part(text="")],
@@ -152,6 +147,68 @@ class Executor(AgentExecutor):
             )
 
         await updater.complete()
+
+    async def _dispatch_step_event(
+        self,
+        event: StepEvent,
+        updater: TaskUpdater,
+        artifact_id: str,
+    ) -> None:
+        """Route a ``StepEvent`` to the appropriate A2A artifact or state transition."""
+        match event.kind:
+            case "text_delta":
+                await updater.add_artifact(
+                    parts=[Part(text=event.content)],
+                    artifact_id=artifact_id,
+                    name="result",
+                    append=True,
+                    last_chunk=False,
+                )
+            case "thinking_delta":
+                meta = Struct()
+                meta.update({"type": "thinking"})
+                await updater.add_artifact(
+                    parts=[Part(text=event.content, metadata=meta)],
+                    artifact_id=artifact_id,
+                    name="result",
+                    append=True,
+                    last_chunk=False,
+                )
+            case "tool_call":
+                tool_meta = Struct()
+                tool_meta.update(
+                    {
+                        "type": "tool_call",
+                        "tool_name": event.tool_name or "",
+                        **event.metadata,
+                    }
+                )
+                await updater.add_artifact(
+                    parts=[Part(text=str(event.content), metadata=tool_meta)],
+                    artifact_id=artifact_id,
+                    name="result",
+                    append=True,
+                    last_chunk=False,
+                )
+            case "tool_result":
+                result_meta = Struct()
+                result_meta.update(
+                    {
+                        "type": "tool_result",
+                        "tool_name": event.tool_name or "",
+                    }
+                )
+                await updater.add_artifact(
+                    parts=[Part(text=str(event.content), metadata=result_meta)],
+                    artifact_id=artifact_id,
+                    name="result",
+                    append=True,
+                    last_chunk=False,
+                )
+            case "step_start" | "step_end":
+                pass
+            case "deferred":
+                pass
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(

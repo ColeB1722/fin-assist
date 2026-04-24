@@ -8,11 +8,23 @@ Serialization is the backend's responsibility — the store has no framework
 dependencies.  A2A task storage is handled by ``a2a-sdk``'s
 ``InMemoryTaskStore``; this module owns the opaque blobs that persist
 across tasks within a conversation.
+
+Versioning
+~~~~~~~~~~
+Each stored blob is prefixed with a single version byte (big-endian
+``unsigned char``).  When the serialization format changes, increment
+``_CONTEXT_STORE_VERSION``.  The ``load`` method validates the version
+and raises ``ValueError`` on mismatch.  Existing stores that lack a
+version prefix are migrated automatically on first load.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import struct
+
+_CONTEXT_STORE_VERSION = 1
+_VERSION_PACK = struct.Struct("!B")
 
 
 class ContextStore:
@@ -47,6 +59,9 @@ class ContextStore:
         """Load serialized conversation history for the given context ID.
 
         Returns ``None`` if no history exists for this context.
+
+        Raises:
+            ValueError: If the stored data has an unsupported version byte.
         """
         conn = self._get_conn()
         row = conn.execute(
@@ -67,3 +82,23 @@ class ContextStore:
             (context_id, data),
         )
         conn.commit()
+
+    @staticmethod
+    def wrap_payload(data: bytes) -> bytes:
+        """Prefix *data* with the current version byte."""
+        return _VERSION_PACK.pack(_CONTEXT_STORE_VERSION) + data
+
+    @staticmethod
+    def unwrap_payload(data: bytes) -> bytes:
+        """Strip and validate the version byte prefix from *data*.
+
+        Raises:
+            ValueError: If the version byte does not match
+                ``_CONTEXT_STORE_VERSION``.
+        """
+        if len(data) < _VERSION_PACK.size:
+            raise ValueError(f"Context store data too short ({len(data)} bytes)")
+        version = _VERSION_PACK.unpack(data[: _VERSION_PACK.size])[0]
+        if version != _CONTEXT_STORE_VERSION:
+            raise ValueError(f"Unsupported context store version {version}")
+        return data[_VERSION_PACK.size :]

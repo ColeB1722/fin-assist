@@ -15,9 +15,10 @@ import httpx
 import pytest
 from a2a.types import Part
 
-from fin_assist.agents.backend import AgentBackend, RunResult, StreamDelta
+from fin_assist.agents.backend import AgentBackend, RunResult
 from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.agents.spec import AgentSpec
+from fin_assist.agents.step import StepEvent
 from fin_assist.cli.client import HubClient
 from fin_assist.config.schema import AgentConfig
 from fin_assist.hub.app import create_hub_app
@@ -42,16 +43,16 @@ def _make_hub_client(
     return HubClient(base_url="http://testserver", http_client=http_client)
 
 
-class FakeStreamHandle:
-    """Deterministic ``StreamHandle`` that yields pre-set deltas."""
+class FakeStepHandle:
+    """Deterministic ``StepHandle`` that yields pre-set step events."""
 
-    def __init__(self, deltas: list[StreamDelta], run_result: RunResult) -> None:
-        self._deltas = deltas
+    def __init__(self, events: list[StepEvent], run_result: RunResult) -> None:
+        self._events = events
         self._run_result = run_result
 
-    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
-        for delta in self._deltas:
-            yield delta
+    async def __aiter__(self) -> AsyncIterator[StepEvent]:
+        for event in self._events:
+            yield event
 
     async def result(self) -> RunResult:
         return self._run_result
@@ -95,15 +96,15 @@ class FakeBackend:
     def convert_history(self, a2a_messages: Sequence[Any]) -> list[Any]:
         return []
 
-    def run_stream(self, *, messages: list[Any], model: Any = None) -> FakeStreamHandle:
-        deltas = [StreamDelta(kind="thinking", content=t) for t in self._thinking]
-        deltas.append(StreamDelta(kind="text", content=self._response))
+    def run_steps(self, *, messages: list[Any], model: Any = None) -> FakeStepHandle:
+        events = [StepEvent(kind="thinking_delta", content=t, step=0) for t in self._thinking]
+        events.append(StepEvent(kind="text_delta", content=self._response, step=0))
         result = RunResult(
             output=self._output,
             serialized_history=b"[]",
             new_message_parts=self._new_message_parts,
         )
-        return FakeStreamHandle(deltas=deltas, run_result=result)
+        return FakeStepHandle(events=events, run_result=result)
 
     def serialize_history(self, messages: list[Any]) -> bytes:
         return b"[]"

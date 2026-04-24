@@ -1,4 +1,4 @@
-"""Tests for Executor — a2a-sdk AgentExecutor with streaming and auth-required."""
+"""Tests for Executor — a2a-sdk AgentExecutor with step-driven dispatch."""
 
 from __future__ import annotations
 
@@ -10,33 +10,37 @@ import pytest
 
 from a2a.types import TaskState
 
-from fin_assist.agents.backend import RunResult, StreamDelta
+from fin_assist.agents.backend import RunResult
 from fin_assist.agents.metadata import MissingCredentialsError
+from fin_assist.agents.step import StepEvent
 from fin_assist.hub.executor import Executor
 
 
-class _FakeStreamHandle:
-    def __init__(self, deltas: list[StreamDelta], run_result: RunResult) -> None:
-        self._deltas = deltas
+class _FakeStepHandle:
+    def __init__(self, events: list[StepEvent], run_result: RunResult) -> None:
+        self._events = events
         self._run_result = run_result
 
-    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
-        for delta in self._deltas:
-            yield delta
+    async def __aiter__(self) -> AsyncIterator[StepEvent]:
+        for event in self._events:
+            yield event
 
     async def result(self) -> RunResult:
         return self._run_result
 
 
-def _as_text_deltas(items: list[str] | list[StreamDelta]) -> list[StreamDelta]:
-    """Lift plain strings into text StreamDeltas; pass StreamDeltas through."""
-    return [d if isinstance(d, StreamDelta) else StreamDelta(kind="text", content=d) for d in items]
+def _as_text_events(items: list[str] | list[StepEvent]) -> list[StepEvent]:
+    """Lift plain strings into text_delta StepEvents; pass StepEvents through."""
+    return [
+        e if isinstance(e, StepEvent) else StepEvent(kind="text_delta", content=e, step=0)
+        for e in items
+    ]
 
 
 def _make_backend(
     *,
     missing_providers: list[str] | None = None,
-    deltas: list[str] | list[StreamDelta] | None = None,
+    events: list[str] | list[StepEvent] | None = None,
     run_result: RunResult | None = None,
     run_side_effect: Exception | None = None,
 ) -> MagicMock:
@@ -48,18 +52,18 @@ def _make_backend(
         backend.check_credentials.return_value = []
 
     if run_side_effect is not None:
-        backend.run_stream.side_effect = run_side_effect
+        backend.run_steps.side_effect = run_side_effect
     else:
         result = run_result or RunResult(
             output="hello",
             serialized_history=b"[]",
             new_message_parts=[],
         )
-        handle = _FakeStreamHandle(
-            deltas=_as_text_deltas(deltas or ["hello"]),
+        handle = _FakeStepHandle(
+            events=_as_text_events(events or ["hello"]),
             run_result=result,
         )
-        backend.run_stream.return_value = handle
+        backend.run_steps.return_value = handle
 
     backend.convert_history.return_value = []
     backend.deserialize_history.return_value = []
@@ -167,7 +171,7 @@ class TestExecutorAuthRequired:
         assert call_args[0][1] == b'{"serialized": true}'
 
     async def test_streaming_produces_artifact_chunks(self) -> None:
-        backend = _make_backend(deltas=["hel", "lo"])
+        backend = _make_backend(events=["hel", "lo"])
         context_store = MagicMock()
         context_store.load = AsyncMock(return_value=None)
         context_store.save = AsyncMock()
@@ -269,9 +273,9 @@ class TestExecutorThinkingViaArtifacts:
     async def test_thinking_delta_produces_artifact_with_metadata(self) -> None:
         from google.protobuf.json_format import MessageToDict
 
-        thinking_delta = StreamDelta(kind="thinking", content="hmm...")
-        text_delta = StreamDelta(kind="text", content="answer")
-        backend = _make_backend(deltas=[thinking_delta, text_delta])
+        thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
+        text_event = StepEvent(kind="text_delta", content="answer", step=0)
+        backend = _make_backend(events=[thinking_event, text_event])
         context_store = MagicMock()
         context_store.load = AsyncMock(return_value=None)
         context_store.save = AsyncMock()
@@ -306,8 +310,8 @@ class TestExecutorThinkingViaArtifacts:
     async def test_text_delta_artifact_has_no_thinking_metadata(self) -> None:
         from google.protobuf.json_format import MessageToDict
 
-        text_delta = StreamDelta(kind="text", content="answer")
-        backend = _make_backend(deltas=[text_delta])
+        text_event = StepEvent(kind="text_delta", content="answer", step=0)
+        backend = _make_backend(events=[text_event])
         context_store = MagicMock()
         context_store.load = AsyncMock(return_value=None)
         context_store.save = AsyncMock()
