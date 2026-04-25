@@ -36,7 +36,7 @@ def _make_struct(d: dict) -> Struct:
 
 
 def _make_task(
-    state: int = TaskState.TASK_STATE_COMPLETED,
+    state: TaskState = TaskState.TASK_STATE_COMPLETED,
     artifacts: list[Artifact] | None = None,
     history: list[Message] | None = None,
     context_id: str = "ctx-1",
@@ -404,7 +404,6 @@ class TestDiscoverAgents:
                     "url": "http://localhost/agents/shell/",
                     "card_meta": {
                         "serving_modes": ["do"],
-                        "requires_approval": True,
                         "supports_thinking": False,
                         "supports_model_selection": True,
                         "tags": ["shell"],
@@ -428,7 +427,6 @@ class TestDiscoverAgents:
         assert len(agents) == 1
         assert agents[0].name == "shell"
         assert agents[0].card_meta.serving_modes == ["do"]
-        assert agents[0].card_meta.requires_approval is True
 
     async def test_returns_empty_when_no_agents(self):
         mock_response = MagicMock()
@@ -469,7 +467,6 @@ class TestDiscoverAgents:
         agents = await client.discover_agents()
 
         assert agents[0].card_meta.serving_modes == ["do", "talk"]
-        assert agents[0].card_meta.requires_approval is False
 
 
 class TestRunAgent:
@@ -718,3 +715,141 @@ class TestExtractThinkingFromArtifacts:
         thinking = HubClient._extract_thinking(task)
         assert "artifact thought" in thinking
         assert "history thought" in thinking
+
+
+class TestIsDeferred:
+    def test_returns_true_for_deferred_metadata(self):
+        part = _make_text_part("args...", metadata={"type": "deferred"})
+        from fin_assist.cli.client import _is_deferred
+
+        assert _is_deferred(part) is True
+
+    def test_returns_false_for_no_metadata(self):
+        part = _make_text_part("hello")
+        from fin_assist.cli.client import _is_deferred
+
+        assert _is_deferred(part) is False
+
+    def test_returns_false_for_thinking_metadata(self):
+        part = _make_text_part("hmm...", metadata={"type": "thinking"})
+        from fin_assist.cli.client import _is_deferred
+
+        assert _is_deferred(part) is False
+
+    def test_returns_false_for_empty_metadata(self):
+        part = _make_text_part("hello", metadata={})
+        from fin_assist.cli.client import _is_deferred
+
+        assert _is_deferred(part) is False
+
+
+class TestExtractDeferredCalls:
+    def test_extracts_deferred_calls_from_artifacts(self):
+        from fin_assist.cli.client import _extract_deferred_calls
+
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part("some text"),
+                        _make_text_part(
+                            "args...",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_1",
+                                "args": {"command": "ls"},
+                                "reason": "requires approval",
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert len(calls) == 1
+        assert calls[0]["tool_name"] == "run_shell"
+        assert calls[0]["tool_call_id"] == "call_1"
+        assert calls[0]["args"] == {"command": "ls"}
+        assert calls[0]["reason"] == "requires approval"
+
+    def test_returns_empty_when_no_deferred_artifacts(self):
+        from fin_assist.cli.client import _extract_deferred_calls
+
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_text_part("just text")],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert calls == []
+
+    def test_returns_empty_when_no_artifacts(self):
+        from fin_assist.cli.client import _extract_deferred_calls
+
+        task = _make_task(artifacts=[])
+        calls = _extract_deferred_calls(task)
+        assert calls == []
+
+    def test_extracts_multiple_deferred_calls(self):
+        from fin_assist.cli.client import _extract_deferred_calls
+
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "args1",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_1",
+                                "args": {},
+                                "reason": "",
+                            },
+                        ),
+                        _make_text_part(
+                            "args2",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_2",
+                                "args": {},
+                                "reason": "",
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert len(calls) == 2
+
+
+class TestStreamEventInputRequired:
+    def test_input_required_kind(self):
+        event = StreamEvent(
+            kind="input_required",
+            result=AgentResult(success=False, output="waiting"),
+            deferred_calls=[{"tool_name": "run_shell", "tool_call_id": "c1"}],
+        )
+        assert event.kind == "input_required"
+        assert len(event.deferred_calls) == 1
+
+    def test_input_required_carries_result(self):
+        result = AgentResult(success=False, output="waiting for approval", context_id="ctx-1")
+        event = StreamEvent(kind="input_required", result=result, deferred_calls=[])
+        assert event.result is not None
+        assert event.result.context_id == "ctx-1"
+
+    def test_input_required_deferred_calls_default_empty(self):
+        event = StreamEvent(kind="input_required")
+        assert event.deferred_calls == []

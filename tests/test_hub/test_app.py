@@ -26,7 +26,6 @@ def mock_agents(mock_config, mock_credentials):
         output_type="command",
         thinking="off",
         serving_modes=["do"],
-        requires_approval=True,
         tags=["shell", "one-shot"],
     )
     default_config = AgentConfig(

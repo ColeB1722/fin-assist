@@ -20,10 +20,58 @@ know about MCP — it's just another tool source.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+
+@dataclass
+class ApprovalPolicy:
+    """Platform-level approval specification.  Framework-agnostic.
+
+    Lives on ``ToolDefinition``.  The backend enforces it (emits
+    ``deferred`` StepEvents for gated tools).  The Executor verifies
+    compliance (defense in depth — logs a warning if a ``tool_result``
+    arrives for a tool that should have been deferred).
+
+    Backends adapt this to their framework's approval mechanism:
+    pydantic-ai → ``requires_approval=True`` / ``ApprovalRequired`` /
+    ``approval_required()`` toolset wrapper.  Future backends map to
+    their own mechanism (LangGraph ``interrupt()``, etc.).
+    """
+
+    mode: Literal["never", "always", "conditional"]
+    condition: Callable[[str, dict[str, Any]], bool] | None = None
+    reason: str | None = None
+
+
+@dataclass
+class DeferredToolCall:
+    """A tool call that was deferred pending human approval.
+
+    Carried in the ``deferred`` StepEvent's content and in the deferred
+    artifact metadata.  Serializable for A2A transport.
+    """
+
+    tool_name: str
+    tool_call_id: str
+    args: dict[str, Any]
+    reason: str | None = None
+
+
+@dataclass
+class ApprovalDecision:
+    """Client's decision on a deferred tool call.
+
+    Sent back via ``approval_result`` Part metadata when resuming an
+    A2A task that was paused for approval.
+    """
+
+    tool_call_id: str
+    approved: bool
+    override_args: dict[str, Any] | None = None
+    denial_reason: str | None = None
 
 
 @dataclass
@@ -37,15 +85,16 @@ class ToolDefinition:
     parameters.  Backends use this to register the tool with their
     framework (e.g., pydantic-ai derives ``Tool`` from it).
 
-    ``approval_policy`` is reserved for Phase C (HITL).  ``None`` means
-    no gate required — the tool is safe to execute without human approval.
+    ``approval_policy`` declares whether the tool requires human approval.
+    ``None`` means no gate required — the tool is safe to execute without
+    human approval (equivalent to ``ApprovalPolicy(mode="never")``).
     """
 
     name: str
     description: str
     callable: Callable[..., Awaitable[str] | str]
     parameters_schema: dict[str, Any]
-    approval_policy: Any | None = None
+    approval_policy: ApprovalPolicy | None = None
 
 
 class ToolRegistry:
@@ -84,7 +133,7 @@ def create_default_registry() -> ToolRegistry:
 
     The built-in tools wrap existing ``ContextProvider`` classes as
     model-driven tool callables.  They are read-only and require no
-    approval.
+    approval.  The ``run_shell`` tool requires approval for every call.
     """
     registry = ToolRegistry()
 
@@ -153,6 +202,31 @@ def create_default_registry() -> ToolRegistry:
         )
     )
 
+    registry.register(
+        ToolDefinition(
+            name="run_shell",
+            description=(
+                "Execute a shell command and return its output. "
+                "Requires user approval before execution."
+            ),
+            callable=_run_shell,
+            parameters_schema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute.",
+                    },
+                },
+                "required": ["command"],
+            },
+            approval_policy=ApprovalPolicy(
+                mode="always",
+                reason="Shell command execution requires approval",
+            ),
+        )
+    )
+
     return registry
 
 
@@ -194,3 +268,20 @@ async def _shell_history(query: str = "") -> str:
     if not items:
         return "No shell history available."
     return "\n".join(item.content for item in items)
+
+
+async def _run_shell(command: str) -> str:
+    import subprocess
+
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+        output = result.stdout
+        if result.stderr:
+            output += f"\nSTDERR: {result.stderr}"
+        if result.returncode != 0:
+            output += f"\nExit code: {result.returncode}"
+        return output or "(no output)"
+    except subprocess.TimeoutExpired:
+        return f"Command timed out after 30 seconds: {command}"
+    except Exception as e:
+        return f"Error executing command: {e}"

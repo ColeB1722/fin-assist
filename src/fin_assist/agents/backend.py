@@ -60,6 +60,7 @@ from pydantic_ai.messages import TextPart as PydanticTextPart
 
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.step import StepEvent
+from fin_assist.agents.tools import ApprovalDecision, DeferredToolCall
 
 _message_ta = TypeAdapter(list[ModelMessage])
 
@@ -100,11 +101,18 @@ class RunResult:
 class AgentBackend(Protocol):
     def check_credentials(self) -> list[str]: ...
     def convert_history(self, a2a_messages: Sequence[Any]) -> list[Any]: ...
-    def run_steps(self, *, messages: list[Any], model: Any = None) -> Any: ...
+    def run_steps(
+        self,
+        *,
+        messages: list[Any],
+        model: Any = None,
+        deferred_tool_results: Any = None,
+    ) -> Any: ...
     def serialize_history(self, messages: list[Any]) -> bytes: ...
     def deserialize_history(self, data: bytes) -> list[Any]: ...
     def convert_result_to_part(self, result: Any) -> Part: ...
     def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
+    def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any: ...
 
 
 class _PydanticAIStepHandle:
@@ -117,6 +125,11 @@ class _PydanticAIStepHandle:
     - ``CallToolsNode`` → ``tool_call`` / ``tool_result`` events for each
       tool invocation in the node.
 
+    If the run ends with ``DeferredToolRequests`` (a tool requiring
+    approval was called), the handle emits ``deferred`` StepEvents and
+    iteration ends.  Resume by calling ``run_steps()`` again with
+    ``deferred_tool_results``.
+
     After iteration completes, ``result()`` returns the ``RunResult``.
     """
 
@@ -126,21 +139,24 @@ class _PydanticAIStepHandle:
         model: Any,
         message_history: list[Any],
         backend: PydanticAIBackend,
+        deferred_tool_results: Any | None = None,
     ) -> None:
         self._pydantic_agent = pydantic_agent
         self._model = model
         self._message_history = message_history
         self._backend = backend
+        self._deferred_tool_results = deferred_tool_results
         self._result: RunResult | None = None
 
     async def __aiter__(self) -> AsyncIterator[StepEvent]:
-        from pydantic_ai import Agent
+        from pydantic_ai import Agent, DeferredToolRequests
 
         step = 0
 
         async with self._pydantic_agent.iter(
             model=self._model,
             message_history=self._message_history,
+            deferred_tool_results=self._deferred_tool_results,
         ) as run:
             async for node in run:
                 if Agent.is_model_request_node(node):
@@ -164,6 +180,25 @@ class _PydanticAIStepHandle:
             if final is None:
                 self._result = RunResult(
                     output="", serialized_history=self._backend.serialize_history([])
+                )
+                return
+
+            if isinstance(final.output, DeferredToolRequests):
+                for call in final.output.approvals:
+                    yield StepEvent(
+                        kind="deferred",
+                        content=DeferredToolCall(
+                            tool_name=call.tool_name,
+                            tool_call_id=call.tool_call_id,
+                            args=call.args_as_dict(),
+                            reason=self._backend._get_approval_reason(call.tool_name),
+                        ),
+                        step=step,
+                        tool_name=call.tool_name,
+                    )
+                self._result = RunResult(
+                    output=final.output,
+                    serialized_history=self._backend.serialize_history(final.all_messages()),
                 )
                 return
 
@@ -259,7 +294,13 @@ class PydanticAIBackend:
                 )
         return model_messages
 
-    def run_steps(self, *, messages: list[Any], model: Any = None) -> _PydanticAIStepHandle:
+    def run_steps(
+        self,
+        *,
+        messages: list[Any],
+        model: Any = None,
+        deferred_tool_results: Any = None,
+    ) -> _PydanticAIStepHandle:
         missing = self.check_credentials()
         if missing:
             raise MissingCredentialsError(providers=missing)
@@ -271,6 +312,7 @@ class PydanticAIBackend:
             model=resolved_model,
             message_history=messages,
             backend=self,
+            deferred_tool_results=deferred_tool_results,
         )
 
     def serialize_history(self, messages: list[Any]) -> bytes:
@@ -319,7 +361,7 @@ class PydanticAIBackend:
         return a2a_parts
 
     def _build_pydantic_agent(self) -> Agent:
-        from pydantic_ai import Agent
+        from pydantic_ai import Agent, DeferredToolRequests
         from pydantic_ai.capabilities import Thinking
         from pydantic_ai.tools import Tool
 
@@ -330,14 +372,33 @@ class PydanticAIBackend:
             else None
         )
         pydantic_tools: list[Tool] = []
+        has_approval_tools = False
         if self._tool_registry:
             tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
             for td in tool_defs:
-                pydantic_tools.append(
-                    Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
-                )
+                if td.approval_policy is not None and td.approval_policy.mode != "never":
+                    has_approval_tools = True
+                    pydantic_tools.append(
+                        Tool(
+                            td.callable,
+                            takes_ctx=False,
+                            name=td.name,
+                            description=td.description,
+                            requires_approval=True,
+                        )
+                    )
+                else:
+                    pydantic_tools.append(
+                        Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
+                    )
+
+        base_output_type = self._spec.output_type
+        output_type = (
+            [base_output_type, DeferredToolRequests] if has_approval_tools else base_output_type
+        )
+
         kwargs: dict[str, Any] = {
-            "output_type": self._spec.output_type,
+            "output_type": output_type,
             "instructions": self._spec.system_prompt,
             "capabilities": capabilities,
         }
@@ -372,6 +433,33 @@ class PydanticAIBackend:
             models.append(model)
 
         return FallbackModel(*models)
+
+    def _get_approval_reason(self, tool_name: str) -> str | None:
+        if self._tool_registry is None:
+            return None
+        td = self._tool_registry.get(tool_name)
+        if td is None or td.approval_policy is None:
+            return None
+        return td.approval_policy.reason
+
+    def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any:
+        from pydantic_ai import DeferredToolResults
+        from pydantic_ai.tools import ToolApproved, ToolDenied
+
+        results = DeferredToolResults()
+        for decision in decisions:
+            if decision.approved:
+                if decision.override_args:
+                    results.approvals[decision.tool_call_id] = ToolApproved(
+                        override_args=decision.override_args
+                    )
+                else:
+                    results.approvals[decision.tool_call_id] = True
+            else:
+                results.approvals[decision.tool_call_id] = ToolDenied(
+                    message=decision.denial_reason or "Denied by user"
+                )
+        return results
 
     def _get_registry(self) -> ProviderRegistry:
         if self._registry is None:

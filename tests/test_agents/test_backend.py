@@ -536,6 +536,204 @@ class TestPydanticAIBackendBuildPydanticAgent:
         assert "read_file" in tool_names
         assert "shell_history" not in tool_names
 
+    def test_approval_tool_gets_requires_approval_flag(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool = agent._function_toolset.tools.get("run_shell")
+        assert tool is not None
+        assert tool.requires_approval is True
+
+    def test_output_type_includes_deferred_when_approval_tools_present(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        assert isinstance(agent.output_type, list)
+        assert DeferredToolRequests in agent.output_type
+
+    def test_output_type_is_base_when_no_approval_tools(
+        self, mock_config, mock_credentials
+    ) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        agent = backend._build_pydantic_agent()
+        assert agent.output_type is str
+
+
+# -- PydanticAIBackend.build_deferred_results -----------------------------------
+
+
+class TestPydanticAIBackendBuildDeferredResults:
+    def test_approved_decision_maps_to_true(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [ApprovalDecision(tool_call_id="call_1", approved=True)]
+        result = backend.build_deferred_results(decisions)
+        assert result.approvals["call_1"] is True
+
+    def test_denied_decision_maps_to_tool_denied(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.tools import ToolDenied
+
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(tool_call_id="call_2", approved=False, denial_reason="User denied")
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert isinstance(result.approvals["call_2"], ToolDenied)
+
+    def test_approved_with_override_args(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.tools import ToolApproved
+
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(
+                tool_call_id="call_3",
+                approved=True,
+                override_args={"command": "ls -la"},
+            )
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert isinstance(result.approvals["call_3"], ToolApproved)
+
+    def test_multiple_decisions(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(tool_call_id="call_1", approved=True),
+            ApprovalDecision(tool_call_id="call_2", approved=False, denial_reason="Nope"),
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert len(result.approvals) == 2
+        assert result.approvals["call_1"] is True
+        assert result.approvals["call_2"] is not True
+
+
+# -- PydanticAIBackend._get_approval_reason -----------------------------------
+
+
+class TestPydanticAIBackendGetApprovalReason:
+    def test_returns_reason_from_tool_policy(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(
+                    mode="always", reason="Shell commands need approval"
+                ),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("run_shell") == "Shell commands need approval"
+
+    def test_returns_none_when_no_registry(self, mock_config, mock_credentials) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        assert backend._get_approval_reason("run_shell") is None
+
+    def test_returns_none_when_tool_not_found(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(tools=[]),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("nonexistent") is None
+
+    def test_returns_none_when_tool_has_no_approval_policy(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read file",
+                callable=lambda: "",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(tools=["read_file"]),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("read_file") is None
+
 
 # -- PydanticAIBackend._build_model -------------------------------------------
 

@@ -14,7 +14,7 @@ from rich.text import Text
 from fin_assist.paths import CREDENTIALS_FILE, SESSIONS_DIR
 
 if TYPE_CHECKING:
-    from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+    from fin_assist.agents.metadata import AgentResult
     from fin_assist.cli.client import DiscoveredAgent
 
 
@@ -143,21 +143,16 @@ def render_markdown(text: str) -> None:
 
 def render_agent_output(
     result: AgentResult,
-    card_meta: AgentCardMeta | None = None,
     *,
     show_thinking: bool = False,
 ) -> None:
     """Render an agent result using the shared widget pipeline.
 
-    Composes auth, command, text, thinking, and warning widgets based on
-    ``AgentResult`` and ``AgentCardMeta``.
+    Composes auth, text, thinking, and warning widgets based on
+    ``AgentResult``.
 
     Thinking is rendered only for successful, non-auth-required results
     when ``show_thinking`` is ``True``.
-
-    When ``card_meta`` is ``None``, renders text in a Panel with standard
-    warning panels — the same output as the card_meta path when
-    ``requires_approval`` is ``False``.
     """
     if result.auth_required:
         render_auth_required(result.output)
@@ -170,10 +165,7 @@ def render_agent_output(
     if show_thinking and result.thinking:
         render_thinking(result.thinking)
 
-    if card_meta is not None and card_meta.requires_approval:
-        render_command(result.output, result.warnings, result.metadata)
-    else:
-        render_response(result.output, agent_name="agent")
+    render_response(result.output, agent_name="agent")
 
     if result.warnings:
         render_warnings(result.warnings)
@@ -187,8 +179,6 @@ def render_agent_card(agent: DiscoveredAgent) -> None:
 
     capability_parts = [f"[dim]{mode}[/dim]" for mode in agent.card_meta.serving_modes]
     constraint_parts = []
-    if agent.card_meta.requires_approval:
-        constraint_parts.append("[yellow]requires approval[/yellow]")
 
     chip_parts = capability_parts + constraint_parts
     chip_str = "  |  ".join(chip_parts)

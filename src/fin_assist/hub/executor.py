@@ -1,7 +1,8 @@
 """Executor — a2a-sdk AgentExecutor for fin-assist agents.
 
 Uses ``TaskUpdater`` for all state transitions (start_work, complete, failed,
-requires_auth) and ``ContextStore`` for conversation history persistence.
+requires_auth, requires_input) and ``ContextStore`` for conversation history
+persistence.
 
 The executor is framework-agnostic — it delegates all LLM interaction to
 an ``AgentBackend`` (see ``agents/backend.py``).  The backend handles
@@ -17,10 +18,26 @@ The Executor iterates a ``StepHandle`` and dispatches based on
 ``StepEvent.kind``:
 
 - ``text_delta`` / ``thinking_delta`` → streaming artifacts
-- ``tool_call`` → tool call artifact (future: approval gate)
+- ``tool_call`` → tool call artifact
 - ``tool_result`` → tool result artifact
 - ``step_start`` / ``step_end`` → step boundary markers (future: OTel spans)
-- ``deferred`` → task pauses for human approval (Phase C)
+- ``deferred`` → task pauses for human approval via ``requires_input()``
+
+Deferred tool approval
+~~~~~~~~~~~~~~~~~~~~~~
+When a tool requires approval, the backend emits a ``deferred`` StepEvent.
+The Executor:
+
+1. Emits the deferred tool call as an artifact with ``metadata.type =
+   "deferred"``.
+2. Saves conversation history so the resume can pick up where it left off.
+3. Calls ``updater.requires_input()`` to pause the task.
+
+Resume detection: when a new ``SendMessage`` arrives with the same
+``context_id`` and the incoming message contains an ``approval_result``
+Part (``metadata.type = "approval_result"``), the Executor reconstructs
+``DeferredToolResults`` and re-invokes the backend with
+``deferred_tool_results`` to continue from where it paused.
 """
 
 from __future__ import annotations
@@ -31,9 +48,11 @@ from typing import TYPE_CHECKING, Any
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
+from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.metadata import MissingCredentialsError
+from fin_assist.agents.tools import ApprovalDecision
 
 if TYPE_CHECKING:
     from a2a.server.events import EventQueue
@@ -41,6 +60,12 @@ if TYPE_CHECKING:
     from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.agents.step import StepEvent
     from fin_assist.hub.context_store import ContextStore
+
+
+def _struct_to_dict(struct) -> dict[str, Any]:
+    if not struct or not struct.fields:
+        return {}
+    return MessageToDict(struct, preserving_proto_field_name=True)
 
 
 class Executor(AgentExecutor):
@@ -52,13 +77,18 @@ class Executor(AgentExecutor):
     1. Calls ``backend.check_credentials()`` to detect missing API keys.
     2. Loads serialized history from ``ContextStore`` and deserializes
        via ``backend.deserialize_history()``.
-    3. Converts A2A messages via ``backend.convert_history()``.
-    4. Runs the backend with step-driven dispatch via ``backend.run_steps()``.
+    3. Checks for resume: if the incoming message contains an
+       ``approval_result`` part, reconstructs deferred tool results
+       and re-invokes the backend with them.
+    4. Otherwise, converts A2A messages via ``backend.convert_history()``
+       and runs a fresh backend invocation.
     5. Sends streaming deltas (text and thinking) as A2A artifacts.
        Thinking deltas include ``metadata.type = "thinking"``.
-    6. Saves updated history via ``ContextStore.save()`` with
+    6. On ``deferred`` StepEvent: emits artifact, saves history, calls
+       ``requires_input()`` to pause the task.
+    7. Saves updated history via ``ContextStore.save()`` with
        ``RunResult.serialized_history`` from the backend.
-    7. If structured output, adds as a separate artifact.
+    8. If structured output, adds as a separate artifact.
 
     If ``check_credentials()`` returns missing providers, the task is set
     to ``auth-required`` with a helpful message instead of failing.
@@ -108,18 +138,38 @@ class Executor(AgentExecutor):
             self._backend.deserialize_history(serialized_history) if serialized_history else []
         )
 
-        # 3. Convert A2A message → backend message history
-        if context.message:
-            a2a_history = [context.message]
-            message_history.extend(self._backend.convert_history(a2a_history))
+        # 3. Check for resume (approval_result in incoming message)
+        deferred_results = self._extract_approval_results(context.message)
 
         # 4. Run backend with step-driven dispatch
         artifact_id = str(uuid.uuid4())
+        has_deferred = False
         try:
-            handle = self._backend.run_steps(messages=message_history)
+            if deferred_results is not None and message_history:
+                handle = self._backend.run_steps(
+                    messages=message_history,
+                    deferred_tool_results=deferred_results,
+                )
+            else:
+                if context.message:
+                    a2a_history = [context.message]
+                    message_history.extend(self._backend.convert_history(a2a_history))
+                handle = self._backend.run_steps(messages=message_history)
             async for event in handle:
-                await self._dispatch_step_event(event, updater, artifact_id)
-            # Final chunk signals completion
+                if event.kind == "deferred":
+                    has_deferred = True
+                    await self._dispatch_step_event(event, updater, artifact_id)
+                else:
+                    await self._dispatch_step_event(event, updater, artifact_id)
+
+            if has_deferred:
+                result: RunResult = await handle.result()
+                if raw_context_id:
+                    await self._context_store.save(raw_context_id, result.serialized_history)
+                deferred_msg = updater.new_agent_message(parts=[Part(text="Waiting for approval")])
+                await updater.requires_input(message=deferred_msg)
+                return
+
             await updater.add_artifact(
                 parts=[Part(text="")],
                 artifact_id=artifact_id,
@@ -127,7 +177,7 @@ class Executor(AgentExecutor):
                 append=True,
                 last_chunk=True,
             )
-            result: RunResult = await handle.result()
+            result = await handle.result()
         except Exception:
             await updater.failed()
             raise
@@ -215,7 +265,61 @@ class Executor(AgentExecutor):
             case "step_start" | "step_end":
                 pass
             case "deferred":
-                pass
+                await self._handle_deferred_event(event, updater, artifact_id)
+
+    async def _handle_deferred_event(
+        self,
+        event: StepEvent,
+        updater: TaskUpdater,
+        artifact_id: str,
+    ) -> None:
+        deferred_meta = Struct()
+        deferred_content = event.content
+        deferred_meta.update(
+            {
+                "type": "deferred",
+                "tool_name": event.tool_name or "",
+                "tool_call_id": getattr(deferred_content, "tool_call_id", ""),
+                "reason": getattr(deferred_content, "reason", None) or "",
+                "args": getattr(deferred_content, "args", {}),
+            }
+        )
+        args_text = str(getattr(deferred_content, "args", {}))
+        await updater.add_artifact(
+            parts=[Part(text=args_text, metadata=deferred_meta)],
+            artifact_id=artifact_id,
+            name="result",
+            append=True,
+            last_chunk=False,
+        )
+
+    def _extract_approval_results(self, message: Any) -> Any | None:
+        """Check if an incoming A2A message contains approval decisions.
+
+        Returns framework-specific ``DeferredToolResults`` if found,
+        ``None`` otherwise.
+        """
+        if not message or not message.parts:
+            return None
+
+        decisions: list[ApprovalDecision] = []
+        for part in message.parts:
+            meta = _struct_to_dict(part.metadata) if part.metadata else {}
+            if meta.get("type") == "approval_result":
+                for d in meta.get("decisions", []):
+                    decisions.append(
+                        ApprovalDecision(
+                            tool_call_id=d.get("tool_call_id", ""),
+                            approved=d.get("approved", False),
+                            override_args=d.get("override_args"),
+                            denial_reason=d.get("denial_reason"),
+                        )
+                    )
+
+        if not decisions:
+            return None
+
+        return self._backend.build_deferred_results(decisions)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         updater = TaskUpdater(

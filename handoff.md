@@ -2,13 +2,14 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-24)**: Phase A + Phase B complete. 577 tests passing, CI green. Tool calling and context dual-path are wired. Phase C (HITL approval) is next.
+**Current state (2026-04-24)**: Phase A + Phase B complete. Phase C design sketch written, open questions resolved, implementation starting. 577 tests passing, CI green.
 
 **Three known structural gaps** (down from four — HITL folded into the unified sketch):
 
 1. **Executor rework + tool calling** — Phase A + Phase B complete. Tools registered, context-as-tools working, CLI flags wired.
 2. **ContextProviders → dual path** — **Resolved in Phase B.** Model-driven path (tool calls) and user-driven path (`--file`/`--git-diff` CLI flags) both implemented.
-3. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
+3. **HITL approval** — **Phase C in progress.** Design sketch written, open questions Q2-Q4 resolved. `requires_approval: bool` removed, replaced by `ApprovalPolicy` on `ToolDefinition`. In-flight deferred tool flow replaces post-response approval widget.
+4. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
 
 **Resolved by the unified sketch:**
 - HITL approval model → platform-level `ApprovalPolicy`, backend enforces, Executor verifies
@@ -534,18 +535,15 @@ Existing stores without a version prefix need a migration path (try deserializin
 
    **Contract for backends:** `set_approval_policy(policy)` — backend MUST check the policy before executing any tool. If a tool needs approval, emit `deferred` instead of executing. The Executor verifies compliance.
 
-2. **A2A task pause for deferred tools.** A2A has `TASK_STATE_INPUT_REQUIRED` (value 7). Is this the right state for "paused for approval"? Or should we use a custom extension? `TASK_STATE_AUTH_REQUIRED` is already used for credentials. `INPUT_REQUIRED` semantically fits "waiting for human input about whether to approve this tool." **Needs resolution in Phase C.**
+2. **~~A2A task pause for deferred tools.~~ RESOLVED: Use `TASK_STATE_INPUT_REQUIRED` (value 6) via `updater.requires_input()`. Protocol-native, any A2A client handles it. `TASK_STATE_AUTH_REQUIRED` (value 8) stays for credential-gated tasks — semantically distinct (can't proceed at all vs. need decision to proceed).**
 
-3. **Deferred tool resume protocol.** When a task is paused for approval and the client sends a decision, does the client:
-   - (a) Send a new `SendMessage` with the same `context_id`, and the Executor picks up where it left off?
-   - (b) Use a custom A2A extension method?
-   Option (a) is protocol-native but requires the Executor to detect "this is a resume, not a new request" from the message content or metadata. Option (b) is cleaner but non-standard. The Executor would need to detect resume context from the A2A message — possibly via a `Part` with `metadata.type = "approval_result"`. **Needs a concrete proposal in Phase C.**
+3. **~~Deferred tool resume protocol.~~ RESOLVED: `SendMessage` with same `context_id`, detected via `Part` with `metadata.type = "approval_result"`. Protocol-native, stays within A2A multi-turn semantics. Executor detects resume by checking last messages for `DeferredToolRequests` markers AND incoming message containing `approval_result` part. Reconstructs `DeferredToolResults` and re-invokes backend with `message_history + deferred_tool_results`.**
 
-4. **StepHandle `deferred` event semantics.** When a deferred tool is encountered, does the `StepHandle` iteration end (run is over, need to re-invoke), or does it pause and wait for external resolution? pydantic-ai's model is "run ends with `DeferredToolRequests` output" — so the iteration should end for that backend. But the platform should support both: backends with native deferral end the iteration; backends without it rely on the Executor's `ApprovalPolicy` gate, which blocks *before* the tool executes (so the `tool_call` event is emitted, but `tool_result` never appears until the client resumes). **Needs reconciliation in Phase C.**
+4. **~~StepHandle `deferred` event semantics.~~ RESOLVED: Iteration ends on `deferred`. Run is over; resume is a new `run_steps()` call. pydantic-ai ends the run with `DeferredToolRequests` as output — the `async with agent.iter()` context closes. Fighting this would require intercepting inside the graph walk, which is exactly the coupling we've been extracting. All backends follow the same pattern: `deferred` ends the iteration, resume = new `run_steps(messages, deferred_tool_results=...)`.**
 
-5. **Tool dependencies injection.** Tools need config (file size limits, working directory, etc.). What goes in the tool's context? A typed `ToolDeps` dataclass with only what tools need — not the full `AgentSpec`. The backend maps `ToolDeps` to its framework's context type (pydantic-ai: `RunContext[ToolDeps]`). **Needs design in Phase B.**
+5. ~~**Tool dependencies injection.**~~ **RESOLVED in Phase B: No `ToolDeps` needed yet. Built-in tools construct their own provider instances. When config-dependent tools are needed, a `ToolDeps` dataclass can be added then.**
 
-6. **ToolRegistry scoping.** Should tools be globally registered (one `read_file` definition shared by all agents) or per-agent (different `read_file` configs per agent)? Global definitions with per-agent config overrides (via `ToolDeps`) seems right, but needs validation. **Needs design in Phase B.**
+6. ~~**ToolRegistry scoping.**~~ **RESOLVED in Phase B: Global registry with `get_for_agent()` filtering. One `read_file` definition shared by all agents; agents opt in via config `tools = [...]`.**
 
 ---
 
@@ -567,7 +565,394 @@ This sketch supersedes the following previous entries:
 
 ---
 
-### HITL Approval Model (2026-04-22) — Needs Research Spike
+### Phase C: HITL / Approval — Design Sketch (2026-04-24)
+
+**Status: Design sketch, implementation starting.**
+
+#### Core Principle
+
+**In-flight, server-side deferral replaces post-response, client-side approval.** The current `requires_approval: bool` is a client-side gate that runs *after* the model finishes. The new system pauses the model *mid-run* when it calls a tool that needs consent. This is more powerful and more correct — the model can't produce output from a tool that wasn't approved.
+
+#### What Gets Removed
+
+| Remove | Why |
+|--------|-----|
+| `AgentConfig.requires_approval` | Replaced by `ApprovalPolicy` on `ToolDefinition` |
+| `AgentCardMeta.requires_approval` | Derived: agent has tools with `mode != "never"` |
+| `handle_post_response()` approval branch | In-flight deferred flow via `INPUT_REQUIRED` replaces it |
+| `execute_command()` in `approve.py` | Tool execution happens server-side after approval |
+| `ApprovalAction` enum | Replaced by `ApprovalDecision` type for deferred results |
+| `PostResponseAction.EXECUTED` / `.CANCELLED` | No longer needed — approval is in-flight |
+
+#### What Gets Added
+
+| Add | Where | Purpose |
+|-----|-------|---------|
+| `ApprovalPolicy` dataclass | `agents/tools.py` | Platform-level approval spec on `ToolDefinition` |
+| `DeferredToolCall` dataclass | `agents/tools.py` | Serializable deferred tool call info (name, args, call_id, reason) |
+| `ApprovalDecision` dataclass | `agents/tools.py` | Client decision: approved/denied + optional override_args |
+| `deferred` StepEvent handling | `hub/executor.py` | Pause task on `deferred`, resume on `approval_result` |
+| `run_shell` tool with `ApprovalPolicy(mode="always")` | `agents/tools.py` | Shell command execution tool (replaces client-side `execute_command`) |
+| `approval_result` Part metadata convention | `hub/executor.py` | How the client sends approval decisions back |
+| `DeferredToolResults` passthrough | `agents/backend.py` | `run_steps()` accepts `deferred_tool_results` for resume |
+| Approval widget in streaming | `cli/interaction/` | Render deferred tool calls, collect approve/deny, resume |
+
+#### ApprovalPolicy (Platform Type)
+
+```python
+@dataclass
+class ApprovalPolicy:
+    """Platform-level approval specification. Framework-agnostic.
+    
+    Lives on ToolDefinition. The backend enforces it (emits 'deferred'
+    for gated tools). The Executor verifies compliance (defense in depth).
+    """
+    mode: Literal["never", "always", "conditional"]
+    condition: Callable[[str, dict[str, Any]], bool] | None = None
+    reason: str | None = None
+```
+
+- `mode="never"`: Tool is safe, no gate required. All current built-in tools.
+- `mode="always"`: Every call needs approval. The `run_shell` tool.
+- `mode="conditional"`: The `condition(tool_name, args)` callable decides. E.g., `run_shell` with a condition that auto-approves read-only commands.
+
+`ToolDefinition.approval_policy` field (currently `Any | None`, reserved) becomes `ApprovalPolicy | None` where `None` means `mode="never"`.
+
+#### DeferredToolCall (Platform Type)
+
+```python
+@dataclass
+class DeferredToolCall:
+    """A tool call that was deferred pending human approval.
+    
+    Carried in the 'deferred' StepEvent's content and in the
+    deferred artifact metadata. Serializable for A2A transport.
+    """
+    tool_name: str
+    tool_call_id: str
+    args: dict[str, Any]
+    reason: str | None = None
+```
+
+#### ApprovalDecision (Platform Type)
+
+```python
+@dataclass
+class ApprovalDecision:
+    """Client's decision on a deferred tool call.
+    
+    Sent back via 'approval_result' Part metadata when resuming.
+    """
+    tool_call_id: str
+    approved: bool
+    override_args: dict[str, Any] | None = None
+    denial_reason: str | None = None
+```
+
+#### Backend Changes
+
+**`AgentBackend` protocol** gains `deferred_tool_results` parameter:
+
+```python
+class AgentBackend(Protocol):
+    def run_steps(
+        self,
+        *,
+        messages: list[Any],
+        model: Any = None,
+        deferred_tool_results: Any = None,  # framework-specific
+    ) -> StepHandle: ...
+```
+
+**`PydanticAIBackend`** changes:
+
+1. `_build_pydantic_agent()` adds `DeferredToolRequests` to `output_type`:
+   ```python
+   output_type=[self._spec.output_type, DeferredToolRequests]
+   ```
+2. `_build_pydantic_agent()` registers tools with approval:
+   - Tools with `ApprovalPolicy(mode="always")` → `requires_approval=True` on the pydantic-ai `Tool`
+   - Tools with `ApprovalPolicy(mode="conditional")` → `approval_required()` toolset wrapper
+   - Tools with `ApprovalPolicy(mode="never")` or `None` → no change
+3. `run_steps()` passes `deferred_tool_results` through to `agent.iter()` / `agent.run()`
+4. `_PydanticAIStepHandle` detects `DeferredToolRequests` in result and emits `deferred` StepEvent
+
+**`_PydanticAIStepHandle` deferred detection:**
+
+```python
+async def __aiter__(self) -> AsyncIterator[StepEvent]:
+    # ... existing iteration for ModelRequestNode, CallToolsNode ...
+    
+    final = run.result
+    if isinstance(final.output, DeferredToolRequests):
+        # Emit deferred events for each approval request
+        for call in final.output.approvals:
+            yield StepEvent(
+                kind="deferred",
+                content=DeferredToolCall(
+                    tool_name=call.tool_name,
+                    tool_call_id=call.tool_call_id,
+                    args=call.args_as_dict(),
+                    reason=self._get_approval_reason(call.tool_name),
+                ),
+                step=step,
+                tool_name=call.tool_name,
+            )
+        self._result = RunResult(
+            output=final.output,
+            serialized_history=self._backend.serialize_history(final.all_messages()),
+        )
+        return  # iteration ends
+```
+
+#### Executor Changes
+
+**Deferred event handling:**
+
+```python
+case "deferred":
+    # Emit deferred tool call as artifact
+    deferred_meta = Struct()
+    deferred_meta.update({
+        "type": "deferred",
+        "tool_name": event.tool_name or "",
+        "tool_call_id": event.content.tool_call_id,
+        "reason": event.content.reason or "",
+        "args": event.content.args,
+    })
+    await updater.add_artifact(
+        parts=[Part(text=str(event.content.args), metadata=deferred_meta)],
+        artifact_id=artifact_id,
+        name="result",
+        append=True,
+        last_chunk=False,
+    )
+    # Don't complete the task — pause for input
+    # (we'll call requires_input after the loop)
+    has_deferred = True
+```
+
+After the iteration loop:
+
+```python
+if has_deferred:
+    # Save history so resume can pick up where we left off
+    if raw_context_id:
+        await self._context_store.save(raw_context_id, result.serialized_history)
+    deferred_msg = updater.new_agent_message(parts=[...])
+    await updater.requires_input(message=deferred_msg)
+    return  # task pauses — client will resume
+```
+
+**Resume detection** (at the start of `execute()`):
+
+```python
+# After loading history, check for resume
+deferred_results = self._extract_approval_results(context.message)
+if deferred_results is not None and serialized_history is not None:
+    # This is a resume — pass deferred results to backend
+    handle = self._backend.run_steps(
+        messages=message_history,
+        deferred_tool_results=deferred_results,
+    )
+else:
+    # New request — append user message and run
+    if context.message:
+        a2a_history = [context.message]
+        message_history.extend(self._backend.convert_history(a2a_history))
+    handle = self._backend.run_steps(messages=message_history)
+```
+
+**`_extract_approval_results()`** reads the incoming message for `approval_result` parts:
+
+```python
+def _extract_approval_results(self, message) -> Any | None:
+    """Check if an incoming A2A message contains approval decisions."""
+    if not message or not message.parts:
+        return None
+    for part in message.parts:
+        meta = _struct_to_dict(part.metadata) if part.metadata else {}
+        if meta.get("type") == "approval_result":
+            decisions = meta.get("decisions", [])
+            return self._backend.build_deferred_results(decisions)
+    return None
+```
+
+The backend's `build_deferred_results()` converts platform `ApprovalDecision` dicts into framework-specific `DeferredToolResults` (pydantic-ai) or equivalent.
+
+#### Client Changes
+
+**`StreamEvent` gains `input_required` kind:**
+
+```python
+class StreamEvent(BaseModel):
+    kind: Literal[
+        "text_delta", "thinking_delta", "completed", "failed",
+        "auth_required", "input_required",
+    ]
+    text: str = ""
+    result: AgentResult | None = None
+    deferred_calls: list[dict] | None = None  # for input_required events
+```
+
+**`HubClient.stream_agent()`** handles `INPUT_REQUIRED`:
+
+```python
+# In _process_response or the streaming loop:
+if state == TaskState.TASK_STATE_INPUT_REQUIRED:
+    # Extract deferred tool calls from artifacts
+    deferred = self._extract_deferred_calls(task)
+    yield StreamEvent(kind="input_required", deferred_calls=deferred, result=result)
+    break
+```
+
+**`render_stream()`** returns on `input_required` — the chat loop or do command handles the approval widget.
+
+**New approval flow in CLI:**
+
+```python
+# In do command or chat loop, after render_stream:
+if result deferred:
+    decision = await run_approval_widget(deferred_calls)
+    # Send resume message with approval_result Part
+    resume_result = await render_stream(
+        client.stream_agent(agent_name, prompt, context_id=ctx_id,
+                           approval_decisions=decision),
+        show_thinking=show_thinking,
+    )
+```
+
+**`HubClient`** gains ability to send `approval_decisions` as `Part` metadata:
+
+```python
+async def stream_agent(
+    self,
+    agent_name: str,
+    prompt: str,
+    context_id: str | None = None,
+    approval_decisions: list[ApprovalDecision] | None = None,
+) -> AsyncIterator[StreamEvent]:
+    parts = [Part(text=prompt)]
+    if approval_decisions:
+        meta = Struct()
+        meta.update({
+            "type": "approval_result",
+            "decisions": [
+                {
+                    "tool_call_id": d.tool_call_id,
+                    "approved": d.approved,
+                    "override_args": d.override_args,
+                    "denial_reason": d.denial_reason,
+                }
+                for d in approval_decisions
+            ],
+        })
+        parts.append(Part(text="", metadata=meta))
+    msg = Message(role=Role.ROLE_USER, message_id=str(uuid.uuid4()), parts=parts)
+    if context_id:
+        msg.context_id = context_id
+    # ... rest of streaming logic ...
+```
+
+#### AgentCardMeta.requires_approval → Derived
+
+`requires_approval` is removed from `AgentCardMeta`. Instead, clients check whether any of the agent's tools have `mode != "never"`:
+
+```python
+# In AgentSpec.agent_card_metadata:
+# Instead of requires_approval=cfg.requires_approval
+# Derive from tool registry:
+requires_approval = any(
+    td.approval_policy is not None and td.approval_policy.mode != "never"
+    for td in (self._tool_registry.get_for_agent(self.tools) if self._tool_registry else [])
+)
+```
+
+Wait — `AgentSpec` doesn't have access to `ToolRegistry` currently. The factory passes it to `PydanticAIBackend`, not to `AgentSpec`. Two options:
+
+(a) Pass `ToolRegistry` to `AgentSpec` — makes `AgentSpec` aware of tools, which is conceptually correct (the spec declares "what tools this agent has" and the registry resolves them).
+
+(b) Compute `requires_approval` in the factory and set it on `AgentCardMeta` before building the card.
+
+**Choice: (a).** `AgentSpec` already has a `tools` list (tool name strings). Giving it the `ToolRegistry` lets it resolve those names and answer questions like "does this agent have any tools requiring approval?" — which is exactly what `agent_card_metadata` needs. The registry is already created before `AgentSpec` in the factory flow.
+
+This means `AgentSpec.__init__` gains an optional `tool_registry: ToolRegistry | None = None` parameter. The factory passes it. Tests that construct `AgentSpec` without it continue to work (default `None` → no tools → `requires_approval=False`).
+
+#### run_shell Tool
+
+The shell agent currently produces a `CommandResult` with the command string, and the client decides whether to execute it. With `ApprovalPolicy`, the shell agent gets a `run_shell` tool:
+
+```python
+async def _run_shell(command: str) -> str:
+    """Execute a shell command and return its output."""
+    import subprocess
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+    output = result.stdout
+    if result.stderr:
+        output += f"\nSTDERR: {result.stderr}"
+    if result.returncode != 0:
+        output += f"\nExit code: {result.returncode}"
+    return output or "(no output)"
+
+registry.register(ToolDefinition(
+    name="run_shell",
+    description="Execute a shell command and return its output.",
+    callable=_run_shell,
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "The shell command to execute.",
+            },
+        },
+        "required": ["command"],
+    },
+    approval_policy=ApprovalPolicy(mode="always", reason="Shell command execution requires approval"),
+))
+```
+
+The shell agent config changes: `output_type = "text"` (not `"command"`), `tools = ["run_shell"]`. The model decides when to call `run_shell`, the tool requires approval, the Executor defers, the client shows the approval widget, and on approval the tool runs server-side.
+
+**This is the key migration:** shell agent goes from "produce command string, client decides" to "produce text, but when the model calls `run_shell`, the platform gates it."
+
+#### handle_post_response Simplification
+
+With `requires_approval` removed and approval happening in-flight:
+
+```python
+async def handle_post_response(
+    result: AgentResult,
+    card_meta: AgentCardMeta | None = None,
+    *,
+    mode: str = "talk",
+) -> PostResponseResult:
+    if result.auth_required:
+        render_auth_required(result.output)
+        return PostResponseResult(action=PostResponseAction.AUTH_REQUIRED, exit_code=1)
+
+    if not result.success:
+        render_error(result.output or "Unknown error")
+        return PostResponseResult(action=PostResponseAction.ERROR, exit_code=1)
+
+    return PostResponseResult(action=PostResponseAction.CONTINUE, exit_code=0)
+```
+
+The approval branch is gone — `PostResponseAction.EXECUTED` and `.CANCELLED` are removed. The `approve.py` module's `run_approve_widget()` and `ApprovalAction` are repurposed for the in-flight approval widget (called from the streaming/chat layer when `input_required` is received).
+
+#### Implementation Sub-Phases
+
+**C.1: Platform types** — `ApprovalPolicy`, `DeferredToolCall`, `ApprovalDecision` in `agents/tools.py`. Remove `requires_approval` from `AgentConfig`, `AgentCardMeta`, `AgentSpec`. Update `AgentSpec` to accept `ToolRegistry` and derive `requires_approval`. Update all tests.
+
+**C.2: Backend enforcement** — `PydanticAIBackend` registers tools with `requires_approval=True` / `approval_required()` based on `ApprovalPolicy`. Add `DeferredToolRequests` to `output_type`. `run_steps()` accepts `deferred_tool_results`. `_PydanticAIStepHandle` emits `deferred` StepEvent. Add `run_shell` tool. Update shell agent config.
+
+**C.3: Executor deferred handling** — `deferred` event → emit artifact + `requires_input()`. Resume detection via `approval_result` Part. `build_deferred_results()` method on backend. Remove `handle_post_response()` approval branch.
+
+**C.4: Client approval flow** — `StreamEvent` gains `input_required`. `HubClient` sends `approval_result` Parts on resume. Approval widget in streaming/chat layer. Update `render_stream()` and `run_chat_loop()`.
+
+**C.5: Tests** — Unit tests for all new types and flows. Integration test: shell agent proposes command → deferred → client approves → command executes server-side.
+
+---
 
 **Status: Unstarted. Research spike required before design sketch.**
 

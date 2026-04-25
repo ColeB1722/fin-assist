@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from a2a.types import TaskState
+from a2a.types import Message, Part, Role, TaskState
+from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.backend import RunResult
 from fin_assist.agents.metadata import MissingCredentialsError
@@ -68,6 +69,7 @@ def _make_backend(
     backend.convert_history.return_value = []
     backend.deserialize_history.return_value = []
     backend.convert_result_to_part.return_value = MagicMock()
+    backend.build_deferred_results.return_value = None
 
     return backend
 
@@ -339,6 +341,316 @@ class TestExecutorThinkingViaArtifacts:
                     else {}
                 )
                 assert meta_dict.get("type") != "thinking"
+
+
+class TestExecutorDeferredApproval:
+    async def test_deferred_event_sets_input_required(self) -> None:
+        from fin_assist.agents.tools import DeferredToolCall
+
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /tmp/x"},
+                reason="Shell command execution requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        backend = _make_backend(
+            events=[deferred_event],
+            run_result=RunResult(
+                output=MagicMock(),
+                serialized_history=b"[]",
+                new_message_parts=[],
+            ),
+        )
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        input_required_updates = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_INPUT_REQUIRED
+        ]
+        assert len(input_required_updates) >= 1
+
+    async def test_deferred_event_emits_artifact_with_metadata(self) -> None:
+        from google.protobuf.json_format import MessageToDict
+
+        from fin_assist.agents.tools import DeferredToolCall
+
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /tmp/x"},
+                reason="Shell command execution requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        backend = _make_backend(
+            events=[deferred_event],
+            run_result=RunResult(
+                output=MagicMock(),
+                serialized_history=b"[]",
+                new_message_parts=[],
+            ),
+        )
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_calls = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        deferred_artifacts = []
+        for call in artifact_calls:
+            event = call.args[0]
+            for part in event.artifact.parts:
+                meta_dict = (
+                    MessageToDict(part.metadata, preserving_proto_field_name=True)
+                    if part.HasField("metadata")
+                    else {}
+                )
+                if meta_dict.get("type") == "deferred":
+                    deferred_artifacts.append((part, meta_dict))
+
+        assert len(deferred_artifacts) == 1
+        part, meta = deferred_artifacts[0]
+        assert meta["tool_name"] == "run_shell"
+        assert meta["tool_call_id"] == "call_1"
+        assert meta["reason"] == "Shell command execution requires approval"
+
+    async def test_deferred_saves_context_before_pausing(self) -> None:
+        from fin_assist.agents.tools import DeferredToolCall
+
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        backend = _make_backend(
+            events=[deferred_event],
+            run_result=RunResult(
+                output=MagicMock(),
+                serialized_history=b'{"deferred": true}',
+                new_message_parts=[],
+            ),
+        )
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context(context_id="ctx-deferred")
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        context_store.save.assert_called_once_with("ctx-deferred", b'{"deferred": true}')
+
+    async def test_deferred_does_not_complete_task(self) -> None:
+        from fin_assist.agents.tools import DeferredToolCall
+
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        backend = _make_backend(
+            events=[deferred_event],
+            run_result=RunResult(
+                output=MagicMock(),
+                serialized_history=b"[]",
+                new_message_parts=[],
+            ),
+        )
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        completed_updates = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "status")
+            and call.args[0].status.state == TaskState.TASK_STATE_COMPLETED
+        ]
+        assert len(completed_updates) == 0
+
+
+class TestExecutorExtractApprovalResults:
+    def test_returns_none_when_no_message(self) -> None:
+        backend = _make_backend()
+        context_store = MagicMock()
+        executor = Executor(backend=backend, context_store=context_store)
+        result = executor._extract_approval_results(None)
+        assert result is None
+
+    def test_returns_none_when_no_parts(self) -> None:
+        from a2a.types import Message
+
+        backend = _make_backend()
+        context_store = MagicMock()
+        executor = Executor(backend=backend, context_store=context_store)
+        msg = Message(message_id="m1", role=Role.ROLE_USER, parts=[])
+        result = executor._extract_approval_results(msg)
+        assert result is None
+
+    def test_returns_none_when_no_approval_result_metadata(self) -> None:
+        from a2a.types import Message
+
+        backend = _make_backend()
+        context_store = MagicMock()
+        executor = Executor(backend=backend, context_store=context_store)
+        msg = Message(
+            message_id="m1",
+            role=Role.ROLE_USER,
+            parts=[Part(text="just a regular message")],
+        )
+        result = executor._extract_approval_results(msg)
+        assert result is None
+
+    def test_extracts_approval_decisions_and_calls_build_deferred_results(self) -> None:
+        from a2a.types import Message
+
+        from google.protobuf.struct_pb2 import Struct
+
+        backend = _make_backend()
+        mock_deferred_results = MagicMock()
+        backend.build_deferred_results.return_value = mock_deferred_results
+        context_store = MagicMock()
+        executor = Executor(backend=backend, context_store=context_store)
+
+        meta = Struct()
+        meta.update(
+            {
+                "type": "approval_result",
+                "decisions": [
+                    {
+                        "tool_call_id": "call_1",
+                        "approved": True,
+                    },
+                    {
+                        "tool_call_id": "call_2",
+                        "approved": False,
+                        "denial_reason": "User denied",
+                    },
+                ],
+            }
+        )
+        msg = Message(
+            message_id="m1",
+            role=Role.ROLE_USER,
+            parts=[Part(text="", metadata=meta)],
+        )
+        result = executor._extract_approval_results(msg)
+
+        backend.build_deferred_results.assert_called_once()
+        decisions = backend.build_deferred_results.call_args[0][0]
+        assert len(decisions) == 2
+        assert decisions[0].tool_call_id == "call_1"
+        assert decisions[0].approved is True
+        assert decisions[1].tool_call_id == "call_2"
+        assert decisions[1].approved is False
+        assert decisions[1].denial_reason == "User denied"
+        assert result is mock_deferred_results
+
+    def test_ignores_non_approval_result_parts(self) -> None:
+        from a2a.types import Message
+
+        backend = _make_backend()
+        context_store = MagicMock()
+        executor = Executor(backend=backend, context_store=context_store)
+
+        thinking_meta = Struct()
+        thinking_meta.update({"type": "thinking"})
+        msg = Message(
+            message_id="m1",
+            role=Role.ROLE_USER,
+            parts=[Part(text="thinking text", metadata=thinking_meta)],
+        )
+        result = executor._extract_approval_results(msg)
+        assert result is None
+
+
+class TestExecutorResumeWithApprovalResults:
+    async def test_resume_calls_run_steps_with_deferred_tool_results(self) -> None:
+        mock_deferred_results = MagicMock()
+        backend = _make_backend()
+        backend.build_deferred_results.return_value = mock_deferred_results
+        backend.deserialize_history.return_value = [MagicMock()]
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=b"[serialized]")
+        context_store.save = AsyncMock()
+
+        meta = Struct()
+        meta.update(
+            {
+                "type": "approval_result",
+                "decisions": [
+                    {"tool_call_id": "call_1", "approved": True},
+                ],
+            }
+        )
+        resume_message = Message(
+            message_id="m2",
+            role=Role.ROLE_USER,
+            parts=[Part(text="", metadata=meta)],
+        )
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context(context_id="ctx-resume")
+        ctx.message = resume_message
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        backend.run_steps.assert_called_once()
+        call_kwargs = backend.run_steps.call_args.kwargs
+        assert "deferred_tool_results" in call_kwargs
+        assert call_kwargs["deferred_tool_results"] is mock_deferred_results
 
 
 class TestExecutorCancel:

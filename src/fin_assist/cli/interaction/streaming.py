@@ -11,7 +11,7 @@ Returns the terminal ``AgentResult`` with accumulated thinking injected.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rich.console import Group
 from rich.live import Live
@@ -31,7 +31,7 @@ async def render_stream(
     events: AsyncIterator[StreamEvent],
     *,
     show_thinking: bool = False,
-) -> AgentResult:
+) -> tuple[AgentResult, list[dict[str, Any]]]:
     """Consume streaming events and render them via Rich ``Live``.
 
     Args:
@@ -41,11 +41,16 @@ async def render_stream(
             result's ``thinking`` list but not displayed.
 
     Returns:
-        The terminal ``AgentResult`` with any accumulated thinking applied.
+        A tuple of ``(AgentResult, deferred_calls)``.  ``deferred_calls``
+        is non-empty when the task was paused for approval (``input_required``
+        event).  The caller should present an approval widget and, if the
+        user approves, resume by calling ``stream_agent`` again with
+        ``approval_decisions``.
     """
     accumulated_text = ""
     accumulated_thinking: list[str] = []
     final_result: AgentResult | None = None
+    deferred_calls: list[dict[str, Any]] = []
 
     def _build_display() -> Group | Status:
         parts: list = []
@@ -75,12 +80,19 @@ async def render_stream(
                 accumulated_thinking.append(event.text)
                 if show_thinking:
                     live.update(_build_display())
+            elif event.kind == "input_required":
+                deferred_calls = event.deferred_calls
+                if event.result is not None:
+                    final_result = event.result
             elif event.result is not None:
                 final_result = event.result
 
     if final_result is not None:
         if accumulated_thinking and not final_result.thinking:
             final_result.thinking = accumulated_thinking
-        return final_result
+        return final_result, deferred_calls
 
-    return AgentResult(success=False, output=accumulated_text or "No response from agent")
+    return (
+        AgentResult(success=False, output=accumulated_text or "No response from agent"),
+        deferred_calls,
+    )

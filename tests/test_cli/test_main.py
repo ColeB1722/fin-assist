@@ -40,15 +40,12 @@ def _run_main(*argv: str) -> int:
 
 def _make_discovered(
     name: str = "shell",
-    requires_approval: bool = False,
 ) -> DiscoveredAgent:
     return DiscoveredAgent(
         name=name,
         description="test agent",
         url=f"http://localhost/agents/{name}/",
-        card_meta=AgentCardMeta(
-            requires_approval=requires_approval,
-        ),
+        card_meta=AgentCardMeta(),
     )
 
 
@@ -344,7 +341,7 @@ class TestAgentsCommand:
 
 class TestDoCommandNoApproval:
     def test_discovers_agent_before_running(self):
-        agent = _make_discovered("shell", requires_approval=False)
+        agent = _make_discovered("shell")
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="ls -la"),
@@ -361,7 +358,7 @@ class TestDoCommandNoApproval:
             patch(
                 "fin_assist.cli.main.render_stream",
                 new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="ls -la"),
+                return_value=(AgentResult(success=True, output="ls -la"), []),
             ),
             patch(
                 "fin_assist.cli.main.handle_post_response",
@@ -410,7 +407,7 @@ class TestDoCommandNoApproval:
         assert result == 1
 
     def test_returns_1_on_agent_request_error(self):
-        agent = _make_discovered("shell", requires_approval=False)
+        agent = _make_discovered("shell")
         mock_client = _mock_client(agents=[agent], run_error=Exception("network error"))
 
         with (
@@ -426,80 +423,6 @@ class TestDoCommandNoApproval:
             result = _run_main("do", "shell", "do something")
 
         assert result == 1
-
-
-# ---------------------------------------------------------------------------
-# `do` command — approval path
-# ---------------------------------------------------------------------------
-
-
-class TestDoCommandApproval:
-    """Approval behaviour is now tested via handle_post_response (test_response.py).
-
-    These integration tests verify that _do_command delegates to
-    handle_post_response and respects its returned exit_code.
-    """
-
-    def test_approval_cancelled_returns_zero(self):
-        agent = _make_discovered("shell", requires_approval=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
-        )
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.render_stream",
-                new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="rm -rf /tmp/x"),
-            ),
-            patch(
-                "fin_assist.cli.main.handle_post_response",
-                new_callable=AsyncMock,
-                return_value=PostResponseResult(action=PostResponseAction.CANCELLED, exit_code=0),
-            ) as mock_handle,
-        ):
-            result = _run_main("do", "shell", "remove temp")
-
-        mock_handle.assert_called_once()
-        assert result == 0
-
-    def test_approval_executed_returns_exit_code(self):
-        agent = _make_discovered("shell", requires_approval=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(success=True, output="echo hi"),
-        )
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.render_stream",
-                new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="echo hi"),
-            ),
-            patch(
-                "fin_assist.cli.main.handle_post_response",
-                new_callable=AsyncMock,
-                return_value=PostResponseResult(action=PostResponseAction.EXECUTED, exit_code=0),
-            ),
-        ):
-            result = _run_main("do", "shell", "say hello")
-
-        assert result == 0
 
 
 # ---------------------------------------------------------------------------

@@ -96,7 +96,13 @@ class FakeBackend:
     def convert_history(self, a2a_messages: Sequence[Any]) -> list[Any]:
         return []
 
-    def run_steps(self, *, messages: list[Any], model: Any = None) -> FakeStepHandle:
+    def run_steps(
+        self,
+        *,
+        messages: list[Any],
+        model: Any = None,
+        deferred_tool_results: Any = None,
+    ) -> FakeStepHandle:
         events = [StepEvent(kind="thinking_delta", content=t, step=0) for t in self._thinking]
         events.append(StepEvent(kind="text_delta", content=self._response, step=0))
         result = RunResult(
@@ -118,6 +124,9 @@ class FakeBackend:
     def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]:
         return []
 
+    def build_deferred_results(self, decisions: list[Any]) -> Any:
+        return None
+
 
 def _make_agent_specs(mock_config: MagicMock, mock_credentials: MagicMock) -> list[AgentSpec]:
     shell_config = AgentConfig(
@@ -126,7 +135,7 @@ def _make_agent_specs(mock_config: MagicMock, mock_credentials: MagicMock) -> li
         output_type="command",
         thinking="off",
         serving_modes=["do"],
-        requires_approval=True,
+        tools=["run_shell"],
         tags=["shell", "one-shot"],
     )
     default_config = AgentConfig(

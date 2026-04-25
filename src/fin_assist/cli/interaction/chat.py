@@ -35,7 +35,7 @@ def _print_sessions(agent_name: str) -> None:
 
 
 async def run_chat_loop(
-    stream_fn: Callable[[str, str, str | None], AsyncIterator[StreamEvent]],
+    stream_fn: Callable[..., AsyncIterator[StreamEvent]],
     agent_name: str,
     context_id: str | None = None,
     prompt: FinPrompt | None = None,
@@ -108,7 +108,7 @@ async def run_chat_loop(
 
         # --- Stream and render response ---
         try:
-            result = await render_stream(
+            result, deferred_calls = await render_stream(
                 stream_fn(agent_name, user_input, ctx_id),
                 show_thinking=show_thinking,
             )
@@ -118,10 +118,31 @@ async def run_chat_loop(
 
         ctx_id = result.context_id or ctx_id
 
+        if deferred_calls:
+            from fin_assist.cli.interaction.approve import run_approval_widget
+
+            decisions = await run_approval_widget(deferred_calls)
+            if decisions is not None:
+                try:
+                    result, _ = await render_stream(
+                        stream_fn(
+                            agent_name,
+                            "",
+                            ctx_id,
+                            approval_decisions=decisions,
+                        ),
+                        show_thinking=show_thinking,
+                    )
+                except Exception as e:
+                    console.print(f"[red]Error resuming: {e}[/red]")
+            else:
+                console.print("[dim]Tool call denied[/dim]")
+                console.print()
+                continue
+
         response = await handle_post_response(
             result,
             card_meta,
-            mode="talk",
         )
 
         if response.action == PostResponseAction.AUTH_REQUIRED:

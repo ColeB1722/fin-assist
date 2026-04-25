@@ -129,12 +129,23 @@ class TestCreateDefaultRegistry:
             assert tool.parameters_schema, f"Tool {tool.name} has no parameters_schema"
             assert tool.parameters_schema.get("type") == "object"
 
-    def test_builtin_tools_have_no_approval_policy(self) -> None:
+    def test_context_tools_have_no_approval_policy(self) -> None:
         registry = create_default_registry()
-        for tool in registry.list_tools():
+        context_tools = ["read_file", "git_diff", "git_log", "shell_history"]
+        for name in context_tools:
+            tool = registry.get(name)
+            assert tool is not None
             assert tool.approval_policy is None, (
                 f"Tool {tool.name} unexpectedly has approval_policy"
             )
+
+    def test_run_shell_has_always_approval_policy(self) -> None:
+        registry = create_default_registry()
+        tool = registry.get("run_shell")
+        assert tool is not None
+        assert tool.approval_policy is not None
+        assert tool.approval_policy.mode == "always"
+        assert tool.approval_policy.reason is not None
 
     def test_read_file_has_path_parameter(self) -> None:
         registry = create_default_registry()

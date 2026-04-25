@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from io import StringIO
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
-from rich.console import Console
 
-from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.metadata import AgentResult
 from fin_assist.cli.interaction.response import (
     PostResponseAction,
     PostResponseResult,
@@ -58,7 +56,7 @@ class TestPostResponseResult:
 
 class TestPostResponseAction:
     def test_all_values_present(self):
-        expected = {"continue", "executed", "cancelled", "auth_required", "error"}
+        expected = {"continue", "auth_required", "error"}
         actual = {a.value for a in PostResponseAction}
         assert actual == expected
 
@@ -96,131 +94,6 @@ class TestHandlePostResponseError:
 
 
 # ---------------------------------------------------------------------------
-# handle_post_response — approval path
-# ---------------------------------------------------------------------------
-
-
-class TestHandlePostResponseApproval:
-    async def test_approval_execute_returns_executed(self):
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        result = _make_result(output="rm -rf /tmp/x")
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        with (
-            patch(
-                "fin_assist.cli.interaction.response.run_approve_widget",
-                new_callable=AsyncMock,
-                return_value=ApprovalAction.EXECUTE,
-            ),
-            patch(
-                "fin_assist.cli.interaction.response.execute_command",
-                return_value=0,
-            ) as mock_exec,
-        ):
-            response = await handle_post_response(result, card_meta, mode="do")
-
-        assert response.action == PostResponseAction.EXECUTED
-        assert response.exit_code == 0
-        mock_exec.assert_called_once_with("rm -rf /tmp/x")
-
-    async def test_approval_execute_propagates_exit_code(self):
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        result = _make_result(output="false")
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        with (
-            patch(
-                "fin_assist.cli.interaction.response.run_approve_widget",
-                new_callable=AsyncMock,
-                return_value=ApprovalAction.EXECUTE,
-            ),
-            patch(
-                "fin_assist.cli.interaction.response.execute_command",
-                return_value=1,
-            ),
-        ):
-            response = await handle_post_response(result, card_meta)
-
-        assert response.action == PostResponseAction.EXECUTED
-        assert response.exit_code == 1
-
-    async def test_approval_cancel_returns_cancelled(self):
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        result = _make_result(output="rm -rf /")
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        with patch(
-            "fin_assist.cli.interaction.response.run_approve_widget",
-            new_callable=AsyncMock,
-            return_value=ApprovalAction.CANCEL,
-        ):
-            response = await handle_post_response(result, card_meta, mode="talk")
-
-        assert response.action == PostResponseAction.CANCELLED
-        assert response.exit_code == 0
-
-    async def test_approval_cancel_in_do_mode_renders_cancelled(self):
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        result = _make_result(output="rm -rf /")
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        buf = StringIO()
-        test_console = Console(file=buf, force_terminal=False)
-
-        with (
-            patch(
-                "fin_assist.cli.interaction.response.run_approve_widget",
-                new_callable=AsyncMock,
-                return_value=ApprovalAction.CANCEL,
-            ),
-            patch("fin_assist.cli.display.console", test_console),
-        ):
-            response = await handle_post_response(result, card_meta, mode="do")
-
-        assert "Cancelled" in buf.getvalue()
-        assert response.action == PostResponseAction.CANCELLED
-
-    async def test_no_approval_when_not_required(self):
-        result = _make_result()
-        card_meta = AgentCardMeta(requires_approval=False)
-
-        with patch(
-            "fin_assist.cli.interaction.response.run_approve_widget",
-        ) as mock_widget:
-            response = await handle_post_response(result, card_meta)
-
-        mock_widget.assert_not_called()
-        assert response.action == PostResponseAction.CONTINUE
-
-    async def test_no_approval_when_card_meta_is_none(self):
-        result = _make_result()
-
-        with patch(
-            "fin_assist.cli.interaction.response.run_approve_widget",
-        ) as mock_widget:
-            response = await handle_post_response(result, None)
-
-        mock_widget.assert_not_called()
-        assert response.action == PostResponseAction.CONTINUE
-
-    async def test_no_approval_on_failed_result(self):
-        result = _make_result(success=False, output="error")
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        with patch(
-            "fin_assist.cli.interaction.response.run_approve_widget",
-        ) as mock_widget:
-            response = await handle_post_response(result, card_meta)
-
-        mock_widget.assert_not_called()
-        assert response.action == PostResponseAction.ERROR
-
-
-# ---------------------------------------------------------------------------
 # handle_post_response — rendering
 # ---------------------------------------------------------------------------
 
@@ -228,15 +101,14 @@ class TestHandlePostResponseApproval:
 class TestHandlePostResponseRendering:
     async def test_no_rendering_call_for_continue(self):
         result = _make_result(output="hello world")
-        card_meta = AgentCardMeta()
 
-        response = await handle_post_response(result, card_meta, mode="talk")
+        response = await handle_post_response(result)
 
         assert response.action == PostResponseAction.CONTINUE
 
     async def test_no_rendering_call_with_card_meta_none(self):
         result = _make_result()
 
-        response = await handle_post_response(result, None, mode="talk")
+        response = await handle_post_response(result)
 
         assert response.action == PostResponseAction.CONTINUE

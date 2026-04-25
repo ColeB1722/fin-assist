@@ -245,15 +245,29 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             prompt = _inject_context(
                 prompt, files=args.files, git_diff=args.git_diff, context_settings=config.context
             )
-            result = await render_stream(
+            result, deferred_calls = await render_stream(
                 client.stream_agent(args.agent, prompt),
                 show_thinking=args.show_thinking,
             )
 
+            if deferred_calls:
+                from fin_assist.cli.interaction.approve import run_approval_widget
+
+                decisions = await run_approval_widget(deferred_calls)
+                if decisions is not None:
+                    result, _ = await render_stream(
+                        client.stream_agent(
+                            args.agent,
+                            "",
+                            context_id=result.context_id,
+                            approval_decisions=decisions,
+                        ),
+                        show_thinking=args.show_thinking,
+                    )
+
             response = await handle_post_response(
                 result,
                 discovered.card_meta,
-                mode="do",
             )
             return response.exit_code
     except Exception:

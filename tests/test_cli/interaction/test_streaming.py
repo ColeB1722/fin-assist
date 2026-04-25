@@ -24,7 +24,8 @@ class TestRenderStreamTextOnly:
             StreamEvent(kind="text_delta", text="world"),
             StreamEvent(kind="completed", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.success is True
         assert final.output == "hello world"
 
@@ -32,13 +33,15 @@ class TestRenderStreamTextOnly:
         events = _events(
             StreamEvent(kind="text_delta", text="partial"),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.success is False
         assert final.output == "partial"
 
     async def test_returns_no_response_when_empty(self):
         events = _events()
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.success is False
         assert "No response" in final.output
 
@@ -52,7 +55,8 @@ class TestRenderStreamThinking:
             StreamEvent(kind="text_delta", text="answer"),
             StreamEvent(kind="completed", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.thinking == ["hmm...", "let me think"]
 
     async def test_thinking_not_overwritten_if_result_already_has_it(self):
@@ -62,7 +66,8 @@ class TestRenderStreamThinking:
             StreamEvent(kind="text_delta", text="answer"),
             StreamEvent(kind="completed", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.thinking == ["from result"]
 
     async def test_thinking_accumulated_when_show_thinking_false(self):
@@ -72,7 +77,8 @@ class TestRenderStreamThinking:
             StreamEvent(kind="text_delta", text="answer"),
             StreamEvent(kind="completed", result=result),
         )
-        final = await render_stream(events, show_thinking=False)
+        final, deferred = await render_stream(events, show_thinking=False)
+        assert deferred == []
         assert final.thinking == ["hmm..."]
 
 
@@ -82,7 +88,8 @@ class TestRenderStreamFailed:
         events = _events(
             StreamEvent(kind="failed", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.success is False
         assert final.output == "something broke"
 
@@ -91,7 +98,8 @@ class TestRenderStreamFailed:
         events = _events(
             StreamEvent(kind="auth_required", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.auth_required is True
 
 
@@ -105,6 +113,49 @@ class TestRenderStreamInterleaved:
             StreamEvent(kind="text_delta", text="answer"),
             StreamEvent(kind="completed", result=result),
         )
-        final = await render_stream(events)
+        final, deferred = await render_stream(events)
+        assert deferred == []
         assert final.thinking == ["step 1", "step 2"]
         assert final.output == "the answer"
+
+
+class TestRenderStreamInputRequired:
+    async def test_input_required_returns_deferred_calls(self):
+        result = AgentResult(success=False, output="waiting", context_id="ctx-1")
+        events = _events(
+            StreamEvent(kind="text_delta", text="thinking about it..."),
+            StreamEvent(
+                kind="input_required",
+                result=result,
+                deferred_calls=[
+                    {"tool_name": "run_shell", "tool_call_id": "call_1", "args": {"command": "ls"}}
+                ],
+            ),
+        )
+        final, deferred = await render_stream(events)
+        assert len(deferred) == 1
+        assert deferred[0]["tool_name"] == "run_shell"
+
+    async def test_input_required_returns_result(self):
+        result = AgentResult(success=False, output="waiting", context_id="ctx-1")
+        events = _events(
+            StreamEvent(
+                kind="input_required",
+                result=result,
+                deferred_calls=[],
+            ),
+        )
+        final, deferred = await render_stream(events)
+        assert final.context_id == "ctx-1"
+
+    async def test_input_required_with_no_result_uses_accumulated_text(self):
+        events = _events(
+            StreamEvent(kind="text_delta", text="partial response"),
+            StreamEvent(
+                kind="input_required",
+                deferred_calls=[{"tool_name": "run_shell", "tool_call_id": "c1"}],
+            ),
+        )
+        final, deferred = await render_stream(events)
+        assert len(deferred) == 1
+        assert "partial" in final.output

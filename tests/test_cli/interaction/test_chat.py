@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.metadata import AgentResult
 from fin_assist.cli.client import StreamEvent
 from fin_assist.cli.interaction.chat import run_chat_loop
 
@@ -324,39 +324,3 @@ class TestChatLoopThinking:
 
         output = buf.getvalue()
         assert "Thinking" not in output
-
-
-class TestChatLoopCardMeta:
-    async def test_requires_approval_shows_widget_in_talk(self):
-        result = AgentResult(success=True, output="rm -rf /tmp", context_id="ctx-1")
-        stream_fn = _make_stream_fn(result)
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["delete temp", "/exit"])
-        card_meta = AgentCardMeta(requires_approval=True)
-
-        from fin_assist.cli.interaction.approve import ApprovalAction
-
-        with (
-            patch(
-                "fin_assist.cli.interaction.response.run_approve_widget",
-                new_callable=AsyncMock,
-                return_value=ApprovalAction.CANCEL,
-            ) as mock_widget,
-        ):
-            await run_chat_loop(stream_fn, "shell", prompt=mock_fp, card_meta=card_meta)
-
-        mock_widget.assert_called_once()
-
-    async def test_no_approval_widget_when_not_required(self):
-        result = AgentResult(success=True, output="hello", context_id="ctx-1")
-        stream_fn = _make_stream_fn(result)
-        mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["hi", "/exit"])
-        card_meta = AgentCardMeta(requires_approval=False)
-
-        with (
-            patch("fin_assist.cli.interaction.response.run_approve_widget") as mock_widget,
-        ):
-            await run_chat_loop(stream_fn, "default", prompt=mock_fp, card_meta=card_meta)
-
-        mock_widget.assert_not_called()

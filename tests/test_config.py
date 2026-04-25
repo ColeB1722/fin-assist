@@ -433,7 +433,6 @@ class TestAgentConfig:
         assert ac.output_type == "text"
         assert ac.thinking == "medium"
         assert ac.serving_modes == ["do", "talk"]
-        assert ac.requires_approval is False
         assert ac.tags == []
 
     def test_shell_config(self) -> None:
@@ -443,12 +442,10 @@ class TestAgentConfig:
             output_type="command",
             thinking="off",
             serving_modes=["do"],
-            requires_approval=True,
             tags=["shell", "one-shot"],
         )
         assert ac.serving_modes == ["do"]
         assert ac.output_type == "command"
-        assert ac.requires_approval is True
 
     def test_config_has_default_agents(self) -> None:
         config = Config()
@@ -468,8 +465,6 @@ class TestAgentConfig:
             'system_prompt = "shell"\n'
             'output_type = "command"\n'
             'serving_modes = ["do"]\n'
-            "requires_approval = true\n"
         )
         config, _ = load_config(config_file)
         assert config.agents["shell"].serving_modes == ["do"]
-        assert config.agents["shell"].requires_approval is True

@@ -73,7 +73,6 @@ class AgentConfig(BaseModel):
     output_type: str = "text"
     thinking: ThinkingEffort = "medium"
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
-    requires_approval: bool = False
     tags: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
 
@@ -99,7 +98,7 @@ _DEFAULT_AGENTS: dict[str, AgentConfig] = {
         output_type="command",
         thinking="off",
         serving_modes=["do"],
-        requires_approval=True,
+        tools=["run_shell"],
         tags=["shell", "one-shot"],
     ),
 }

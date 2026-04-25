@@ -47,9 +47,7 @@ class TestAgentDiscovery:
         agents = await hub_client.discover_agents()
         by_name = {a.name: a for a in agents}
         assert by_name["shell"].card_meta.serving_modes == ["do"]
-        assert by_name["shell"].card_meta.requires_approval is True
         assert by_name["default"].card_meta.serving_modes == ["do", "talk"]
-        assert by_name["default"].card_meta.requires_approval is False
 
 
 # -----------------------------------------------------------------------
@@ -237,12 +235,3 @@ class TestAgentCardExtensions:
         assert meta is not None, "Expected 'fin_assist:meta' extension not found"
         params = meta.get("params", {})
         assert params.get("serving_modes") == ["do", "talk"]
-
-    async def test_shell_card_requires_approval(self, raw_client: httpx.AsyncClient) -> None:
-        resp = await raw_client.get("/agents/shell/.well-known/agent-card.json")
-        data = resp.json()
-        extensions = data["capabilities"]["extensions"]
-        meta = next((e for e in extensions if e["uri"] == "fin_assist:meta"), None)
-        assert meta is not None, "Expected 'fin_assist:meta' extension not found"
-        params = meta.get("params", {})
-        assert params.get("requires_approval") is True
