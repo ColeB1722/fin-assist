@@ -20,15 +20,15 @@
 
 | Module | Stmts | Miss | Cover | Key gaps |
 |--------|-------|------|-------|----------|
-| `agents/tools.py` | 90 | 37 | **59%** | Built-in tool callables (`_read_file`, `_git_diff`, `_git_log`, `_shell_history`, `_run_shell`) are untested — they call real ContextProviders and `subprocess.run` |
-| `agents/backend.py` | 258 | 65 | **75%** | Deferred tool path (`_PydanticAIStepHandle` with `DeferredToolRequests`), tool event mapping (`_tool_event_to_step_event`), `_build_model` multi-provider, `_request_parts_from_a2a` URL/binary paths |
-| `cli/interaction/chat.py` | 76 | 18 | **76%** | Deferred approval resume flow (lines 118-137), `AUTH_REQUIRED` break, exception during resume |
+| `agents/tools.py` | 90 | 0 | **100%** | — |
+| `agents/backend.py` | 258 | 61 | **76%** | Deferred tool path, tool event mapping, `_build_model` multi-provider, `_request_parts_from_a2a` URL/binary paths |
+| `cli/interaction/chat.py` | 76 | 10 | **87%** | Deferred approval resume exception paths, `AUTH_REQUIRED` break |
 | `cli/server.py` | 181 | 32 | **82%** | `_spawn_serve`, `_find_server_pid` /proc scanning, SIGKILL escalation, `_kill_and_cleanup` |
 | `cli/main.py` | 234 | 31 | **87%** | `_do_command` deferred approval flow, `_talk_command` session resume, `_inject_context` error paths |
 | `hub/executor.py` | 120 | 4 | **97%** | `tool_result` content extraction fallback paths, error path during iteration |
 | `cli/interaction/streaming.py` | 43 | 4 | **91%** | `show_thinking=True` rendering path, `input_required` event handling |
-| `cli/client.py` | 225 | 11 | **95%** | `stream_agent` with `approval_decisions`, `_part_struct_data` with struct_value, `_apply_status_update` with message |
-| `llm/model_registry.py` | 33 | 21 | **36%** | `create_model()` never called in tests — only registry lookups |
+| `cli/client.py` | 225 | 4 | **98%** | `_part_struct_data` with struct_value, `_apply_status_update` with message |
+| `llm/model_registry.py` | 33 | 2 | **94%** | `create_model()` custom provider fallback path |
 
 ### What automated tests cover well
 
@@ -49,8 +49,7 @@
 
 | Gap | Why not covered | Risk | Manual tests |
 |-----|-----------------|------|-------------|
-| **Tool execution** — `_run_shell`, `_read_file`, `_git_diff`, `_git_log`, `_shell_history` | Call real subprocesses / filesystem | **High** — shell execution is the most dangerous code path | G1-G5, B1-B7 |
-| **Deferred approval end-to-end** — backend emits `deferred` → executor pauses → client shows widget → user approves → resume | Spans 8 files with pydantic-ai DeferredToolRequests; no integration test | **High** — the entire HITL flow is untested beyond unit mocks | B1-B7, I1-I5 |
+| **Deferred approval end-to-end** — backend emits `deferred` → executor pauses → client shows widget → user approves → resume | Spans 8 files with pydantic-ai DeferredToolRequests; no integration test with real LLM | **High** — the entire HITL flow is untested beyond unit mocks and FakeBackend integration | B1-B7, I1-I5 |
 | **Full streaming lifecycle** — `stream_agent()` with real A2A protocol, artifact assembly, terminal state dispatch | `stream_agent()` is never called in tests; only internal helpers are unit-tested | **Medium** — covered by integration tests with FakeBackend, but not with real streaming | C1, C16 |
 | **Server subprocess lifecycle** — `fin start`/`stop`/`status`, PID files, signal handling, orphan detection | Requires real process spawning and signaling | **Medium** — well-tested in unit with mocks, but /proc scanning and SIGKILL escalation are real OS interactions | A7-A15 |
 | **Multi-provider / FallbackModel** — `_build_model` with multiple providers, failover | Requires multiple API keys configured | **Low** — single-provider path is well-tested | — |
@@ -58,7 +57,7 @@
 
 ### Integration test coverage
 
-`tests/integration/test_client_hub.py` (16 tests) exercises HubClient → ASGI hub → FakeBackend in-process (no subprocesses, no LLM, no network).
+`tests/integration/test_client_hub.py` (21 tests) exercises HubClient → ASGI hub → FakeBackend in-process (no subprocesses, no LLM, no network).
 
 | What integration tests cover | Test class |
 |------------------------------|------------|
@@ -70,10 +69,11 @@
 | Multi-turn context preservation | `TestMultiTurnConversation` |
 | Health endpoint | `TestHealthEndpoint` |
 | Agent card extensions (serving_modes) | `TestAgentCardExtensions` |
+| Deferred approval flow (input_required, approve, deny) | `TestDeferredApprovalFlow` |
 
-**Not covered by integration tests** (would require new `FakeStepHandle` capabilities):
-- Deferred approval flow (approve → resume → complete)
-- Tool execution during a run (tool_call → tool_result events)
+**Not covered by integration tests** (would require real LLM or more complex FakeBackend):
+- Deferred approval with real pydantic-ai DeferredToolRequests
+- Tool execution during a run with real tool callables
 - Structured output (CommandResult or other non-str output)
 - Error propagation from backend to client mid-stream
 
@@ -274,7 +274,6 @@ Known gaps in automated test coverage that should be addressed before or alongsi
 
 | Gap | Source lines | Risk | Mitigation |
 |-----|-------------|------|------------|
-| Built-in tool callables (`_run_shell`, `_read_file`, etc.) | `agents/tools.py:233-287` | **High** — `_run_shell` calls `subprocess.run(shell=True)` with zero test coverage | Add unit tests with mocked `subprocess.run` and `ContextProvider` classes. Add integration test that exercises tool execution through the full stack. |
 | `_PydanticAIStepHandle` deferred path | `agents/backend.py:186-203` | **High** — the `DeferredToolRequests` detection and `deferred` StepEvent emission is untested with real pydantic-ai | Add unit test that constructs a mock `AgentRun` with `DeferredToolRequests` output. Add integration test with `FakeBackend` that emits deferred events. |
 | `chat.py` deferred approval resume | `cli/interaction/chat.py:117-137` | **High** — the `run_approval_widget` → `render_stream(approval_decisions=...)` path is untested | Add unit test with mocked `stream_fn` and `run_approval_widget`. |
 | `_do_command` deferred approval resume | `cli/main.py:253-266` | **High** — same as chat.py but for the `do` command path | Add unit test with mocked `client.stream_agent` and `run_approval_widget`. |

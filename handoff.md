@@ -21,7 +21,288 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
+## Next Session (2026-04-25)
+
+Manual test run surfaced a silent-exit bug in `fin do shell "…"`: CLI exits 0 with no output. Root cause is a client-side artifact-merge bug in `stream_agent`. Deeper question surfaced: the package ships with `default` and `shell` agents baked into `_DEFAULT_AGENTS`, which conflicts with the repo's ethos as a "platform, not a product." Decision: **go clean-slate.** Remove `default` and `shell` from the package entirely; the only agent during development is `test`, defined in a version-controlled `./config.toml`.
+
+Four sketches below, do in order:
+
+1. **Local Dev Paths** — unify runtime state under `FIN_DATA_DIR`, localize dev env under `./.fin/`. Independent; quickest win.
+2. **Clean-Slate Agents** — empty `_DEFAULT_AGENTS`, delete `shell`/`default`/`CommandResult`/`SHELL_INSTRUCTIONS`, check in `./config.toml` as the dev source of truth with a single `test` agent declared.
+3. **Client Artifact-Merge Fix** — the actual silent-exit bug. Regression tests target the `test` agent from #2.
+4. **Sweep docs + tests** — `docs/architecture.md`, `docs/manual-testing.md`, integration fixtures, CLI `nargs` defaults. Purge `default`/`shell` assumptions.
+
+Each is its own commit (or PR). #2 is the biggest scope — multiple files, test fixture rewrites, doc updates — but it's all mechanical once the design is settled.
+
+---
+
 ## Design Sketches
+
+### Local Dev Paths (2026-04-25) — Design Sketch
+
+**Status: Design sketch, not started.**
+
+**Problem.** Runtime state scatters across `~/.local/share/fin/` even during local development, making `rm -rf` cleanup awkward, leaving stale state on the user's machine across branches, and obscuring the relationship between a checkout and its data. `devenv.nix` already localizes `hub.log` via `FIN_SERVER__LOG_PATH = "./hub.log"`, proving the pattern works — but only one path is covered. `src/fin_assist/paths.py` hardcodes the other four (`PID_FILE`, `SESSIONS_DIR`, `HISTORY_PATH`, `CREDENTIALS_FILE`) with no env-var escape hatch. `ServerSettings.db_path` has an env override (`FIN_SERVER__DB_PATH`) but `devenv.nix` doesn't use it.
+
+**Goal.** One env var — `FIN_DATA_DIR` — pins every runtime path under a single directory. `devenv.nix` sets it to `./.fin` (or similar) so a fresh clone gets all runtime state colocated with the repo, trashable with `rm -rf .fin`.
+
+**Design.**
+
+1. **`paths.py` honors `FIN_DATA_DIR`.** Replace the hardcoded `DATA_DIR = Path("~/.local/share/fin").expanduser()` with:
+
+    ```python
+    DATA_DIR = Path(os.environ.get("FIN_DATA_DIR", "~/.local/share/fin")).expanduser()
+    ```
+
+    All derived paths (`SESSIONS_DIR`, `HISTORY_PATH`, `PID_FILE`, `CREDENTIALS_FILE`) continue to be `DATA_DIR / <name>` and get the override for free. Module-level read is fine — env is set by the shell before import.
+
+2. **`ServerSettings` defaults track `DATA_DIR`.** Change `db_path` and `log_path` defaults from string literals to derive from `paths.DATA_DIR` at class-construction time. Since pydantic defaults are evaluated at import, use a `@model_validator(mode="before")` or a default factory that reads `paths.DATA_DIR`. Env overrides (`FIN_SERVER__DB_PATH`, `FIN_SERVER__LOG_PATH`) still win for per-path tuning.
+
+3. **`devenv.nix` flips to `FIN_DATA_DIR`.** Replace the per-path overrides with:
+
+    ```nix
+    FIN_DATA_DIR = "./.fin";
+    ```
+
+    Drop `FIN_SERVER__LOG_PATH` — redundant once `log_path` derives from `DATA_DIR`. Add `.fin/` to `.gitignore`.
+
+4. **`AGENTS.md` updated.** New "Local Development Paths" section already added. Update the table's "Env override" column to reflect the unified var once implemented.
+
+**Tests to write first (TDD).**
+
+- `test_paths_honors_fin_data_dir` — set `FIN_DATA_DIR=/tmp/fin-test`, reimport `paths` (via `importlib.reload`), assert every derived path sits under `/tmp/fin-test`.
+- `test_server_settings_db_path_follows_data_dir` — same pattern, assert `ServerSettings().db_path` ends with `hub.db` under the custom dir.
+- `test_fin_server_log_path_env_overrides_data_dir` — set both; assert the specific override wins.
+- `test_paths_default_still_home_local_share` — unset `FIN_DATA_DIR`, assert the old path is preserved.
+
+**Risks / considerations.**
+
+- **Module-level reads.** `paths.py` reads env at import. If any test imports `paths` before setting `FIN_DATA_DIR`, the module caches the wrong value. Mitigation: tests that mess with `FIN_DATA_DIR` must use `importlib.reload(paths)` or be parameterized via monkeypatch + fresh subprocess. The cleanest alternative is to convert `DATA_DIR` etc. to functions (`data_dir() -> Path`), but that changes every call site. Stick with module-level for now; flip to functions only if it causes test pain.
+- **`_spawn_serve` child process.** The child inherits the parent's env, so `FIN_DATA_DIR` propagates automatically. No extra wiring needed.
+- **User-facing breaking change?** No — the default stays `~/.local/share/fin/`. Only users who set `FIN_DATA_DIR` see the new behavior.
+
+**Out of scope.** Migrating existing data in `~/.local/share/fin/` on first run. We're not doing lifecycle management; this is pure config plumbing.
+
+---
+
+### Clean-Slate Agents (2026-04-25) — Design Sketch
+
+**Status: Design sketch, not started. Depends on: Local Dev Paths (for `./config.toml` to live alongside `./.fin/`).**
+
+**Problem.** The package ships with `default` and `shell` agents baked into `_DEFAULT_AGENTS` (`config/schema.py:80-104`). Those two agents carry UX assumptions (`default` = chain-of-thought assistant; `shell` = one-shot command generator) that the platform itself has no business owning. The repo's stated identity is "expandable personal AI agent platform" — but a platform that ships two specific agents is a product with extension points, not a platform.
+
+Concrete symptoms of the mismatch:
+
+- **The `shell` agent is half-migrated.** Phase C moved it from `requires_approval=True` → `tools=["run_shell"]` but left `output_type="command"` + `SHELL_INSTRUCTIONS` telling the model to output a raw command string. The model produces a `CommandResult`, never calls `run_shell`, and the approval widget is unreachable through `shell`. `docs/manual-testing.md` describes the "finished" state as current — it isn't. This is a permanent source of confusion.
+- **Tests are load-bearing on baked-in names.** `tests/integration/conftest.py::_make_agent_specs` hardcodes `shell`/`default`. `tests/test_config.py` asserts both are present by default. Any refactor has to edit both tests and defaults in lockstep.
+- **Dead-code footprint.** `CommandResult`, `SHELL_INSTRUCTIONS`, `CHAIN_OF_THOUGHT_INSTRUCTIONS`, the `"command"` entry in `OUTPUT_TYPES` registry — all exist only to serve `default` and `shell`. Deleting the agents deletes the support code too.
+- **Tuning to pass tests.** To make manual test A3 work (approval widget), someone has to "finish" the shell migration. That's the platform-testing concerns leaking into UX design of a specific agent.
+
+**Design.** Empty `_DEFAULT_AGENTS`. Delete `default`, `shell`, and all their support code. Check in a version-controlled `./config.toml` that declares a single `test` agent covering every pluggable platform axis. `./config.toml` serves double duty as (a) the source of truth for dev agent config and (b) a living example of how to declare agents.
+
+Steps:
+
+1. **Empty `_DEFAULT_AGENTS`** in `config/schema.py`. Change to `_DEFAULT_AGENTS: dict[str, AgentConfig] = {}`. Remove the module-level block defining `default` and `shell`.
+
+2. **Delete code supporting `default` and `shell`:**
+   - `agents/results.py` → delete `CommandResult` class (and the file if it's the only content).
+   - `agents/registry.py` → `OUTPUT_TYPES` drops `"command"`; keeps `"text"` only. `SYSTEM_PROMPTS` drops `"shell"` and `"chain-of-thought"` (replaced by `"test"`).
+   - `llm/prompts.py` → delete `SHELL_INSTRUCTIONS` and `CHAIN_OF_THOUGHT_INSTRUCTIONS`. Add `TEST_INSTRUCTIONS`.
+   - `agents/__init__.py` → drop `CommandResult` from re-exports.
+
+3. **Add `TEST_INSTRUCTIONS`** (in `llm/prompts.py`). Engineered for deterministic feature-triggering:
+
+    ```
+    You are a test agent. Your job is to exercise specific platform features on command.
+
+    When the user says "test approval", call the `run_shell` tool with command `echo approved`.
+    When the user says "test read", call the `read_file` tool with path "/etc/hostname".
+    When the user says "test diff", call the `git_diff` tool with no args.
+    When the user says "test thinking", think step-by-step for 3 sentences, then reply "done".
+    When the user says "test text", reply "hello world" with no tool calls.
+    Otherwise, respond naturally.
+    ```
+
+4. **Check in `./config.toml`** at the repo root with a banner comment and a single `[agents.test]` block:
+
+    ```toml
+    # fin-assist dev config — checked in as a working example.
+    # This file is picked up automatically when fin runs with cwd = repo root.
+    # Copy to ~/.config/fin/config.toml for user-wide config.
+    # See docs/configuration.md for the full schema.
+
+    [agents.test]
+    description = "Platform test agent — exercises every pluggable axis."
+    system_prompt = "test"
+    output_type = "text"
+    thinking = "medium"
+    serving_modes = ["do", "talk"]
+    tools = ["read_file", "run_shell", "git_diff"]
+    tags = ["test", "internal"]
+    ```
+
+    Axes covered: text output + thinking deltas + both serving modes + no-approval tool (`read_file`) + approval-gated tool (`run_shell`) + a second no-approval tool for tool-call event coverage (`git_diff`).
+
+5. **No TOML agent merging needed.** With `_DEFAULT_AGENTS = {}`, `config.toml` is the only source of agents. pydantic-settings' replace-not-merge behavior is fine — there's nothing to merge.
+
+6. **CLI default-agent handling** (`cli/main.py:357, 385`). Currently `nargs="?", default="default"`. Clean-slate options:
+
+    - **(a) Remove the default.** `nargs=1` on `agent`; `fin do "hello"` errors with "agent required". Explicit but a minor UX hit.
+    - **(b) Read from config.** `config.general.default_agent: str | None = None`; CLI uses it when `agent` is omitted. If unset and no agent given → error. Adds one setting; enables `./config.toml` to re-establish the shortcut via `[general] default_agent = "test"`.
+    - **(c) Drop the shortcut entirely.** Simplest. `fin do test "hello"` always.
+
+    **Recommendation: (b).** Configurable default preserves the shortcut for whoever wants it, without the package hardcoding a name. `./config.toml` in the dev repo sets `default_agent = "test"` and `fin do "hello"` works. For a user with a custom `~/.config/fin/config.toml`, they choose.
+
+7. **Integration test fixtures rewrite.** `tests/integration/conftest.py::_make_agent_specs` builds agent specs programmatically for `test` (mirroring the `./config.toml` block). `FakeBackend` stays unchanged — it's backend-protocol-shaped, not agent-name-shaped. Tests that reference agent names by hardcoded string update to `"test"`.
+
+**Tests to write first (TDD).**
+
+Delete:
+
+- `test_config.py::test_config_has_default_agents` — no longer meaningful.
+- `test_config.py::test_shell_config` — no longer meaningful.
+- `test_agents/test_registry.py` entries for `"command"` output type and `"shell"` / `"chain-of-thought"` prompts.
+- `test_agents/test_backend.py` tests that construct a shell/default spec directly — replace with test-agent specs.
+
+Add:
+
+- `test_config.py::test_default_agents_is_empty` — `_DEFAULT_AGENTS == {}` and `Config().agents == {}`.
+- `test_config.py::test_agents_loaded_from_cwd_config_toml` — create tmp `./config.toml` with `[agents.foo]`, `load_config()`, assert `config.agents["foo"]` exists.
+- `test_config.py::test_repo_config_toml_loads` — load the actual `./config.toml` from the repo, assert `test` agent validates.
+- `test_main.py::test_do_without_agent_arg_uses_general_default_agent` — config with `general.default_agent = "test"`; `fin do "hello"` dispatches to `test`.
+- `test_main.py::test_do_without_agent_arg_errors_when_no_default` — config with no default; `fin do "hello"` exits 1 with clear message.
+- Integration: `test_test_agent_streams_text` — dispatch `"test text"` to `test` agent → assert `events[-1].result.output == "hello world"`. (Also catches Sketch #3 bug.)
+- Integration: `test_test_agent_triggers_approval` — dispatch `"test approval"` → assert `events[-1].kind == "input_required"` AND `len(events[-1].deferred_calls) == 1` AND `deferred_calls[0].tool_name == "run_shell"`.
+
+**Risks / considerations.**
+
+- **Blast radius.** Roughly 20 files touched (package source + tests + docs). All mechanical — no algorithmic changes. Doing it in one PR avoids a broken intermediate state where defaults are empty but tests still reference them.
+- **Fresh clone UX.** A user cloning the repo needs `./config.toml` present for `fin do …` to work. It's checked in, so present by default. Risk: if someone runs `fin do …` from a cwd *other than* the repo, and has no `~/.config/fin/config.toml`, it errors "no agents configured." Acceptable for dev (you're always in the repo); needs a better onboarding story before public release. Out of scope for now.
+- **Doc sweep required.** `docs/architecture.md` and `docs/manual-testing.md` both reference `default`/`shell` heavily. Sketch #4 covers this.
+- **Prompt determinism.** The `test` agent depends on the LLM following `TEST_INSTRUCTIONS` verbatim. If flakes appear, tighten the prompt or pin to a specific model via `FIN_GENERAL__DEFAULT_MODEL` in devenv. CI still uses `FakeBackend` (unit layer, no LLM calls).
+- **Losing `CHAIN_OF_THOUGHT_INSTRUCTIONS`.** That prompt is reasonable and future users might want it. Acceptable loss — it can be resurrected from git history or someone's personal config when a real assistant agent is designed.
+
+**Out of scope.** Designing a replacement `default` agent for end users. That's a future UX call. This sketch is about cleaning up the platform, not shipping a product.
+
+---
+
+### Client Artifact-Merge Fix (2026-04-25) — Design Sketch
+
+**Status: Design sketch, not started. Depends on: Clean-Slate Agents (for the regression test to target the `test` agent and for `FakeBackend` fixtures to be on the new naming).**
+
+**Problem.** `HubClient.stream_agent()` in `cli/client.py:312-394` walks the A2A protocol response stream and, for each `artifact_update`, yields `text_delta` / `thinking_delta` events directly — but never appends the streamed artifact into `task.artifacts`. When the task reaches a terminal state, `_extract_result(task)` walks `task.artifacts` (empty) and returns `AgentResult(output="")`. Compare `_send_and_wait` (line 413-432) which maintains a parallel artifact list and splices it back into `task.artifacts` before extraction. The splice was dropped in commit `b18f920` ("streaming fix") when the streaming path was refactored.
+
+**Symptoms (observed on `feature/tools-plus`, 2026-04-25).**
+
+- `fin do shell "echo hello"` exits 0 with no rendered output. Pre-clean-slate, the shell agent emits a structured `CommandResult` with no `text_delta` events — nothing renders in `render_stream`, and `result.output == ""` so `handle_post_response` prints nothing either. Post-clean-slate the `shell` agent is gone, but the bug reproduces anytime a backend produces structured output or ends without text deltas.
+- `default` agent (pre-clean-slate) renders fine on-screen via `Live` deltas but `result.output == ""` — session continuity and any post-stream consumer is silently broken.
+- Deferred approval flow: `input_required` event still fires (state-based), but `event.deferred_calls = []` because `_extract_deferred_calls(task)` walks the same empty `task.artifacts`. The approval widget receives zero calls → silently no-ops. Tests A3, B1–B7, I1–I5 can't pass.
+- Integration tests pass because `TestStreamingRoundTrip` asserts only `events[-1].kind == "completed"` and `result.success is True`; never checks `result.output`. `TestDeferredApprovalFlow.test_stream_yields_input_required` checks the event kind but not `len(deferred_calls) > 0`.
+
+**Design.** Mirror `_send_and_wait`'s pattern inside `stream_agent`:
+
+```python
+task: Task | None = None
+artifacts: list[Any] = []          # NEW
+accumulated_thinking: list[str] = []
+
+async for response in client.send_message(request):
+    is_terminal, resp_task, artifact = self._process_response(response)
+    if artifact is not None:
+        artifacts.append(artifact)  # NEW — collect alongside yielding deltas
+        for part in artifact.parts:
+            ...  # existing delta-yielding logic unchanged
+    if resp_task is not None:
+        task = resp_task
+    if response.HasField("status_update") and task is not None:
+        self._apply_status_update(task, response.status_update)
+    if is_terminal:
+        break
+
+if task is not None:
+    if artifacts and not task.artifacts:  # NEW — splice before extract
+        for artifact in artifacts:
+            task.artifacts.append(artifact)
+    state = task.status.state
+    result = self._extract_result(task)
+    ...  # rest unchanged
+```
+
+Minimal and surgical. Matches `_send_and_wait` exactly, so there's a visible consistency invariant between the two methods.
+
+**Tests to write first (TDD).**
+
+Unit tests in `tests/test_cli/test_client.py`:
+
+- `test_stream_agent_populates_result_output_from_artifacts` — mock A2A client yielding `[initial_task, artifact_update(text="hello world"), status_update(COMPLETED)]` → assert `events[-1].result.output == "hello world"`.
+- `test_stream_agent_populates_deferred_calls_from_artifacts` — same setup but final state INPUT_REQUIRED with a deferred-metadata part → assert `len(events[-1].deferred_calls) == 1` and fields populated.
+- `test_stream_agent_preserves_existing_task_artifacts` — if the final `task` event already has artifacts, don't duplicate. Test the `if not task.artifacts` guard explicitly.
+
+Integration tests:
+
+- Tighten `TestStreamingRoundTrip.test_stream_ends_with_completed` — add `assert events[-1].result.output == "response from test"` (or whatever `FakeBackend` returns for the `test` agent fixture).
+- Tighten `TestDeferredApprovalFlow.test_stream_yields_input_required` — add `assert len(terminal_events[-1].deferred_calls) == 1`.
+- New: `test_test_agent_streams_text` / `test_test_agent_triggers_approval` from Sketch #2 — validate end-to-end against real LLM invocation (marked as slow/network; skip in CI).
+
+**Risks / considerations.**
+
+- **Double-append risk.** If the A2A protocol ever sends artifacts both as `artifact_update` chunks AND embedded in a later `task` event, the `if not task.artifacts` guard prevents duplication. The guard mirrors `_send_and_wait`.
+- **Memory on long streams.** Collecting all artifacts plus yielding deltas means text is retained twice until terminal. Trivial for current single-artifact-per-task pattern. Revisit if streaming produces many artifacts.
+- **Doesn't fix the test-integration gap alone.** Tests asserting only on `kind`/`success` keep passing. Tightening assertions is part of this fix.
+
+**Out of scope.** Refactoring `_send_and_wait` and `stream_agent` to share artifact-collection logic. They're similar enough; factoring is cosmetic and risks regressions.
+
+---
+
+### Doc & Test Sweep (2026-04-25) — Design Sketch
+
+**Status: Design sketch, not started. Depends on: Clean-Slate Agents (sketch #2) landing. Purely mechanical cleanup.**
+
+**Problem.** `default` and `shell` agent names are embedded across docs, tests, and CLI defaults. After sketch #2 deletes the agents, those references become dangling or misleading. This sketch is the mechanical sweep to remove them.
+
+**Files and sections to edit.**
+
+Source:
+
+- `src/fin_assist/cli/main.py:357, 385` — `nargs="?", default="default"` → handle per sketch #2 step 6 (read from `config.general.default_agent`).
+
+Docs:
+
+- `docs/architecture.md:456-513, 790-795` — six references to `default`/`shell` agent configs. Replace the "Example agents" section with a single `test` agent example, or remove it and link to `./config.toml` as the canonical example.
+- `docs/manual-testing.md` — extensive rewrite:
+  - "Architecture note" at the top: rewrite for `test` agent. Point at `./config.toml` as the source of truth.
+  - Part 1 test tables: every `fin do default` / `fin do shell` → `fin do test`. Drop `E2` (shell-rejects-talk) and `E3` (default-supports-do) since they're agent-specific; replace with a generic "agent rejects unsupported mode" test using a contrived TOML entry.
+  - Part 2 tests: A3, B1–B7, I1–I5 all route through `test`. C1–C16 use `test` in talk mode. A6/E4 (default-agent shortcut) become "configured-default-agent shortcut" — depends on sketch #2 step 6.
+  - "Notes" at bottom: remove `default`/`shell` agent descriptions. Add a note pointing to `./config.toml`.
+
+Tests:
+
+- `tests/integration/conftest.py::_make_agent_specs` — rewrite to produce a single `test` spec.
+- `tests/integration/test_client_hub.py` — every hardcoded `"default"` / `"shell"` → `"test"`. `TestAgentDiscovery.test_discover_agents_returns_all_mounted` asserts `{"test"}` instead of `{"shell", "default"}`.
+- `tests/test_config.py::test_config_has_default_agents`, `test_shell_config`, `test_config_agents_from_toml` — delete or rewrite per sketch #2 TDD plan.
+- `tests/test_agents/test_spec.py` — every test constructing `AgentSpec` with `system_prompt="shell"` or `output_type="command"` → use `test` or a minimal generic config.
+- `tests/test_agents/test_backend.py` — same.
+- `tests/test_agents/test_registry.py` — drop tests for `"command"` output type and `"shell"`/`"chain-of-thought"` prompts; add test for `"text"` output and `"test"` prompt.
+- `tests/test_cli/test_main.py`, `test_display.py`, `test_approve.py`, `test_chat.py`, `test_prompt.py`, `test_client.py`, `test_hub/test_factory.py`, `test_hub/test_app.py`, `test_llm/test_prompts.py` — grep for `"default"`, `"shell"`, `SHELL_INSTRUCTIONS`, `CHAIN_OF_THOUGHT`, `CommandResult` and update/delete each match.
+
+handoff.md:
+
+- Existing Phase C sketch (around line ~810 after re-numbering) — add a status note: "Phase C platform work complete. The `shell` agent referenced in the original sketch was deleted as part of the clean-slate agents refactor — its role as the approval-flow canary is now held by the `test` agent defined in `./config.toml`."
+- Config-Driven Redesign sketch — similar status note.
+
+**Tests to run (no new tests beyond sketch #2).**
+
+- `just ci` — full suite must pass.
+- Manual smoke: `fin start && fin agents` → lists `test`; `fin do test "test text"` → renders "hello world"; `fin do test "test approval"` → approval widget; `fin stop`.
+
+**Risks / considerations.**
+
+- **Grep-and-replace false positives.** The string `"default"` appears in contexts unrelated to the default agent (e.g., `default=None` function params, Rich panel `border_style="default"`). Review each hit manually.
+- **Commit size.** Probably 500–1000 line diff across 20+ files. Single PR is fine; the scope is contained.
+
+**Out of scope.** Restructuring docs (this sketch is about updating references, not redesigning the docs themselves).
+
+---
 
 ### Streaming UX Refactor (2026-04-23) — Complete
 
