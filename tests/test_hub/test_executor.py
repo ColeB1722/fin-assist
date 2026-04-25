@@ -60,8 +60,9 @@ def _make_backend(
             serialized_history=b"[]",
             new_message_parts=[],
         )
+        event_list = events if events is not None else ["hello"]
         handle = _FakeStepHandle(
-            events=_as_text_events(events or ["hello"]),
+            events=_as_text_events(event_list),
             run_result=result,
         )
         backend.run_steps.return_value = handle
@@ -672,3 +673,227 @@ class TestExecutorCancel:
             and call.args[0].status.state == TaskState.TASK_STATE_CANCELED
         ]
         assert len(cancel_updates) == 1
+
+
+class TestExecutorToolCallDispatch:
+    async def test_tool_call_event_emits_artifact_with_metadata(self) -> None:
+        from google.protobuf.json_format import MessageToDict
+
+        tool_call_event = StepEvent(
+            kind="tool_call",
+            content=MagicMock(),
+            step=0,
+            tool_name="read_file",
+            metadata={"args": {"path": "test.py"}},
+        )
+        backend = _make_backend(events=[tool_call_event])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_calls = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        tool_call_artifacts = []
+        for call in artifact_calls:
+            event = call.args[0]
+            for part in event.artifact.parts:
+                meta_dict = (
+                    MessageToDict(part.metadata, preserving_proto_field_name=True)
+                    if part.HasField("metadata")
+                    else {}
+                )
+                if meta_dict.get("type") == "tool_call":
+                    tool_call_artifacts.append((part, meta_dict))
+
+        assert len(tool_call_artifacts) == 1
+        part, meta = tool_call_artifacts[0]
+        assert meta["tool_name"] == "read_file"
+        assert "path" in part.text
+
+    async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
+        from google.protobuf.json_format import MessageToDict
+
+        mock_content = MagicMock()
+        mock_content.content = "file contents here"
+        tool_result_event = StepEvent(
+            kind="tool_result",
+            content=mock_content,
+            step=0,
+            tool_name="read_file",
+        )
+        backend = _make_backend(events=[tool_result_event])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_calls = [
+            call
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        tool_result_artifacts = []
+        for call in artifact_calls:
+            event = call.args[0]
+            for part in event.artifact.parts:
+                meta_dict = (
+                    MessageToDict(part.metadata, preserving_proto_field_name=True)
+                    if part.HasField("metadata")
+                    else {}
+                )
+                if meta_dict.get("type") == "tool_result":
+                    tool_result_artifacts.append((part, meta_dict))
+
+        assert len(tool_result_artifacts) == 1
+        part, meta = tool_result_artifacts[0]
+        assert meta["tool_name"] == "read_file"
+        assert part.text == "file contents here"
+
+
+class TestExecutorArtifactAppendSemantics:
+    """Verify that the first artifact chunk uses append=False and subsequent
+    chunks use append=True.  This ensures the A2A TaskManager correctly
+    stores artifacts instead of silently dropping the first chunk.
+    """
+
+    async def test_first_artifact_uses_append_false(self) -> None:
+        backend = _make_backend(events=["hello"])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_events = [
+            call.args[0]
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        assert len(artifact_events) >= 1
+        assert artifact_events[0].append is False
+
+    async def test_subsequent_artifacts_use_append_true(self) -> None:
+        backend = _make_backend(events=["hel", "lo"])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_events = [
+            call.args[0]
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        assert len(artifact_events) >= 2
+        assert artifact_events[0].append is False
+        for evt in artifact_events[1:]:
+            assert evt.append is True
+
+    async def test_thinking_first_then_text_uses_correct_append(self) -> None:
+        thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
+        text_event = StepEvent(kind="text_delta", content="answer", step=0)
+        backend = _make_backend(events=[thinking_event, text_event])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_events = [
+            call.args[0]
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        assert len(artifact_events) >= 2
+        assert artifact_events[0].append is False
+        assert artifact_events[1].append is True
+
+    async def test_no_events_final_chunk_uses_append_false(self) -> None:
+        backend = _make_backend(events=[])
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_events = [
+            call.args[0]
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        assert len(artifact_events) >= 1
+        final_chunk = artifact_events[-1]
+        assert final_chunk.append is False
+        assert final_chunk.last_chunk is True
+
+    async def test_structured_output_artifact_uses_append_false(self) -> None:
+        result_part = Part(text="structured output")
+        backend = _make_backend(
+            run_result=RunResult(
+                output={"command": "ls"},
+                serialized_history=b"[]",
+                new_message_parts=[],
+            ),
+        )
+        backend.convert_result_to_part.return_value = result_part
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(backend=backend, context_store=context_store)
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+
+        artifact_events = [
+            call.args[0]
+            for call in event_queue.enqueue_event.call_args_list
+            if hasattr(call.args[0], "artifact")
+        ]
+        artifact_ids = [evt.artifact.artifact_id for evt in artifact_events]
+        assert len(set(artifact_ids)) >= 2
+        structured_event = next(
+            evt
+            for evt in artifact_events
+            if any(p.text == "structured output" for p in evt.artifact.parts)
+        )
+        assert structured_event.append is False

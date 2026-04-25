@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-24)**: Phase A + Phase B complete. Phase C design sketch written, open questions resolved, implementation starting. 577 tests passing, CI green.
+**Current state (2026-04-25)**: Phases A–C complete, code reviewed, merged via PR #87. Executor `append=True` artifact bug fixed. 635 tests passing, 91% coverage, CI green.
 
 **Three known structural gaps** (down from four — HITL folded into the unified sketch):
 
@@ -544,6 +544,14 @@ Existing stores without a version prefix need a migration path (try deserializin
 5. ~~**Tool dependencies injection.**~~ **RESOLVED in Phase B: No `ToolDeps` needed yet. Built-in tools construct their own provider instances. When config-dependent tools are needed, a `ToolDeps` dataclass can be added then.**
 
 6. ~~**ToolRegistry scoping.**~~ **RESOLVED in Phase B: Global registry with `get_for_agent()` filtering. One `read_file` definition shared by all agents; agents opt in via config `tools = [...]`.**
+
+7. **`ApprovalPolicy(mode="conditional")` enforcement.** The type exists but no runtime path invokes the `condition` callable or branches on `mode="conditional"`. Currently, `_build_pydantic_agent` maps `mode != "never"` → `requires_approval=True` (binary). pydantic-ai's `requires_approval` is a `bool`, not a callable. Three implementation options:
+
+   - **A. Always defer, client-side auto-approve** — Set `requires_approval=True`; the approval widget checks the condition and auto-approves if it returns `False`. Reuses the full deferred flow but adds latency for auto-approved calls.
+   - **B. Wrap the tool callable** — Replace the callable with a wrapper that checks the condition first, raising to trigger deferred flow when needed. Cleaner but requires deeper pydantic-ai tool lifecycle integration.
+   - **C. Wait for upstream** — If pydantic-ai makes `requires_approval` accept `bool | Callable`, this becomes trivial. May never happen.
+
+   **Recommendation**: Design sketch in `handoff.md` before implementation. Option A is the simplest with current architecture. If `conditional` is never needed, the dead code (`condition` field, `conditional` mode variant) should be removed rather than maintained.
 
 ---
 

@@ -1,12 +1,28 @@
-"""Tests for platform-level ToolRegistry and ToolDefinition types."""
+"""Tests for platform-level ToolRegistry, ToolDefinition, and built-in tool callables."""
 
 from __future__ import annotations
 
+from subprocess import CompletedProcess
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.tools import ToolDefinition, ToolRegistry, create_default_registry
+from fin_assist.agents.tools import (
+    ApprovalDecision,
+    ApprovalPolicy,
+    DeferredToolCall,
+    ToolDefinition,
+    ToolRegistry,
+    create_default_registry,
+)
+
+
+async def _invoke(tool: ToolDefinition, **kwargs: Any) -> str:
+    result = tool.callable(**kwargs)
+    if isinstance(result, str):
+        return result
+    return await result
 
 
 def _make_tool(name: str = "test_tool", **overrides: Any) -> ToolDefinition:
@@ -180,3 +196,289 @@ class TestCreateDefaultRegistry:
             assert inspect.iscoroutinefunction(tool.callable), (
                 f"Tool {tool.name} callable is not async"
             )
+
+
+class TestApprovalPolicy:
+    def test_always_mode(self) -> None:
+        policy = ApprovalPolicy(mode="always", reason="test")
+        assert policy.mode == "always"
+        assert policy.condition is None
+        assert policy.reason == "test"
+
+    def test_never_mode(self) -> None:
+        policy = ApprovalPolicy(mode="never")
+        assert policy.mode == "never"
+        assert policy.condition is None
+        assert policy.reason is None
+
+    def test_conditional_mode_with_callable(self) -> None:
+        cond = lambda name, args: "sudo" in args.get("command", "")
+        policy = ApprovalPolicy(mode="conditional", condition=cond)
+        assert policy.mode == "conditional"
+        assert policy.condition is cond
+
+
+class TestDeferredToolCall:
+    def test_stores_fields(self) -> None:
+        call = DeferredToolCall(
+            tool_name="run_shell",
+            tool_call_id="call_1",
+            args={"command": "ls"},
+            reason="requires approval",
+        )
+        assert call.tool_name == "run_shell"
+        assert call.tool_call_id == "call_1"
+        assert call.args == {"command": "ls"}
+        assert call.reason == "requires approval"
+
+    def test_reason_defaults_none(self) -> None:
+        call = DeferredToolCall(
+            tool_name="run_shell",
+            tool_call_id="call_1",
+            args={},
+        )
+        assert call.reason is None
+
+
+class TestApprovalDecision:
+    def test_approved(self) -> None:
+        decision = ApprovalDecision(tool_call_id="call_1", approved=True)
+        assert decision.tool_call_id == "call_1"
+        assert decision.approved is True
+        assert decision.override_args is None
+        assert decision.denial_reason is None
+
+    def test_denied_with_reason(self) -> None:
+        decision = ApprovalDecision(
+            tool_call_id="call_2", approved=False, denial_reason="Too dangerous"
+        )
+        assert decision.approved is False
+        assert decision.denial_reason == "Too dangerous"
+
+    def test_approved_with_override_args(self) -> None:
+        decision = ApprovalDecision(
+            tool_call_id="call_3",
+            approved=True,
+            override_args={"command": "ls -la"},
+        )
+        assert decision.override_args == {"command": "ls -la"}
+
+
+class TestReadFileCallable:
+    @pytest.mark.asyncio
+    async def test_returns_content_when_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="test.py", type="file", content="file content", status="available"
+        )
+        with patch("fin_assist.context.files.FileFinder") as MockFinder:
+            MockFinder.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("read_file")
+            assert tool is not None
+            result = await _invoke(tool, path="test.py")
+        assert result == "file content"
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="missing.py",
+            type="file",
+            status="not_found",
+            error_reason="File not found",
+        )
+        with patch("fin_assist.context.files.FileFinder") as MockFinder:
+            MockFinder.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("read_file")
+            assert tool is not None
+            result = await _invoke(tool, path="missing.py")
+        assert "Error reading file" in result
+        assert "missing.py" in result
+        assert "File not found" in result
+
+
+class TestGitDiffCallable:
+    @pytest.mark.asyncio
+    async def test_returns_diff_when_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="git_diff:diff", type="git_diff", content="diff content", status="available"
+        )
+        with patch("fin_assist.context.git.GitContext") as MockCtx:
+            MockCtx.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("git_diff")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert result == "diff content"
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="git_diff:diff",
+            type="git_diff",
+            status="error",
+            error_reason="Not a git repo",
+        )
+        with patch("fin_assist.context.git.GitContext") as MockCtx:
+            MockCtx.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("git_diff")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert "Error getting git diff" in result
+
+
+class TestGitLogCallable:
+    @pytest.mark.asyncio
+    async def test_returns_log_when_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="git_log:log", type="git_log", content="abc123 commit", status="available"
+        )
+        with patch("fin_assist.context.git.GitContext") as MockCtx:
+            MockCtx.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("git_log")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert result == "abc123 commit"
+
+    @pytest.mark.asyncio
+    async def test_returns_error_when_not_available(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_item = ContextItem(
+            id="git_log:log",
+            type="git_log",
+            status="error",
+            error_reason="git not available",
+        )
+        with patch("fin_assist.context.git.GitContext") as MockCtx:
+            MockCtx.return_value.get_item.return_value = mock_item
+            registry = create_default_registry()
+            tool = registry.get("git_log")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert "Error getting git log" in result
+
+
+class TestShellHistoryCallable:
+    @pytest.mark.asyncio
+    async def test_returns_search_results_with_query(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_items = [
+            ContextItem(id="0", type="history", content="git status", status="available"),
+            ContextItem(id="1", type="history", content="git commit", status="available"),
+        ]
+        with patch("fin_assist.context.history.ShellHistory") as MockHistory:
+            MockHistory.return_value.search.return_value = mock_items
+            registry = create_default_registry()
+            tool = registry.get("shell_history")
+            assert tool is not None
+            result = await _invoke(tool, query="git")
+        assert "git status" in result
+        assert "git commit" in result
+        MockHistory.return_value.search.assert_called_once_with("git")
+
+    @pytest.mark.asyncio
+    async def test_returns_all_without_query(self) -> None:
+        from fin_assist.context.base import ContextItem
+
+        mock_items = [
+            ContextItem(id="0", type="history", content="ls", status="available"),
+        ]
+        with patch("fin_assist.context.history.ShellHistory") as MockHistory:
+            MockHistory.return_value.get_all.return_value = mock_items
+            registry = create_default_registry()
+            tool = registry.get("shell_history")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert "ls" in result
+        MockHistory.return_value.get_all.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_returns_message_when_empty(self) -> None:
+        with patch("fin_assist.context.history.ShellHistory") as MockHistory:
+            MockHistory.return_value.get_all.return_value = []
+            registry = create_default_registry()
+            tool = registry.get("shell_history")
+            assert tool is not None
+            result = await _invoke(tool)
+        assert result == "No shell history available."
+
+
+class TestRunShellCallable:
+    @pytest.mark.asyncio
+    async def test_success(self) -> None:
+        cp = CompletedProcess(args="echo hi", returncode=0, stdout="hi\n", stderr="")
+        with patch("subprocess.run", return_value=cp):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="echo hi")
+        assert result == "hi\n"
+
+    @pytest.mark.asyncio
+    async def test_includes_stderr(self) -> None:
+        cp = CompletedProcess(args="cmd", returncode=0, stdout="out", stderr="warn")
+        with patch("subprocess.run", return_value=cp):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="cmd")
+        assert "out" in result
+        assert "STDERR: warn" in result
+
+    @pytest.mark.asyncio
+    async def test_includes_exit_code_on_failure(self) -> None:
+        cp = CompletedProcess(args="cmd", returncode=1, stdout="", stderr="")
+        with patch("subprocess.run", return_value=cp):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="cmd")
+        assert "Exit code: 1" in result
+
+    @pytest.mark.asyncio
+    async def test_returns_no_output_marker_when_empty(self) -> None:
+        cp = CompletedProcess(args="true", returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=cp):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="true")
+        assert "(no output)" in result
+
+    @pytest.mark.asyncio
+    async def test_timeout(self) -> None:
+        import subprocess
+
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="sleep 60", timeout=30),
+        ):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="sleep 60")
+        assert "timed out" in result
+
+    @pytest.mark.asyncio
+    async def test_generic_exception(self) -> None:
+        with patch("subprocess.run", side_effect=OSError("no fork")):
+            registry = create_default_registry()
+            tool = registry.get("run_shell")
+            assert tool is not None
+            result = await _invoke(tool, command="bad cmd")
+        assert "Error executing command" in result
+        assert "no fork" in result

@@ -450,6 +450,75 @@ class TestPydanticAIBackendRunSteps:
             with pytest.raises(RuntimeError, match="Must iterate"):
                 await handle.result()
 
+    @pytest.mark.asyncio
+    async def test_deferred_tool_requests_emits_deferred_events(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.providers = {}
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always", reason="Shell needs approval"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+
+        mock_call_part = MagicMock()
+        mock_call_part.tool_name = "run_shell"
+        mock_call_part.tool_call_id = "call_1"
+        mock_call_part.args_as_dict.return_value = {"command": "ls"}
+
+        deferred_output = MagicMock(spec=DeferredToolRequests)
+        deferred_output.approvals = [mock_call_part]
+
+        final_result = MagicMock()
+        final_result.output = deferred_output
+        final_result.all_messages = MagicMock(return_value=[])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[], final_result=final_result)
+
+        pydantic_agent = MagicMock()
+        pydantic_agent.output_type = [str, DeferredToolRequests]
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
+
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        with (
+            patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
+        ):
+            handle = backend.run_steps(messages=[])
+            step_events = [e async for e in handle]
+            result = await handle.result()
+
+        deferred_events = [e for e in step_events if e.kind == "deferred"]
+        assert len(deferred_events) == 1
+        assert deferred_events[0].tool_name == "run_shell"
+        assert deferred_events[0].content.tool_name == "run_shell"
+        assert deferred_events[0].content.tool_call_id == "call_1"
+        assert deferred_events[0].content.args == {"command": "ls"}
+        assert deferred_events[0].content.reason == "Shell needs approval"
+
 
 # -- PydanticAIBackend._build_pydantic_agent -----------------------------------
 

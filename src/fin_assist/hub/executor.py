@@ -90,6 +90,15 @@ class Executor(AgentExecutor):
        ``RunResult.serialized_history`` from the backend.
     8. If structured output, adds as a separate artifact.
 
+    Artifact append semantics
+    ~~~~~~~~~~~~~~~~~~~~~~~~~
+    The A2A TaskManager requires the first ``add_artifact`` call for a
+    given ``artifact_id`` to use ``append=False`` (to create the
+    artifact).  Subsequent calls use ``append=True`` (to extend it).
+    The executor tracks created artifacts in a ``set[str]`` and uses
+    ``_emit_artifact`` to enforce this invariant.  Using ``append=True``
+    for a nonexistent artifact causes the chunk to be silently dropped.
+
     If ``check_credentials()`` returns missing providers, the task is set
     to ``auth-required`` with a helpful message instead of failing.
     """
@@ -143,6 +152,7 @@ class Executor(AgentExecutor):
 
         # 4. Run backend with step-driven dispatch
         artifact_id = str(uuid.uuid4())
+        created_artifacts: set[str] = set()
         has_deferred = False
         try:
             if deferred_results is not None and message_history:
@@ -158,7 +168,7 @@ class Executor(AgentExecutor):
             async for event in handle:
                 if event.kind == "deferred":
                     has_deferred = True
-                await self._dispatch_step_event(event, updater, artifact_id)
+                await self._dispatch_step_event(event, updater, artifact_id, created_artifacts)
 
             if has_deferred:
                 result: RunResult = await handle.result()
@@ -168,13 +178,15 @@ class Executor(AgentExecutor):
                 await updater.requires_input(message=deferred_msg)
                 return
 
+            append = artifact_id in created_artifacts
             await updater.add_artifact(
                 parts=[Part(text="")],
                 artifact_id=artifact_id,
                 name="result",
-                append=True,
+                append=append,
                 last_chunk=True,
             )
+            created_artifacts.add(artifact_id)
             result = await handle.result()
         except Exception:
             await updater.failed()
@@ -187,11 +199,11 @@ class Executor(AgentExecutor):
         # 6. If structured output, add as a separate artifact
         if not isinstance(result.output, str):
             part = self._backend.convert_result_to_part(result.output)
-            structured_artifact_id = str(uuid.uuid4())
-            await updater.add_artifact(
-                parts=[part],
-                artifact_id=structured_artifact_id,
-                name="result",
+            await self._emit_artifact(
+                updater,
+                str(uuid.uuid4()),
+                [part],
+                created_artifacts,
             )
 
         await updater.complete()
@@ -201,25 +213,26 @@ class Executor(AgentExecutor):
         event: StepEvent,
         updater: TaskUpdater,
         artifact_id: str,
+        created_artifacts: set[str],
     ) -> None:
         """Route a ``StepEvent`` to the appropriate A2A artifact or state transition."""
         match event.kind:
             case "text_delta":
-                await updater.add_artifact(
-                    parts=[Part(text=event.content)],
-                    artifact_id=artifact_id,
-                    name="result",
-                    append=True,
+                await self._emit_artifact(
+                    updater,
+                    artifact_id,
+                    [Part(text=event.content)],
+                    created_artifacts,
                     last_chunk=False,
                 )
             case "thinking_delta":
                 meta = Struct()
                 meta.update({"type": "thinking"})
-                await updater.add_artifact(
-                    parts=[Part(text=event.content, metadata=meta)],
-                    artifact_id=artifact_id,
-                    name="result",
-                    append=True,
+                await self._emit_artifact(
+                    updater,
+                    artifact_id,
+                    [Part(text=event.content, metadata=meta)],
+                    created_artifacts,
                     last_chunk=False,
                 )
             case "tool_call":
@@ -232,11 +245,11 @@ class Executor(AgentExecutor):
                     }
                 )
                 args_text = str(event.metadata.get("args", {}))
-                await updater.add_artifact(
-                    parts=[Part(text=args_text, metadata=tool_meta)],
-                    artifact_id=artifact_id,
-                    name="result",
-                    append=True,
+                await self._emit_artifact(
+                    updater,
+                    artifact_id,
+                    [Part(text=args_text, metadata=tool_meta)],
+                    created_artifacts,
                     last_chunk=False,
                 )
             case "tool_result":
@@ -253,23 +266,44 @@ class Executor(AgentExecutor):
                     result_text = event.content
                 else:
                     result_text = str(event.content)
-                await updater.add_artifact(
-                    parts=[Part(text=result_text, metadata=result_meta)],
-                    artifact_id=artifact_id,
-                    name="result",
-                    append=True,
+                await self._emit_artifact(
+                    updater,
+                    artifact_id,
+                    [Part(text=result_text, metadata=result_meta)],
+                    created_artifacts,
                     last_chunk=False,
                 )
             case "step_start" | "step_end":
                 pass
             case "deferred":
-                await self._handle_deferred_event(event, updater, artifact_id)
+                await self._handle_deferred_event(event, updater, artifact_id, created_artifacts)
+
+    async def _emit_artifact(
+        self,
+        updater: TaskUpdater,
+        artifact_id: str,
+        parts: list[Part],
+        created_artifacts: set[str],
+        *,
+        name: str = "result",
+        last_chunk: bool = False,
+    ) -> None:
+        append = artifact_id in created_artifacts
+        await updater.add_artifact(
+            parts=parts,
+            artifact_id=artifact_id,
+            name=name,
+            append=append,
+            last_chunk=last_chunk,
+        )
+        created_artifacts.add(artifact_id)
 
     async def _handle_deferred_event(
         self,
         event: StepEvent,
         updater: TaskUpdater,
         artifact_id: str,
+        created_artifacts: set[str],
     ) -> None:
         deferred_meta = Struct()
         deferred_content = event.content
@@ -283,11 +317,11 @@ class Executor(AgentExecutor):
             }
         )
         args_text = str(getattr(deferred_content, "args", {}))
-        await updater.add_artifact(
-            parts=[Part(text=args_text, metadata=deferred_meta)],
-            artifact_id=artifact_id,
-            name="result",
-            append=True,
+        await self._emit_artifact(
+            updater,
+            artifact_id,
+            [Part(text=args_text, metadata=deferred_meta)],
+            created_artifacts,
             last_chunk=False,
         )
 
