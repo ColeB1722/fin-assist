@@ -81,7 +81,7 @@ async def render_stream(
                 if show_thinking:
                     live.update(_build_display())
             elif event.kind == "input_required":
-                deferred_calls = event.deferred_calls
+                deferred_calls.extend(event.deferred_calls)
                 if event.result is not None:
                     final_result = event.result
             elif event.result is not None:

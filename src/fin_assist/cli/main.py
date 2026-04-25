@@ -265,10 +265,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                         show_thinking=args.show_thinking,
                     )
 
-            response = await handle_post_response(
-                result,
-                discovered.card_meta,
-            )
+            response = await handle_post_response(result)
             return response.exit_code
     except Exception:
         return 1
@@ -311,7 +308,6 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 fp,
                 initial_message=initial_message,
                 show_thinking=args.show_thinking,
-                card_meta=discovered.card_meta,
             )
     except Exception:
         return 1

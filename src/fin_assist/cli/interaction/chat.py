@@ -14,7 +14,6 @@ from fin_assist.cli.interaction.streaming import render_stream
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-    from fin_assist.agents.metadata import AgentCardMeta
     from fin_assist.cli.client import StreamEvent
     from fin_assist.cli.interaction.prompt import SlashCommand
 
@@ -42,7 +41,6 @@ async def run_chat_loop(
     *,
     initial_message: str | None = None,
     show_thinking: bool = False,
-    card_meta: AgentCardMeta | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -55,8 +53,6 @@ async def run_chat_loop(
         initial_message: Optional message to send as the first turn before
                         entering the interactive prompt loop.
         show_thinking: Whether to render agent thinking content.
-        card_meta: Agent capability metadata. When provided, drives widget
-                  selection (approval, warnings, etc.) via the shared pipeline.
 
     Returns:
         The final context_id if the conversation had one.
@@ -136,14 +132,11 @@ async def run_chat_loop(
                 except Exception as e:
                     console.print(f"[red]Error resuming: {e}[/red]")
             else:
-                console.print("[dim]Tool call denied[/dim]")
+                console.print("[dim]Tool call cancelled[/dim]")
                 console.print()
                 continue
 
-        response = await handle_post_response(
-            result,
-            card_meta,
-        )
+        response = await handle_post_response(result)
 
         if response.action == PostResponseAction.AUTH_REQUIRED:
             console.print("[dim]Fix credentials and try again.[/dim]")

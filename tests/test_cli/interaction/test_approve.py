@@ -37,7 +37,7 @@ class TestRunApprovalWidget:
         assert decisions[0]["tool_call_id"] == "call_1"
         assert decisions[0]["approved"] is True
 
-    async def test_deny_returns_none(self):
+    async def test_deny_returns_decisions_with_reason(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
             mock_instance = MagicMock()
             mock_instance.prompt_async = _async_return(False)
@@ -45,7 +45,10 @@ class TestRunApprovalWidget:
 
             decisions = await run_approval_widget(_sample_deferred_calls())
 
-        assert decisions is None
+        assert decisions is not None
+        assert len(decisions) == 1
+        assert decisions[0]["approved"] is False
+        assert decisions[0]["denial_reason"] == "Denied by user"
 
     async def test_ctrl_c_returns_none(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
@@ -76,7 +79,8 @@ class TestRunApprovalWidget:
 
             decisions = await run_approval_widget(_sample_deferred_calls())
 
-        assert decisions is None
+        assert decisions is not None
+        assert decisions[0]["denial_reason"] == "Denied by user"
 
 
 class TestBuildKeyBindings:

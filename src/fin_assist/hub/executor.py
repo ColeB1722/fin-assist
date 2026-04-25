@@ -158,9 +158,7 @@ class Executor(AgentExecutor):
             async for event in handle:
                 if event.kind == "deferred":
                     has_deferred = True
-                    await self._dispatch_step_event(event, updater, artifact_id)
-                else:
-                    await self._dispatch_step_event(event, updater, artifact_id)
+                await self._dispatch_step_event(event, updater, artifact_id)
 
             if has_deferred:
                 result: RunResult = await handle.result()

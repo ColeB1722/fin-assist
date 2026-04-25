@@ -24,6 +24,8 @@ from fin_assist.cli.client import (
     HubClient,
     StreamEvent,
     _Extraction,
+    _extract_deferred_calls,
+    _is_deferred,
     _is_thinking,
     _part_struct_data,
 )
@@ -720,33 +722,27 @@ class TestExtractThinkingFromArtifacts:
 class TestIsDeferred:
     def test_returns_true_for_deferred_metadata(self):
         part = _make_text_part("args...", metadata={"type": "deferred"})
-        from fin_assist.cli.client import _is_deferred
 
         assert _is_deferred(part) is True
 
     def test_returns_false_for_no_metadata(self):
         part = _make_text_part("hello")
-        from fin_assist.cli.client import _is_deferred
 
         assert _is_deferred(part) is False
 
     def test_returns_false_for_thinking_metadata(self):
         part = _make_text_part("hmm...", metadata={"type": "thinking"})
-        from fin_assist.cli.client import _is_deferred
 
         assert _is_deferred(part) is False
 
     def test_returns_false_for_empty_metadata(self):
         part = _make_text_part("hello", metadata={})
-        from fin_assist.cli.client import _is_deferred
 
         assert _is_deferred(part) is False
 
 
 class TestExtractDeferredCalls:
     def test_extracts_deferred_calls_from_artifacts(self):
-        from fin_assist.cli.client import _extract_deferred_calls
-
         task = _make_task(
             artifacts=[
                 Artifact(
@@ -776,8 +772,6 @@ class TestExtractDeferredCalls:
         assert calls[0]["reason"] == "requires approval"
 
     def test_returns_empty_when_no_deferred_artifacts(self):
-        from fin_assist.cli.client import _extract_deferred_calls
-
         task = _make_task(
             artifacts=[
                 Artifact(
@@ -791,15 +785,11 @@ class TestExtractDeferredCalls:
         assert calls == []
 
     def test_returns_empty_when_no_artifacts(self):
-        from fin_assist.cli.client import _extract_deferred_calls
-
         task = _make_task(artifacts=[])
         calls = _extract_deferred_calls(task)
         assert calls == []
 
     def test_extracts_multiple_deferred_calls(self):
-        from fin_assist.cli.client import _extract_deferred_calls
-
         task = _make_task(
             artifacts=[
                 Artifact(

@@ -54,7 +54,7 @@ async def run_approval_widget(
     Returns:
         A list of decision dicts suitable for ``approval_decisions``
         parameter of ``HubClient.stream_agent()``, or ``None`` if the
-        user cancelled (denies all).
+        user cancelled (e.g. Ctrl-C) without making a selection.
     """
     for call in deferred_calls:
         tool_name = call.get("tool_name", "unknown")
@@ -88,7 +88,7 @@ async def run_approval_widget(
             key_bindings=_build_key_bindings(),
         ).prompt_async()
     except KeyboardInterrupt:
-        approved = False
+        return None
 
     decisions = []
     for call in deferred_calls:
@@ -99,8 +99,5 @@ async def run_approval_widget(
                 "denial_reason": None if approved else "Denied by user",
             }
         )
-
-    if not approved:
-        return None
 
     return decisions

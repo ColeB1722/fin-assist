@@ -25,7 +25,7 @@ from fin_assist.cli.display import (
 )
 
 if TYPE_CHECKING:
-    from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+    from fin_assist.agents.metadata import AgentResult
 
 console = Console()
 
@@ -52,13 +52,11 @@ class PostResponseResult:
 
 async def handle_post_response(
     result: AgentResult,
-    card_meta: AgentCardMeta | None = None,
 ) -> PostResponseResult:
     """Run the post-response pipeline and return what happened.
 
     Args:
         result: The ``AgentResult`` to process.
-        card_meta: Agent capability metadata.  ``None`` is safe.
     """
     if result.auth_required:
         render_auth_required(result.output)

@@ -106,7 +106,7 @@ class TestHandlePostResponseRendering:
 
         assert response.action == PostResponseAction.CONTINUE
 
-    async def test_no_rendering_call_with_card_meta_none(self):
+    async def test_continue_action_for_successful_result(self):
         result = _make_result()
 
         response = await handle_post_response(result)

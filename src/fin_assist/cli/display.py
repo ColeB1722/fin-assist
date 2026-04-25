@@ -145,6 +145,7 @@ def render_agent_output(
     result: AgentResult,
     *,
     show_thinking: bool = False,
+    agent_name: str = "agent",
 ) -> None:
     """Render an agent result using the shared widget pipeline.
 
@@ -165,7 +166,7 @@ def render_agent_output(
     if show_thinking and result.thinking:
         render_thinking(result.thinking)
 
-    render_response(result.output, agent_name="agent")
+    render_response(result.output, agent_name=agent_name)
 
     if result.warnings:
         render_warnings(result.warnings)
