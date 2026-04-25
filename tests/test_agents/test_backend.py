@@ -462,6 +462,80 @@ class TestPydanticAIBackendBuildPydanticAgent:
         agent = backend._build_pydantic_agent()
         assert isinstance(agent, PydanticAgent)
 
+    def test_no_tools_when_registry_is_none(self, mock_config, mock_credentials) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        agent = backend._build_pydantic_agent()
+        assert not agent._function_toolset.tools
+
+    def test_registers_tools_from_registry(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            )
+        )
+        spec = AgentSpec(
+            name="default",
+            agent_config=AgentConfig(
+                description="Default agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                tools=["read_file"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = set(agent._function_toolset.tools.keys())
+        assert "read_file" in tool_names
+
+    def test_only_registers_agent_tools(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="shell_history",
+                description="Shell history",
+                callable=lambda: "history",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="minimal",
+            agent_config=AgentConfig(
+                description="Minimal agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                tools=["read_file"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = set(agent._function_toolset.tools.keys())
+        assert "read_file" in tool_names
+        assert "shell_history" not in tool_names
+
 
 # -- PydanticAIBackend._build_model -------------------------------------------
 

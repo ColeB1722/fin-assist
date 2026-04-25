@@ -199,7 +199,12 @@ class Executor(AgentExecutor):
                         "tool_name": event.tool_name or "",
                     }
                 )
-                result_text = str(event.content) if isinstance(event.content, str) else ""
+                if hasattr(event.content, "content"):
+                    result_text = str(event.content.content)
+                elif isinstance(event.content, str):
+                    result_text = event.content
+                else:
+                    result_text = str(event.content)
                 await updater.add_artifact(
                     parts=[Part(text=result_text, metadata=result_meta)],
                     artifact_id=artifact_id,

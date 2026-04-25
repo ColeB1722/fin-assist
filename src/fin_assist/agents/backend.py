@@ -85,6 +85,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from fin_assist.agents.spec import AgentSpec
+    from fin_assist.agents.tools import ToolRegistry
     from fin_assist.llm.model_registry import ProviderRegistry
 
 
@@ -153,15 +154,6 @@ class _PydanticAIStepHandle:
                     step += 1
 
                 elif Agent.is_call_tools_node(node):
-                    for part in node.model_response.parts:
-                        if isinstance(part, ToolCallPart):
-                            yield StepEvent(
-                                kind="tool_call",
-                                content=part,
-                                step=step,
-                                tool_name=part.tool_name,
-                                metadata={"args": part.args_as_dict()},
-                            )
                     async with node.stream(run.ctx) as tool_stream:
                         async for tool_event in tool_stream:
                             te = _tool_event_to_step_event(tool_event, step)
@@ -240,8 +232,13 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
 
 
 class PydanticAIBackend:
-    def __init__(self, agent_spec: AgentSpec) -> None:
+    def __init__(
+        self,
+        agent_spec: AgentSpec,
+        tool_registry: ToolRegistry | None = None,
+    ) -> None:
         self._spec = agent_spec
+        self._tool_registry = tool_registry
         self._registry: Any = None
 
     def check_credentials(self) -> list[str]:
@@ -324,6 +321,7 @@ class PydanticAIBackend:
     def _build_pydantic_agent(self) -> Agent:
         from pydantic_ai import Agent
         from pydantic_ai.capabilities import Thinking
+        from pydantic_ai.tools import Tool
 
         thinking_effort = self._spec.thinking
         capabilities = (
@@ -331,11 +329,21 @@ class PydanticAIBackend:
             if thinking_effort and thinking_effort != "off"
             else None
         )
-        return Agent(
-            output_type=self._spec.output_type,
-            instructions=self._spec.system_prompt,
-            capabilities=capabilities,
-        )
+        pydantic_tools: list[Tool] = []
+        if self._tool_registry:
+            tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
+            for td in tool_defs:
+                pydantic_tools.append(
+                    Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
+                )
+        kwargs: dict[str, Any] = {
+            "output_type": self._spec.output_type,
+            "instructions": self._spec.system_prompt,
+            "capabilities": capabilities,
+        }
+        if pydantic_tools:
+            kwargs["tools"] = pydantic_tools
+        return Agent(**kwargs)
 
     def _build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel

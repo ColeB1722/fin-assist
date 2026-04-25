@@ -17,6 +17,8 @@ from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fin_assist.config.schema import ContextSettings
+
 from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
     console,
@@ -36,6 +38,8 @@ from fin_assist.cli.server import (
     stop_server,
 )
 from fin_assist.config.loader import load_config
+from fin_assist.context.files import FileFinder
+from fin_assist.context.git import GitContext
 from fin_assist.hub.app import create_hub_app
 from fin_assist.hub.logging import configure_logging
 from fin_assist.paths import SESSIONS_DIR
@@ -65,6 +69,50 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
         "context_id": context_id,
     }
     path.write_text(json.dumps(session, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Context injection helpers
+# ---------------------------------------------------------------------------
+
+
+def _inject_context(
+    prompt: str,
+    *,
+    files: list[str] | None = None,
+    git_diff: bool = False,
+    context_settings: ContextSettings | None = None,
+) -> str:
+    """Prepend user-driven context to a prompt string.
+
+    Reads files via ``FileFinder`` and/or git diff via ``GitContext``,
+    then formats them above the user's prompt so the model sees them
+    before the request.
+    """
+    context_sections: list[str] = []
+
+    if files:
+        finder = FileFinder(settings=context_settings)
+        for path in files:
+            item = finder.get_item(path)
+            if item.status == "available":
+                context_sections.append(f"[FILE: {path}]\n{item.content}")
+            else:
+                context_sections.append(f"[FILE: {path}] Error: {item.error_reason}")
+
+    if git_diff:
+        git_ctx = GitContext(settings=context_settings)
+        item = git_ctx.get_item("git_diff:diff")
+        if item.status == "available":
+            context_sections.append(f"[GIT DIFF]\n{item.content}")
+        else:
+            context_sections.append(f"[GIT DIFF] Error: {item.error_reason}")
+
+    if not context_sections:
+        return prompt
+
+    context_block = "\n\n".join(context_sections)
+    return f"Context:\n{context_block}\n\nUser request:\n{prompt}"
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +242,9 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 return 1
 
             prompt = " ".join(args.prompt)
+            prompt = _inject_context(
+                prompt, files=args.files, git_diff=args.git_diff, context_settings=config.context
+            )
             result = await render_stream(
                 client.stream_agent(args.agent, prompt),
                 show_thinking=args.show_thinking,
@@ -301,6 +352,19 @@ def main(argv: list[str] | None = None) -> int:
         dest="show_thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the output.",
+    )
+    do_parser.add_argument(
+        "--file",
+        dest="files",
+        action="append",
+        default=[],
+        help="Inject file contents as context (may be specified multiple times).",
+    )
+    do_parser.add_argument(
+        "--git-diff",
+        dest="git_diff",
+        action="store_true",
+        help="Inject git diff as context.",
     )
 
     talk_parser = subparsers.add_parser(

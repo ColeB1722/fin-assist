@@ -2,12 +2,12 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-24)**: Unified design sketch complete. Key open question #1 resolved: event-driven StepHandle with Executor verification (defense in depth). Ready for Phase A implementation. 489 tests passing, CI green. README diagrams canonical; architecture.md prose reconciled with code. Backend extraction stable.
+**Current state (2026-04-24)**: Phase A + Phase B complete. 577 tests passing, CI green. Tool calling and context dual-path are wired. Phase C (HITL approval) is next.
 
 **Three known structural gaps** (down from four — HITL folded into the unified sketch):
 
-1. **Executor rework + tool calling** — Sketch complete, Q1 resolved. Phase A (foundation) next.
-2. **ContextProviders → dual path** — Design resolved (user-driven `@`/flags + model-driven tool calls). Implementation depends on Phase B.
+1. **Executor rework + tool calling** — Phase A + Phase B complete. Tools registered, context-as-tools working, CLI flags wired.
+2. **ContextProviders → dual path** — **Resolved in Phase B.** Model-driven path (tool calls) and user-driven path (`--file`/`--git-diff` CLI flags) both implemented.
 3. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
 
 **Resolved by the unified sketch:**
@@ -153,7 +153,7 @@ This principle drives every design decision below: tools, approval, and step eve
 
 #### Architecture: Platform Layer / Backend Layer
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │  Platform Layer (fin-assist owns these — framework-agnostic)    │
 │                                                                 │
@@ -200,13 +200,13 @@ The key boundary: **platform types never import from backends.** `StepEvent`, `T
 
 **Current state (single-pass):**
 
-```
+```text
 load_history → convert_messages → run_stream → drain_deltas → save_history → complete
 ```
 
 **Proposed state (step-driven loop):**
 
-```
+```text
 load_history → convert_messages → [STEP LOOP] → save_history → complete
 
 STEP LOOP:
@@ -644,17 +644,20 @@ Write up findings as a comparison matrix. From that, identify the minimum gate p
 
 **Recommended next action.** Research spike: survey existing tools in this space (SWE-agent, OpenHands, Aider's test runner, Codex's eval harness). Identify which REPL/session management pattern they use and what works. Then sketch the tool interface (`REPLSession`, `BashRunner`, etc.) and test plan artifact schema.
 
-**Status: Classes built and unit-tested; integration deferred.**
+**Status: Phase B integrated — model-driven path complete, user-driven path partially complete.**
 
 **What exists.** `FileFinder`, `GitContext`, `ShellHistory`, `Environment` in `src/fin_assist/context/`. Each implements the `ContextProvider` protocol (`base.py`). Full unit test coverage under `tests/test_context/`. Supporting types: `ContextItem`, `ContextType` enum, `ItemStatus` lifecycle.
 
-**What doesn't exist.**
+**What's wired (Phase B):**
+- Model-driven path: `read_file`, `git_diff`, `git_log`, `shell_history` registered as tools in `ToolRegistry` via `create_default_registry()`. Default agent config includes all four. `PydanticAIBackend` resolves agent tools and registers them as pydantic-ai `Tool` objects.
+- User-driven path (partial): `--file` and `--git-diff` CLI flags on `do` command inject context into the prompt via `_inject_context()`. `AgentCardMeta.supported_context_types` derived from agent's tool list.
+- `AgentSpec.supports_context()` now driven by agent's `tools` config via `_CONTEXT_TYPE_MAP`.
 
-- No caller in `src/` instantiates any provider.
-- `AgentSpec.supports_context()` is a stub that returns based on a hardcoded frozenset, not agent config.
-- `llm/prompts.py`'s `build_user_message`/`format_context` helpers accept `ContextItem` but nothing calls them from the request path.
-- CLI has no `--file`, `--git-diff`, or `--git-log` flags on `do`.
-- `FinPrompt` has no `@`-triggered completion.
+**What's still not wired:**
+- `--git-log` CLI flag (low priority — model can call the `git_log` tool).
+- `Environment` context provider not registered as a tool (intentional — env vars are sensitive).
+- `@`-triggered completion in `FinPrompt` for talk mode.
+- `llm/prompts.py`'s `build_user_message`/`format_context` helpers still not called from the request path (CLI injection bypasses them).
 
 **Why parked, not deleted.** The classes encode design decisions (context taxonomy, item lifecycle, provider interface) that the CLI and Executor will consume when Steps 7-8 land. Rewriting them when needed is strictly more work than keeping them. The alternative — delete now, recreate later — would also lose the tests.
 
@@ -1950,12 +1953,29 @@ Total: 440 tests, all passing
 ### Recommended sequence
 
 1. **Manual verification baseline.** Run the Pre-Refactor Smoke Set (`docs/manual-testing.md`): Chunk A (all), B1/B3/B4/B6, C1/C5/C10/C11/C13, F1/F3. Establishes a known-good baseline before the refactor.
-2. **Phase A: Foundation.** ContextStore version byte + `StepEvent` + `StepHandle` + `_PydanticAIStepHandle` + Executor rewrite (event-driven with approval verification) + all tests updated. This is the core refactor — the loop becomes step-driven.
-3. **Phase B: Tool Calling.** `ToolRegistry` + `ToolDefinition` + `tools` config field + context-as-tools (`read_file`, `git_diff`, `git_log`, `shell_history`) + CLI `--file` / `--git-diff` flags (user-driven). End-to-end test: default agent reads a file via tool call.
+2. ~~**Phase A: Foundation.**~~ COMPLETE. ContextStore version byte + `StepEvent` + `StepHandle` + `_PydanticAIStepHandle` + Executor rewrite (event-driven with approval verification) + all tests updated. 540 tests passing, CI green, CodeRabbit review findings fixed.
+3. ~~**Phase B: Tool Calling.**~~ COMPLETE. `ToolRegistry` + `ToolDefinition` + `tools` config field + context-as-tools (`read_file`, `git_diff`, `git_log`, `shell_history`) + CLI `--file` / `--git-diff` flags (user-driven) + `AgentCardMeta.supported_context_types`. 577 tests passing, CI green.
 4. **Phase C: HITL / Approval.** `ApprovalPolicy` + shell command tool with `requires_approval=True` + deferred event handling + client approval flow. Resolve open questions #2-4 (A2A pause state, resume protocol, deferred semantics).
-5. **Phase D: Observability.** `[observability]` config + Arize Phoenix wiring + `Agent.instrument_all()` + Executor step spans. Can proceed in parallel with B/C.
+5. **Phase D: Observability.** `[observability]` config + Arize Phoenix wiring + `Agent.instrument_all()` + Executor step spans. Can proceed in parallel with C.
 
 Phases B–D can overlap once Phase A lands. The recommended vertical slice for a first implementation session is **Phase A + a minimal Phase B** (one tool: `read_file`) — this proves the loop works end-to-end with tool calling.
+
+**Phase B accomplished (2026-04-24).**
+
+- `ToolDefinition` dataclass in `agents/tools.py`: platform-level, framework-agnostic. Fields: `name`, `description`, `callable`, `parameters_schema`, `approval_policy` (reserved for Phase C).
+- `ToolRegistry` class in `agents/tools.py`: global registry with `register()`, `get()`, `list_tools()`, `get_for_agent()`. Duplicate registration raises `ValueError`. `get_for_agent()` silently skips unknown tool names.
+- `create_default_registry()` factory: pre-loads `read_file`, `git_diff`, `git_log`, `shell_history` tools wrapping existing `ContextProvider` classes as async callables.
+- `AgentConfig.tools` field: list of tool name strings, defaulting to `["read_file", "git_diff", "git_log", "shell_history"]` for default agent, `[]` for shell agent.
+- `AgentSpec.tools` property: delegates to `AgentConfig.tools`.
+- `AgentSpec.supports_context()` now derived from tool list via `_CONTEXT_TYPE_MAP` instead of hardcoded frozenset.
+- `AgentSpec.agent_card_metadata` populates `supported_context_types` from tool list.
+- `AgentCardMeta.supported_context_types` field: list of context type strings derived from agent tools.
+- `PydanticAIBackend` accepts optional `tool_registry` in `__init__`. `_build_pydantic_agent()` resolves agent's tools via `tool_registry.get_for_agent(spec.tools)` and registers them as pydantic-ai `Tool` objects with explicit names and descriptions.
+- `AgentFactory` accepts optional `tool_registry`, defaults to `create_default_registry()`.
+- CLI `--file` and `--git-diff` flags added to `do` command. `_inject_context()` helper prepends context from `FileFinder` and/or `GitContext` above the user's prompt.
+- New test files: `tests/test_agents/test_tools.py` (ToolRegistry/ToolDefinition), `tests/test_cli/test_context_injection.py` (_inject_context).
+- Updated tests: `test_spec.py` (tools property, supports_context from tools, card metadata context types), `test_backend.py` (tool registration in _build_pydantic_agent).
+- Full CI green: 577 tests passing, lint/typecheck/fmt clean.
 
 ### Deferred / open as external tickets
 

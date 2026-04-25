@@ -64,9 +64,9 @@ class TestVersionByte:
     def test_wrap_payload_prepends_version(self) -> None:
         payload = b'{"data": true}'
         wrapped = ContextStore.wrap_payload(payload)
-        version = _VERSION_PACK.unpack(wrapped[:1])[0]
+        version = _VERSION_PACK.unpack(wrapped[: _VERSION_PACK.size])[0]
         assert version == _CONTEXT_STORE_VERSION
-        assert wrapped[1:] == payload
+        assert wrapped[_VERSION_PACK.size :] == payload
 
     def test_unwrap_payload_strips_version(self) -> None:
         payload = b"hello"

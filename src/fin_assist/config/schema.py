@@ -75,6 +75,7 @@ class AgentConfig(BaseModel):
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     requires_approval: bool = False
     tags: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
 
 
 _DEFAULT_AGENTS: dict[str, AgentConfig] = {
@@ -87,6 +88,7 @@ _DEFAULT_AGENTS: dict[str, AgentConfig] = {
         output_type="text",
         thinking="medium",
         serving_modes=["do", "talk"],
+        tools=["read_file", "git_diff", "git_log", "shell_history"],
     ),
     "shell": AgentConfig(
         description=(

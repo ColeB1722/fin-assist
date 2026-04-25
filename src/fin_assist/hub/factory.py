@@ -35,6 +35,7 @@ from fastapi import FastAPI
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.backend import PydanticAIBackend
+from fin_assist.agents.tools import ToolRegistry, create_default_registry
 from fin_assist.hub.executor import Executor
 
 if TYPE_CHECKING:
@@ -48,10 +49,17 @@ class AgentFactory:
 
     Args:
         context_store: Shared ``ContextStore`` instance for conversation history.
+        tool_registry: Optional ``ToolRegistry`` for tool definitions.  When
+            ``None``, a default registry with built-in context tools is created.
     """
 
-    def __init__(self, context_store: ContextStore) -> None:
+    def __init__(
+        self,
+        context_store: ContextStore,
+        tool_registry: ToolRegistry | None = None,
+    ) -> None:
         self._context_store = context_store
+        self._tool_registry = tool_registry or create_default_registry()
 
     def create_a2a_app(
         self,
@@ -111,7 +119,7 @@ class AgentFactory:
             ],
         )
 
-        backend = backend or PydanticAIBackend(agent_spec=agent)
+        backend = backend or PydanticAIBackend(agent_spec=agent, tool_registry=self._tool_registry)
         executor = Executor(
             backend=backend,
             context_store=self._context_store,

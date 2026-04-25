@@ -1,26 +1,22 @@
 """Context providers — files, git, shell history, environment.
 
-Status (2026-04-22): **Parked, awaiting Executor rework.**
+Status (2026-04-24): **Partially integrated.**
 
-These providers are fully implemented and unit-tested in isolation, but
-they are not wired into the request path. Nothing in ``src/fin_assist/``
-instantiates them; only tests import them directly.
+Model-driven path (tool calls) is wired: ``read_file``, ``git_diff``,
+``git_log``, ``shell_history`` are registered in the ``ToolRegistry``
+via ``create_default_registry()`` in ``agents/tools.py``.  The default
+agent config includes all four tools.
 
-Integration is deliberately deferred until after the Executor is
-refactored from one-shot to a multi-step loop (see ``handoff.md`` →
-"Executor Loop Rework"). At that point, context injection for ``do``
-(``--file``/``--git-diff``/``--git-log`` CLI flags) and for ``talk``
-(``@``-triggered completion in ``FinPrompt``) — Steps 7 and 8 of the
-config-driven-redesign plan — become the natural first consumers of
-this subsystem.
+User-driven path (CLI flags) is partially wired: ``--file`` and
+``--git-diff`` flags on the ``do`` command inject context into the
+prompt via ``_inject_context()`` in ``cli/main.py``.
 
-**Do not delete this code.** It is reserved infrastructure, not dead
-code. The classes here encode design decisions (ContextType taxonomy,
-ContextItem shape, ItemStatus lifecycle) that the CLI and Executor
-will consume when integration lands.
-
-See ``handoff.md`` for the current parked-state entry and the
-integration plan.
+Still not wired:
+- ``--git-log`` CLI flag (low priority — model can call the tool).
+- ``Environment`` provider not exposed as a tool (intentional — sensitive).
+- ``@``-triggered completion in ``FinPrompt`` for talk mode.
+- ``build_user_message``/``format_context`` helpers in ``llm/prompts.py``
+  not called from the request path (CLI injection bypasses them).
 """
 
 from __future__ import annotations

@@ -11,6 +11,7 @@ from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS, OutputTypeN
 from fin_assist.agents.results import CommandResult
 from fin_assist.agents.spec import AgentSpec
 from fin_assist.agents.step import StepEvent, StepHandle
+from fin_assist.agents.tools import ToolDefinition, ToolRegistry, create_default_registry
 
 __all__ = [
     "AgentBackend",
@@ -28,4 +29,7 @@ __all__ = [
     "StepEvent",
     "StepHandle",
     "SYSTEM_PROMPTS",
+    "ToolDefinition",
+    "ToolRegistry",
+    "create_default_registry",
 ]
