@@ -240,6 +240,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
 async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
+    from fin_assist.cli.interaction.prompt import FinPrompt
     from fin_assist.cli.interaction.response import handle_post_response
     from fin_assist.cli.interaction.streaming import render_stream
 
@@ -256,7 +257,27 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 )
                 return 1
 
-            prompt = " ".join(args.prompt)
+            prompt = args.prompt
+
+            if prompt is None:
+                fp = FinPrompt(agents=[a.name for a in agents])
+                try:
+                    prompt = (await fp.ask("> ")).strip()
+                except (KeyboardInterrupt, EOFError):
+                    render_info("Cancelled")
+                    return 0
+                if not prompt:
+                    return 0
+            elif args.edit:
+                fp = FinPrompt(agents=[a.name for a in agents])
+                try:
+                    prompt = (await fp.ask("> ", default=prompt)).strip()
+                except (KeyboardInterrupt, EOFError):
+                    render_info("Cancelled")
+                    return 0
+                if not prompt:
+                    return 0
+
             prompt = _inject_context(
                 prompt, files=args.files, git_diff=args.git_diff, context_settings=config.context
             )
@@ -321,13 +342,14 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 return 1
 
             fp = FinPrompt(agents=[a.name for a in agents])
-            initial_message = " ".join(args.message) if args.message else None
+            message = args.message
             final_context_id = await run_chat_loop(
                 client.stream_agent,
                 args.agent,
                 context_id,
                 fp,
-                initial_message=initial_message,
+                initial_message=message if not args.edit else None,
+                edit_message=message if args.edit else None,
                 show_thinking=args.show_thinking,
             )
     except Exception:
@@ -377,12 +399,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a one-shot query to an agent (no memory).",
     )
     do_parser.add_argument(
-        "agent",
-        nargs="?",
+        "--agent",
+        dest="agent",
         default=None,
         help="Name of the agent to use (default: from config or 'default').",
     )
-    do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
+    do_parser.add_argument("prompt", nargs="?", help="The prompt to send.")
+    do_parser.add_argument(
+        "--edit",
+        dest="edit",
+        action="store_true",
+        help="Open input panel pre-filled with prompt for editing before sending.",
+    )
     do_parser.add_argument(
         "--show-thinking",
         dest="show_thinking",
@@ -408,15 +436,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Start a multi-turn chat session with an agent.",
     )
     talk_parser.add_argument(
-        "agent",
-        nargs="?",
+        "--agent",
+        dest="agent",
         default=None,
         help="Name of the agent to use (default: from config or 'default').",
     )
     talk_parser.add_argument(
         "message",
-        nargs="*",
+        nargs="?",
+        default=None,
         help="Optional initial message to send as the first turn.",
+    )
+    talk_parser.add_argument(
+        "--edit",
+        dest="edit",
+        action="store_true",
+        help="Open input panel pre-filled with message for editing before sending.",
     )
     talk_parser.add_argument(
         "--list",
@@ -481,7 +516,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 names = ", ".join(config.agents)
                 render_error(
-                    "No default agent set. Specify an agent name or set "
+                    "No default agent set. Specify --agent or set "
                     "[general] default_agent in config.toml.\n"
                     f"Available agents: {names}"
                 )

@@ -98,7 +98,33 @@ class TestFinPromptAsk:
             result = await fp.ask("> ")
 
         assert result == "hello world"
-        mock_session.prompt_async.assert_called_once_with("> ")
+        mock_session.prompt_async.assert_called_once_with("> ", default="")
+
+    async def test_ask_passes_default_to_prompt_async(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        fp = FinPrompt()
+        mock_session = MagicMock()
+        mock_session.prompt_async = AsyncMock(return_value="edited prompt")
+
+        with patch("fin_assist.cli.interaction.prompt.PromptSession", return_value=mock_session):
+            result = await fp.ask("> ", default="original prompt")
+
+        assert result == "edited prompt"
+        mock_session.prompt_async.assert_called_once_with("> ", default="original prompt")
+
+    async def test_ask_default_none_passes_empty_string(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        fp = FinPrompt()
+        mock_session = MagicMock()
+        mock_session.prompt_async = AsyncMock(return_value="typed input")
+
+        with patch("fin_assist.cli.interaction.prompt.PromptSession", return_value=mock_session):
+            result = await fp.ask("> ", default=None)
+
+        assert result == "typed input"
+        mock_session.prompt_async.assert_called_once_with("> ", default="")
 
     async def test_ask_propagates_keyboard_interrupt(self):
         from fin_assist.cli.interaction.prompt import FinPrompt

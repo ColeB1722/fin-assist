@@ -248,6 +248,48 @@ class TestRunChatLoop:
 
         stream_fn.assert_called_once_with("default", "hello", None)
 
+    async def test_edit_message_opens_prefilled_input(self):
+        result = _make_result()
+        stream_fn = _make_stream_fn(result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["edited message", "/exit"])
+
+        await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original message")
+
+        mock_fp.ask.assert_any_call("> ", default="original message")
+        stream_fn.assert_called_once_with("default", "edited message", None)
+
+    async def test_edit_message_keyboard_interrupt_exits(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+
+        ctx = await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original")
+
+        stream_fn.assert_not_called()
+
+    async def test_edit_message_empty_input_skips(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["   ", "/exit"])
+
+        ctx = await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original")
+
+        stream_fn.assert_not_called()
+
+    async def test_edit_message_takes_precedence_over_initial_message(self):
+        result = _make_result()
+        stream_fn = _make_stream_fn(result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["edited", "/exit"])
+
+        await run_chat_loop(
+            stream_fn, "default", prompt=mock_fp, initial_message="direct", edit_message="edit-me"
+        )
+
+        mock_fp.ask.assert_any_call("> ", default="edit-me")
+        stream_fn.assert_called_once_with("default", "edited", None)
+
 
 class TestChatLoopThinking:
     async def test_thinking_not_shown_by_default(self):

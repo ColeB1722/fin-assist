@@ -19,24 +19,91 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
-## Next Session (2026-04-25)
+## Next Session (2026-04-26)
 
-Manual test run surfaced a silent-exit bug in `fin do shell "…"`: CLI exits 0 with no output. Root cause is a client-side artifact-merge bug compounded by thin test coverage. A separate design session revised the plan:
+**Feature: `fin do` input panel + `--edit` flag + aggregation removal.** See design sketch below for full details.
 
-**Core decision: remove built-in agents entirely.** The platform ships with zero hardcoded agents. All agents are user-defined via `config.toml`. This kills the "shell migration" loose end (sketch #4 from previous plan — nothing to migrate) and forces the platform to be pure infrastructure.
-
-**Four sketches, in dependency order:**
-
-1. **Local Dev Paths** — quickest win; unblocks ergonomics.
-2. **Remove Built-in Agents** — empty `_DEFAULT_AGENTS`, TOML merge fix, `test` agent in local config for manual platform testing, `[general] default_agent` config field, helpful error when no agents exist.
-3. **Client Artifact-Merge Fix** — the actual silent-exit bug. Regression test uses whatever agent is in local config.
-4. **Context UX** — **deferred to a future session.** Dual-path context (user-driven vs model-driven) has known gaps but both paths work. Document gaps; fix `ContextSettings` bug in tool callables as a one-line fix during sketch #2. Full context UX redesign is its own sketch later.
-
-Each is its own commit (or PR).
+**After that:** `@` completion in `FinPrompt` (both `do` and `talk`), which will replace `--file`/`--git-diff` CLI flags. See "Context @ Completion" sketch below.
 
 ---
 
 ## Design Sketches
+
+### `fin do` Input Panel + `--edit` + Aggregation Removal (2026-04-26) — Design Sketch
+
+**Status: Design sketch, not started.**
+
+**Problem.** `fin do` requires a prompt on the CLI — there's no interactive input path. `fin talk` has `FinPrompt` (prompt_toolkit input panel with `/` command completion and history), but `fin do` only accepts raw CLI args. This means:
+
+1. No way to compose a prompt interactively for one-shot execution.
+2. Context injection requires knowing `--file` and `--git-diff` flags exist — not discoverable.
+3. No `--edit` path to tweak a prompt before sending (e.g., `fin do --edit "list large files"` → adjust in input → send).
+4. Multi-word aggregation (`nargs="+"` with `" ".join()`) creates ambiguity with the optional `agent` positional and is unnecessary once an input panel exists.
+
+**Goal.** Make `fin do` and `fin talk` consistent:
+
+| Invocation | `do` behavior | `talk` behavior |
+|---|---|---|
+| `fin do/talk` | Open blank input panel | Open blank input panel |
+| `fin do/talk "prompt"` | Execute/send immediately (default agent) | Send immediately, then loop |
+| `fin do/talk --agent shell "prompt"` | Execute/send immediately (explicit agent) | Send immediately, then loop |
+| `fin do/talk --edit "prompt"` | Open input panel pre-filled with prompt | Open input panel pre-filled with prompt |
+
+**Design.**
+
+1. **Argparse** — `do.prompt`: `nargs="+"` → `nargs="?"` (single optional string). `talk.message`: `nargs="*"` → `nargs="?"`. Add `--edit` flag to both. `agent` changed from positional to `--agent` flag (eliminates ambiguity when prompt is the only positional). No more `" ".join()`.
+
+2. **`_do_command`** — three branches:
+   - No prompt → `FinPrompt.ask("> ")`, then execute + render + exit.
+   - `--edit` → `FinPrompt.ask("> ", default=prompt)`, then execute + render + exit.
+   - Prompt only → current behavior (execute immediately).
+   - All three converge on existing `render_stream()` → deferred approval → `handle_post_response()` pipeline.
+
+3. **`_talk_command`** — `--edit` routes message to `run_chat_loop(edit_message=prompt)` instead of `initial_message`. First loop iteration opens `FinPrompt` pre-filled.
+
+4. **`FinPrompt.ask()`** — add `default: str | None = None` parameter, passed to `prompt_async()` (native prompt_toolkit support).
+
+5. **`run_chat_loop`** — add `edit_message: str | None = None` parameter. When set, first iteration calls `fp.ask("> ", default=edit_message)` instead of using `pending_message`.
+
+6. **Slash commands for `do`** — `/help` only for now. `/exit` and `/sessions` don't apply to one-shot. Context injection waits for `@` completion (separate feature).
+
+7. **Keep `--file`/`--git-diff`** as scripting fast paths until `@` completion lands.
+
+**Tests to add:**
+- `ask()` with `default` pre-fill, `default=None` unchanged behavior
+- `run_chat_loop` with `edit_message` routing
+- `fin do` no prompt → input panel → execute
+- `fin do --edit "prompt"` → pre-filled panel → execute
+- Remove tests relying on `args.prompt = ["word1", "word2"]` aggregation
+
+**Not in scope:**
+- `@` completion (see separate sketch below)
+- Removing `--file`/`--git-diff` flags (deferred until `@` lands)
+- Slash commands beyond `/help` for `do` mode
+
+---
+
+### Context `@` Completion (2026-04-26) — Future Sketch
+
+**Status: Deferred. Blocked on nothing — can start after input panel work lands.**
+
+**Problem.** Context injection today uses CLI flags (`--file`, `--git-diff`) that are not discoverable and can't be used from the input panel. The planned `@`-completion feature (architecture Step 8) would let users type `@file:path.py` or `@git:diff` inline in the `FinPrompt` input, with fuzzy completion triggered by `@`. This would work in both `do` and `talk` modes.
+
+**What exists.** `ContextProvider` classes (`FileFinder`, `GitContext`, `ShellHistory`, `Environment`) are implemented in `src/fin_assist/context/` with a `search()` method on the base protocol. They're just not wired into `FinPrompt`.
+
+**What needs to happen.**
+
+1. **`@` completer in `FinPrompt`** — new `AtCompleter` class (like `SlashCompleter`) that triggers on `@` prefix, calls `ContextProvider.search()` for fuzzy matching against available context types and items.
+
+2. **Inline context injection** — when the user submits input containing `@type:ref`, resolve each reference via the matching `ContextProvider.get_item()` and inject the content inline (same format as `_inject_context()` produces today: `[FILE: path]\ncontent`).
+
+3. **Deprecate `--file` / `--git-diff` flags** — once `@` works in both the input panel and as part of a quoted prompt string (e.g., `fin do "@file:main.py explain this"`), the CLI flags become redundant. Add deprecation warning, then remove in a later release.
+
+4. **`/` vs `@` convention** — slash commands are for **actions** (`/help`, `/exit`, `/sessions`). `@` is for **content injection** (`@file:path.py`, `@git:diff`). No overlap, no duplication.
+
+**Why defer.** The input panel + `--edit` work is independently valuable and self-contained. `@` completion touches `FinPrompt`, `ContextProvider`, `_inject_context()`, and both command handlers — better as a separate PR with its own test surface. The `--file`/`--git-diff` flags remain as the scripting fast path until `@` is ready.
+
+---
 
 ### Local Dev Paths (2026-04-25) — Design Sketch
 
@@ -1319,7 +1386,7 @@ Write up findings as a comparison matrix. From that, identify the minimum gate p
 **What's still not wired:**
 - `--git-log` CLI flag (low priority — model can call the `git_log` tool).
 - `Environment` context provider not registered as a tool (intentional — env vars are sensitive).
-- `@`-triggered completion in `FinPrompt` for talk mode.
+- `@`-triggered completion in `FinPrompt` for both `do` and `talk` modes (see "Context @ Completion" sketch in Design Sketches section).
 - `llm/prompts.py`'s `build_user_message`/`format_context` helpers still not called from the request path (CLI injection bypasses them).
 
 **Why parked, not deleted.** The classes encode design decisions (context taxonomy, item lifecycle, provider interface) that the CLI and Executor will consume when Steps 7-8 land. Rewriting them when needed is strictly more work than keeping them. The alternative — delete now, recreate later — would also lose the tests.

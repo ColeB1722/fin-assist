@@ -40,6 +40,7 @@ async def run_chat_loop(
     prompt: FinPrompt | None = None,
     *,
     initial_message: str | None = None,
+    edit_message: str | None = None,
     show_thinking: bool = False,
 ) -> str | None:
     """Run an interactive chat loop.
@@ -52,6 +53,8 @@ async def run_chat_loop(
         prompt: Optional FinPrompt instance for input (created if not provided).
         initial_message: Optional message to send as the first turn before
                         entering the interactive prompt loop.
+        edit_message: Optional message to pre-fill the input panel with on the
+                     first turn (instead of sending immediately).
         show_thinking: Whether to render agent thinking content.
 
     Returns:
@@ -63,10 +66,23 @@ async def run_chat_loop(
     console.print("[dim]Type /exit to end the conversation[/dim]\n")
 
     fp = prompt or FinPrompt()
-    pending_message = initial_message
+    if edit_message is not None:
+        pending_message = None
+        pending_edit = edit_message
+    else:
+        pending_message = initial_message
+        pending_edit = None
 
     while True:
-        if pending_message is not None:
+        if pending_edit is not None:
+            edit_default = pending_edit
+            pending_edit = None
+            try:
+                user_input = (await fp.ask("> ", default=edit_default)).strip()
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[dim]Exiting chat[/dim]")
+                break
+        elif pending_message is not None:
             user_input = pending_message
             pending_message = None
             console.print(f"> {user_input}")

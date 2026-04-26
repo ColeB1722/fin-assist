@@ -80,11 +80,12 @@ class FinPrompt:
             style=Style.from_dict({"": "#ansibrightgreen"}),
         )
 
-    async def ask(self, prompt_text: str) -> str:
+    async def ask(self, prompt_text: str, *, default: str | None = None) -> str:
         """Prompt for input with completion and history.
 
         Args:
             prompt_text: The prompt text to display.
+            default: Optional default text to pre-fill the input with.
 
         Returns:
             The user's input string (may be empty).
@@ -94,4 +95,4 @@ class FinPrompt:
             EOFError: When the user presses Ctrl+D.
         """
         session = self._build_session()
-        return await session.prompt_async(prompt_text)
+        return await session.prompt_async(prompt_text, default=default or "")
