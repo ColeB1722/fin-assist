@@ -285,7 +285,7 @@ Known gaps in automated test coverage that should be addressed before or alongsi
 
 ## Running Order
 
-```
+```text
 just test  ←  635 tests, 91% coverage
                Covers: types, config, context (mocked), agent spec, context store,
                        factory, credentials, display, prompt, response,

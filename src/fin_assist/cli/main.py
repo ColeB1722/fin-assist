@@ -273,6 +273,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             response = await handle_post_response(result)
             return response.exit_code
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
 
@@ -315,6 +316,7 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 show_thinking=args.show_thinking,
             )
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     if final_context_id and not args.resume:
@@ -331,6 +333,7 @@ async def _agents_command(args: argparse.Namespace, config, config_path: Path | 
         async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     render_agents_list(agents)

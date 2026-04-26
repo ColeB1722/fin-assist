@@ -195,6 +195,11 @@ def _spawn_serve(
     if config_path is not None:
         env["FIN_CONFIG_PATH"] = str(config_path.resolve())
 
+    # Ensure the log's parent directory exists. On a fresh checkout (or after
+    # ``rm -rf $FIN_DATA_DIR``) the directory won't exist yet; without this
+    # the ``open()`` below raises ``FileNotFoundError``.
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+
     with open(log_path, "a", buffering=1) as stderr_file:  # noqa: SIM115
         proc = subprocess.Popen(
             args,
@@ -273,7 +278,15 @@ async def ensure_server_running(
 
     console.print(f"[dim]Starting fin-assist hub at {base_url}...[/dim]")
 
-    proc = _spawn_serve(config, pid_file, config_path=config_path)
+    try:
+        proc = _spawn_serve(config, pid_file, config_path=config_path)
+    except OSError as e:
+        # Spawning the subprocess failed before the server could run —
+        # e.g. the log directory couldn't be created, the executable is
+        # missing, or we hit a permission error.  Surface this as a
+        # ServerStartupError so ``_hub_client`` renders it instead of
+        # leaking a raw traceback.
+        raise ServerStartupError(f"Failed to spawn hub process: {e}") from e
 
     try:
         await _wait_for_health(base_url, timeout=timeout)
