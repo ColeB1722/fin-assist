@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
@@ -63,6 +64,22 @@ if TYPE_CHECKING:
     from fin_assist.hub.context_store import ContextStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ExecutionContext:
+    """Mutable state carried between Executor helper methods for one task.
+
+    Avoids a long parameter list on each helper.  The ``task_id`` and
+    ``raw_context_id`` are captured once from the request and used for
+    logging and context-store persistence throughout the task lifecycle.
+    """
+
+    task_id: str
+    raw_context_id: str | None
+    updater: TaskUpdater
+    artifact_id: str
+    created_artifacts: set[str] = field(default_factory=set)
 
 
 class Executor(AgentExecutor):
@@ -110,9 +127,61 @@ class Executor(AgentExecutor):
         self._context_store = context_store
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        """Run one task through its lifecycle.
+
+        Sequence:
+
+        1. ``_setup_task`` — create updater, enqueue initial task, start work.
+           Short-circuits to ``requires_auth`` if credentials missing.
+        2. ``_load_history`` — read prior conversation bytes from the
+           ``ContextStore`` and deserialize via the backend.
+        3. ``_extract_approval_results`` — detect a resume-after-approval
+           request so we can pass deferred results back to the backend.
+        4. ``_start_run`` → ``_consume_events`` → ``handle.result()`` —
+           drive the ``StepHandle`` event loop, dispatch each ``StepEvent``,
+           and surface pause-for-approval via a sentinel flag.  Failures
+           here set the task to ``failed``.
+        5. Either ``_pause_for_approval`` (if any ``deferred`` event was
+           seen) or ``_finalize`` (emit last-chunk artifact, save history,
+           attach structured output, complete).
+        """
+        ctx = await self._setup_task(context, event_queue)
+        if ctx is None:
+            return
+        try:
+            message_history = await self._load_history(ctx)
+            deferred_results = self._extract_approval_results(context.message)
+            if deferred_results is not None:
+                logger.info("resuming from approval task_id=%s", ctx.task_id)
+
+            handle = self._start_run(context, message_history, deferred_results)
+            has_deferred = await self._consume_events(ctx, handle)
+            result: RunResult = await handle.result()
+        except Exception:
+            logger.exception("execute failed task_id=%s", ctx.task_id)
+            await ctx.updater.failed()
+            raise
+
+        if has_deferred:
+            await self._pause_for_approval(ctx, result)
+            return
+
+        await self._finalize(ctx, result)
+
+    async def _setup_task(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> _ExecutionContext | None:
+        """Create the updater, enqueue the initial task, and start work.
+
+        Returns ``None`` if credentials are missing (task is moved to
+        ``requires_auth`` and no further work is done).
+        """
         task_id = context.task_id or str(uuid.uuid4())
         context_id = context.context_id or str(uuid.uuid4())
         logger.info("execute start task_id=%s context_id=%s", task_id, context_id)
+
         updater = TaskUpdater(
             event_queue=event_queue,
             task_id=task_id,
@@ -128,121 +197,129 @@ class Executor(AgentExecutor):
         await event_queue.enqueue_event(initial_task)
         await updater.start_work()
 
-        # 1. Check credentials
         missing = self._backend.check_credentials()
         if missing:
             logger.warning("auth required task_id=%s missing=%s", task_id, missing)
             exc = MissingCredentialsError(providers=missing)
             auth_msg = updater.new_agent_message(parts=[Part(text=str(exc))])
             await updater.requires_auth(message=auth_msg)
-            return
+            return None
 
-        # 2. Load conversation history
-        raw_context_id = context.context_id
-        serialized_history: bytes | None = (
-            await self._context_store.load(raw_context_id) if raw_context_id else None
+        return _ExecutionContext(
+            task_id=task_id,
+            raw_context_id=context.context_id,
+            updater=updater,
+            artifact_id=str(uuid.uuid4()),
+        )
+
+    async def _load_history(self, ctx: _ExecutionContext) -> list[Any]:
+        """Load and deserialize prior conversation history, if any."""
+        serialized: bytes | None = (
+            await self._context_store.load(ctx.raw_context_id) if ctx.raw_context_id else None
         )
         message_history: list[Any] = (
-            self._backend.deserialize_history(serialized_history) if serialized_history else []
+            self._backend.deserialize_history(serialized) if serialized else []
         )
         logger.debug(
             "history loaded task_id=%s resumed=%s message_count=%d",
-            task_id,
-            serialized_history is not None,
+            ctx.task_id,
+            serialized is not None,
             len(message_history),
         )
+        return message_history
 
-        # 3. Check for resume (approval_result in incoming message)
-        deferred_results = self._extract_approval_results(context.message)
-        if deferred_results is not None:
-            logger.info("resuming from approval task_id=%s", task_id)
-
-        # 4. Run backend with step-driven dispatch
-        artifact_id = str(uuid.uuid4())
-        created_artifacts: set[str] = set()
-        has_deferred = False
-        try:
-            if deferred_results is not None and message_history:
-                handle = self._backend.run_steps(
-                    messages=message_history,
-                    deferred_tool_results=deferred_results,
-                )
-            else:
-                if context.message:
-                    a2a_history = [context.message]
-                    message_history.extend(self._backend.convert_history(a2a_history))
-                handle = self._backend.run_steps(messages=message_history)
-            async for event in handle:
-                if event.kind == "deferred":
-                    has_deferred = True
-                await self._dispatch_step_event(event, updater, artifact_id, created_artifacts)
-
-            if has_deferred:
-                result: RunResult = await handle.result()
-                if raw_context_id:
-                    await self._context_store.save(raw_context_id, result.serialized_history)
-                logger.info("paused for approval task_id=%s", task_id)
-                deferred_msg = updater.new_agent_message(parts=[Part(text="Waiting for approval")])
-                await updater.requires_input(message=deferred_msg)
-                return
-
-            append = artifact_id in created_artifacts
-            await updater.add_artifact(
-                parts=[Part(text="")],
-                artifact_id=artifact_id,
-                name="result",
-                append=append,
-                last_chunk=True,
+    def _start_run(
+        self,
+        context: RequestContext,
+        message_history: list[Any],
+        deferred_results: Any | None,
+    ) -> Any:
+        """Return a ``StepHandle`` for either a fresh run or a resume."""
+        if deferred_results is not None and message_history:
+            return self._backend.run_steps(
+                messages=message_history,
+                deferred_tool_results=deferred_results,
             )
-            created_artifacts.add(artifact_id)
-            result = await handle.result()
-        except Exception:
-            logger.exception("execute failed task_id=%s", task_id)
-            await updater.failed()
-            raise
+        if context.message:
+            message_history.extend(self._backend.convert_history([context.message]))
+        return self._backend.run_steps(messages=message_history)
 
-        # 5. Save updated conversation history
-        if raw_context_id:
-            await self._context_store.save(raw_context_id, result.serialized_history)
+    async def _consume_events(self, ctx: _ExecutionContext, handle: Any) -> bool:
+        """Iterate the handle's events and dispatch each one.
 
-        # 6. If structured output, add as a separate artifact
+        Returns ``True`` if any ``deferred`` event was seen (task needs
+        to pause for approval).
+        """
+        has_deferred = False
+        async for event in handle:
+            if event.kind == "deferred":
+                has_deferred = True
+            await self._dispatch_step_event(event, ctx)
+        return has_deferred
+
+    async def _pause_for_approval(
+        self,
+        ctx: _ExecutionContext,
+        result: RunResult,
+    ) -> None:
+        """Save history and move the task to ``requires_input``."""
+        if ctx.raw_context_id:
+            await self._context_store.save(ctx.raw_context_id, result.serialized_history)
+        logger.info("paused for approval task_id=%s", ctx.task_id)
+        deferred_msg = ctx.updater.new_agent_message(parts=[Part(text="Waiting for approval")])
+        await ctx.updater.requires_input(message=deferred_msg)
+
+    async def _finalize(self, ctx: _ExecutionContext, result: RunResult) -> None:
+        """Emit the closing last-chunk artifact, save history, and complete.
+
+        For non-string (structured) output, also emits a separate
+        artifact carrying the serialized result via
+        ``backend.convert_result_to_part``.
+        """
+        append = ctx.artifact_id in ctx.created_artifacts
+        await ctx.updater.add_artifact(
+            parts=[Part(text="")],
+            artifact_id=ctx.artifact_id,
+            name="result",
+            append=append,
+            last_chunk=True,
+        )
+        ctx.created_artifacts.add(ctx.artifact_id)
+
+        if ctx.raw_context_id:
+            await self._context_store.save(ctx.raw_context_id, result.serialized_history)
+
         if not isinstance(result.output, str):
             part = self._backend.convert_result_to_part(result.output)
             await self._emit_artifact(
-                updater,
+                ctx.updater,
                 str(uuid.uuid4()),
                 [part],
-                created_artifacts,
+                ctx.created_artifacts,
             )
 
-        logger.info("execute complete task_id=%s", task_id)
-        await updater.complete()
+        logger.info("execute complete task_id=%s", ctx.task_id)
+        await ctx.updater.complete()
 
-    async def _dispatch_step_event(
-        self,
-        event: StepEvent,
-        updater: TaskUpdater,
-        artifact_id: str,
-        created_artifacts: set[str],
-    ) -> None:
+    async def _dispatch_step_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         """Route a ``StepEvent`` to the appropriate A2A artifact or state transition."""
         match event.kind:
             case "text_delta":
                 await self._emit_artifact(
-                    updater,
-                    artifact_id,
+                    ctx.updater,
+                    ctx.artifact_id,
                     [Part(text=event.content)],
-                    created_artifacts,
+                    ctx.created_artifacts,
                     last_chunk=False,
                 )
             case "thinking_delta":
                 meta = Struct()
                 meta.update({"type": "thinking"})
                 await self._emit_artifact(
-                    updater,
-                    artifact_id,
+                    ctx.updater,
+                    ctx.artifact_id,
                     [Part(text=event.content, metadata=meta)],
-                    created_artifacts,
+                    ctx.created_artifacts,
                     last_chunk=False,
                 )
             case "tool_call":
@@ -255,10 +332,10 @@ class Executor(AgentExecutor):
                     }
                 )
                 await self._emit_artifact(
-                    updater,
-                    artifact_id,
+                    ctx.updater,
+                    ctx.artifact_id,
                     [Part(text="", metadata=tool_meta)],
-                    created_artifacts,
+                    ctx.created_artifacts,
                     last_chunk=False,
                 )
             case "tool_result":
@@ -276,16 +353,16 @@ class Executor(AgentExecutor):
                 else:
                     result_text = str(event.content)
                 await self._emit_artifact(
-                    updater,
-                    artifact_id,
+                    ctx.updater,
+                    ctx.artifact_id,
                     [Part(text=result_text, metadata=result_meta)],
-                    created_artifacts,
+                    ctx.created_artifacts,
                     last_chunk=False,
                 )
             case "step_start" | "step_end":
                 pass
             case "deferred":
-                await self._handle_deferred_event(event, updater, artifact_id, created_artifacts)
+                await self._handle_deferred_event(event, ctx)
 
     async def _emit_artifact(
         self,
@@ -307,13 +384,7 @@ class Executor(AgentExecutor):
         )
         created_artifacts.add(artifact_id)
 
-    async def _handle_deferred_event(
-        self,
-        event: StepEvent,
-        updater: TaskUpdater,
-        artifact_id: str,
-        created_artifacts: set[str],
-    ) -> None:
+    async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         deferred_meta = Struct()
         deferred_content = event.content
         deferred_meta.update(
@@ -326,10 +397,10 @@ class Executor(AgentExecutor):
             }
         )
         await self._emit_artifact(
-            updater,
-            artifact_id,
+            ctx.updater,
+            ctx.artifact_id,
             [Part(text="", metadata=deferred_meta)],
-            created_artifacts,
+            ctx.created_artifacts,
             last_chunk=False,
         )
 
