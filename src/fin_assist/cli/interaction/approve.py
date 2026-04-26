@@ -56,6 +56,10 @@ async def run_approval_widget(
         parameter of ``HubClient.stream_agent()``, or ``None`` if the
         user cancelled (e.g. Ctrl-C) without making a selection.
     """
+    # Leading blank so the panel visually separates from the tool_call
+    # line printed by ``render_stream`` just before this widget ran.
+    console.print()
+
     for call in deferred_calls:
         tool_name = call.get("tool_name", "unknown")
         args = call.get("args", {})
@@ -74,6 +78,8 @@ async def run_approval_widget(
 
         console.print(Panel(content, title="Approval Required", border_style="yellow"))
 
+    # Blank between the panel and the Approve/Deny prompt so they don't
+    # visually merge.
     console.print()
 
     try:
@@ -89,6 +95,11 @@ async def run_approval_widget(
         ).prompt_async()
     except KeyboardInterrupt:
         return None
+
+    # Blank line after the user's selection so the resumed stream's first
+    # printed line (typically the re-announced tool call) has visual
+    # separation from the approval widget.
+    console.print()
 
     decisions = []
     for call in deferred_calls:

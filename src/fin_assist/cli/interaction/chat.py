@@ -102,6 +102,11 @@ async def run_chat_loop(
             console.print("Type /help for available commands")
             continue
 
+        # Blank line between the user's prompt and the agent's streaming
+        # response so they don't visually merge.  ``render_stream`` does
+        # not know what precedes it and starts printing immediately.
+        console.print()
+
         # --- Stream and render response ---
         try:
             result, deferred_calls = await render_stream(
