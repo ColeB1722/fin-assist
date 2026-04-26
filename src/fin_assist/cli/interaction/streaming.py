@@ -33,6 +33,7 @@ from fin_assist.agents.metadata import AgentResult
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fin_assist.agents.tools import DeferredToolCall
     from fin_assist.cli.client import StreamEvent
 
 
@@ -143,7 +144,7 @@ async def render_stream(
     *,
     show_thinking: bool = False,
     console: Console | None = None,
-) -> tuple[AgentResult, list[dict[str, Any]]]:
+) -> tuple[AgentResult, list[DeferredToolCall]]:
     """Consume streaming events and render them via Rich ``Live``.
 
     Only the growing Markdown answer is tracked inside the ``Live``
@@ -177,7 +178,7 @@ async def render_stream(
     accumulated_thinking: list[str] = []
     thinking_buffer = ""
     final_result: AgentResult | None = None
-    deferred_calls: list[dict[str, Any]] = []
+    deferred_calls: list[DeferredToolCall] = []
     # Tracks whether we've printed anything to scrollback so we can decide
     # whether to precede a new block with a blank separator line.  Rich's
     # ``Markdown`` yields its own leading blank line (the implicit top

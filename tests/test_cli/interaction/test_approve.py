@@ -6,20 +6,21 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.interaction.approve import (
     _build_key_bindings,
     run_approval_widget,
 )
 
 
-def _sample_deferred_calls() -> list[dict]:
+def _sample_deferred_calls() -> list[DeferredToolCall]:
     return [
-        {
-            "tool_name": "run_shell",
-            "tool_call_id": "call_1",
-            "args": {"command": "rm -rf /tmp/x"},
-            "reason": "Shell command execution requires approval",
-        }
+        DeferredToolCall(
+            tool_name="run_shell",
+            tool_call_id="call_1",
+            args={"command": "rm -rf /tmp/x"},
+            reason="Shell command execution requires approval",
+        )
     ]
 
 

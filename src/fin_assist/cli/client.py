@@ -31,6 +31,7 @@ from google.protobuf.struct_pb2 import Struct
 from pydantic import BaseModel, Field
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
@@ -72,9 +73,11 @@ class StreamEvent(BaseModel):
     ]
     text: str = ""
     result: AgentResult | None = None
-    deferred_calls: list[dict[str, Any]] = Field(default_factory=list)
+    deferred_calls: list[DeferredToolCall] = Field(default_factory=list)
     tool_name: str = ""
     tool_args: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 def _part_struct_data(part) -> dict[str, Any] | None:
@@ -104,20 +107,20 @@ def _is_tool_result(part) -> bool:
     return struct_to_dict(part.metadata).get("type") == "tool_result"
 
 
-def _extract_deferred_calls(task) -> list[dict[str, Any]]:
+def _extract_deferred_calls(task) -> list[DeferredToolCall]:
     """Extract deferred tool calls from a task's artifacts."""
-    calls: list[dict[str, Any]] = []
+    calls: list[DeferredToolCall] = []
     for artifact in reversed(task.artifacts):
         for part in artifact.parts:
             meta = struct_to_dict(part.metadata)
             if meta.get("type") == "deferred":
                 calls.append(
-                    {
-                        "tool_name": meta.get("tool_name", ""),
-                        "tool_call_id": meta.get("tool_call_id", ""),
-                        "args": meta.get("args", {}),
-                        "reason": meta.get("reason", ""),
-                    }
+                    DeferredToolCall(
+                        tool_name=meta.get("tool_name", ""),
+                        tool_call_id=meta.get("tool_call_id", ""),
+                        args=meta.get("args", {}),
+                        reason=meta.get("reason") or None,
+                    )
                 )
     return calls
 

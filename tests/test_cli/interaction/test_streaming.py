@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from fin_assist.agents.metadata import AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import StreamEvent
 from fin_assist.cli.interaction.streaming import (
     _format_thinking_block,
@@ -133,13 +134,17 @@ class TestRenderStreamInputRequired:
                 kind="input_required",
                 result=result,
                 deferred_calls=[
-                    {"tool_name": "run_shell", "tool_call_id": "call_1", "args": {"command": "ls"}}
+                    DeferredToolCall(
+                        tool_name="run_shell",
+                        tool_call_id="call_1",
+                        args={"command": "ls"},
+                    )
                 ],
             ),
         )
         final, deferred = await render_stream(events)
         assert len(deferred) == 1
-        assert deferred[0]["tool_name"] == "run_shell"
+        assert deferred[0].tool_name == "run_shell"
 
     async def test_input_required_returns_result(self):
         result = AgentResult(success=False, output="waiting", context_id="ctx-1")
@@ -158,7 +163,9 @@ class TestRenderStreamInputRequired:
             StreamEvent(kind="text_delta", text="partial response"),
             StreamEvent(
                 kind="input_required",
-                deferred_calls=[{"tool_name": "run_shell", "tool_call_id": "c1"}],
+                deferred_calls=[
+                    DeferredToolCall(tool_name="run_shell", tool_call_id="c1", args={})
+                ],
             ),
         )
         final, deferred = await render_stream(events)

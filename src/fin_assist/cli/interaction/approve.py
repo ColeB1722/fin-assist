@@ -8,7 +8,7 @@ Part metadata to resume the task.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts.choice_input import ChoiceInput
@@ -16,6 +16,9 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
+
+if TYPE_CHECKING:
+    from fin_assist.agents.tools import DeferredToolCall
 
 console = Console()
 
@@ -39,7 +42,7 @@ def _build_key_bindings() -> KeyBindings:
 
 
 async def run_approval_widget(
-    deferred_calls: list[dict[str, Any]],
+    deferred_calls: list[DeferredToolCall],
 ) -> list[dict[str, Any]] | None:
     """Show the approval widget for deferred tool calls and return decisions.
 
@@ -47,9 +50,8 @@ async def run_approval_widget(
     then shows Approve/Deny as an arrow-key selection.
 
     Args:
-        deferred_calls: List of deferred tool call dicts from the
-            ``input_required`` StreamEvent.  Each has ``tool_name``,
-            ``tool_call_id``, ``args``, and ``reason``.
+        deferred_calls: Typed deferred tool calls from the
+            ``input_required`` StreamEvent.
 
     Returns:
         A list of decision dicts suitable for ``approval_decisions``
@@ -61,20 +63,16 @@ async def run_approval_widget(
     console.print()
 
     for call in deferred_calls:
-        tool_name = call.get("tool_name", "unknown")
-        args = call.get("args", {})
-        reason = call.get("reason", "")
-
-        args_display = ", ".join(f"{k}={v!r}" for k, v in args.items())
+        args_display = ", ".join(f"{k}={v!r}" for k, v in call.args.items())
         content = Text()
         content.append("Tool: ", style="bold")
-        content.append(f"{tool_name}\n")
+        content.append(f"{call.tool_name}\n")
         if args_display:
             content.append("Args: ", style="bold")
             content.append(f"{args_display}\n")
-        if reason:
+        if call.reason:
             content.append("Reason: ", style="bold")
-            content.append(f"{reason}")
+            content.append(call.reason)
 
         console.print(Panel(content, title="Approval Required", border_style="yellow"))
 
@@ -101,14 +99,11 @@ async def run_approval_widget(
     # separation from the approval widget.
     console.print()
 
-    decisions = []
-    for call in deferred_calls:
-        decisions.append(
-            {
-                "tool_call_id": call.get("tool_call_id", ""),
-                "approved": approved,
-                "denial_reason": None if approved else "Denied by user",
-            }
-        )
-
-    return decisions
+    return [
+        {
+            "tool_call_id": call.tool_call_id,
+            "approved": approved,
+            "denial_reason": None if approved else "Denied by user",
+        }
+        for call in deferred_calls
+    ]

@@ -19,6 +19,7 @@ from a2a.types import (
 from google.protobuf.struct_pb2 import Struct, Value
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import (
     DiscoveredAgent,
     HubClient,
@@ -842,10 +843,10 @@ class TestExtractDeferredCalls:
         )
         calls = _extract_deferred_calls(task)
         assert len(calls) == 1
-        assert calls[0]["tool_name"] == "run_shell"
-        assert calls[0]["tool_call_id"] == "call_1"
-        assert calls[0]["args"] == {"command": "ls"}
-        assert calls[0]["reason"] == "requires approval"
+        assert calls[0].tool_name == "run_shell"
+        assert calls[0].tool_call_id == "call_1"
+        assert calls[0].args == {"command": "ls"}
+        assert calls[0].reason == "requires approval"
 
     def test_returns_empty_when_no_deferred_artifacts(self):
         task = _make_task(
@@ -905,7 +906,7 @@ class TestStreamEventInputRequired:
         event = StreamEvent(
             kind="input_required",
             result=AgentResult(success=False, output="waiting"),
-            deferred_calls=[{"tool_name": "run_shell", "tool_call_id": "c1"}],
+            deferred_calls=[DeferredToolCall(tool_name="run_shell", tool_call_id="c1", args={})],
         )
         assert event.kind == "input_required"
         assert len(event.deferred_calls) == 1

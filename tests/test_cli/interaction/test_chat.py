@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from fin_assist.agents.metadata import AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import StreamEvent
 from fin_assist.cli.interaction.chat import run_chat_loop
 
@@ -372,12 +373,12 @@ class TestChatLoopDeferredApproval:
     async def test_approve_and_resume(self):
         result = _make_result()
         deferred_calls = [
-            {
-                "tool_name": "run_shell",
-                "tool_call_id": "call_1",
-                "args": {"command": "ls"},
-                "reason": "requires approval",
-            }
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            )
         ]
 
         async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
@@ -411,12 +412,12 @@ class TestChatLoopDeferredApproval:
     async def test_deny_continues_chat(self):
         result = _make_result()
         deferred_calls = [
-            {
-                "tool_name": "run_shell",
-                "tool_call_id": "call_1",
-                "args": {"command": "rm -rf /"},
-                "reason": "requires approval",
-            }
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /"},
+                reason="requires approval",
+            )
         ]
 
         async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
@@ -458,12 +459,12 @@ class TestChatLoopDeferredApproval:
     async def test_cancel_deferred_skips_resume(self):
         result = _make_result()
         deferred_calls = [
-            {
-                "tool_name": "run_shell",
-                "tool_call_id": "call_1",
-                "args": {"command": "ls"},
-                "reason": "requires approval",
-            }
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            )
         ]
 
         async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
