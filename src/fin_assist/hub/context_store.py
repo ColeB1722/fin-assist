@@ -13,9 +13,9 @@ Versioning
 ~~~~~~~~~~
 Each stored blob is prefixed with a single version byte (big-endian
 ``unsigned char``).  When the serialization format changes, increment
-``_CONTEXT_STORE_VERSION``.  The ``load`` method validates the version
-and raises ``ValueError`` on mismatch.  Existing stores that lack a
-version prefix are migrated automatically on first load.
+``_CONTEXT_STORE_VERSION``.  Callers should use ``wrap_payload()`` before
+saving and ``unwrap_payload()`` after loading to handle versioning.
+``unwrap_payload()`` raises ``ValueError`` on version mismatch.
 """
 
 from __future__ import annotations
@@ -59,9 +59,8 @@ class ContextStore:
         """Load serialized conversation history for the given context ID.
 
         Returns ``None`` if no history exists for this context.
-
-        Raises:
-            ValueError: If the stored data has an unsupported version byte.
+        Use ``unwrap_payload()`` on the result to validate version and
+        strip the version prefix.
         """
         conn = self._get_conn()
         row = conn.execute(

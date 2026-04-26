@@ -129,6 +129,7 @@ async def run_chat_loop(
                         ),
                         show_thinking=show_thinking,
                     )
+                    ctx_id = result.context_id or ctx_id
                 except Exception as e:
                     console.print(f"[red]Error resuming: {e}[/red]")
             else:

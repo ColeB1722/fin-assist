@@ -27,11 +27,11 @@ from a2a.types import (
     Task,
     TaskState,
 )
-from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Struct
 from pydantic import BaseModel, Field
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -73,28 +73,21 @@ class StreamEvent(BaseModel):
     deferred_calls: list[dict[str, Any]] = Field(default_factory=list)
 
 
-def _struct_to_dict(struct) -> dict[str, Any]:
-    """Convert a protobuf Struct to a plain Python dict."""
-    if not struct or not struct.fields:
-        return {}
-    return MessageToDict(struct, preserving_proto_field_name=True)
-
-
 def _part_struct_data(part) -> dict[str, Any] | None:
     """Return the struct dict from a Part's data field, or None."""
     if part.HasField("data") and part.data.HasField("struct_value"):
-        return _struct_to_dict(part.data.struct_value)
+        return struct_to_dict(part.data.struct_value)
     return None
 
 
 def _is_thinking(part) -> bool:
     """Return whether a Part's metadata marks it as a thinking block."""
-    return _struct_to_dict(part.metadata).get("type") == "thinking"
+    return struct_to_dict(part.metadata).get("type") == "thinking"
 
 
 def _is_deferred(part) -> bool:
     """Return whether a Part's metadata marks it as a deferred tool call."""
-    return _struct_to_dict(part.metadata).get("type") == "deferred"
+    return struct_to_dict(part.metadata).get("type") == "deferred"
 
 
 def _extract_deferred_calls(task) -> list[dict[str, Any]]:
@@ -102,7 +95,7 @@ def _extract_deferred_calls(task) -> list[dict[str, Any]]:
     calls: list[dict[str, Any]] = []
     for artifact in reversed(task.artifacts):
         for part in artifact.parts:
-            meta = _struct_to_dict(part.metadata)
+            meta = struct_to_dict(part.metadata)
             if meta.get("type") == "deferred":
                 calls.append(
                     {

@@ -121,8 +121,9 @@ class AgentFactory:
             ],
         )
 
+        if agent._tool_registry is None:
+            agent._tool_registry = self._tool_registry
         backend = backend or PydanticAIBackend(agent_spec=agent, tool_registry=self._tool_registry)
-        agent._tool_registry = self._tool_registry
         executor = Executor(
             backend=backend,
             context_store=self._context_store,

@@ -290,17 +290,22 @@ def _make_shell_history(settings: ContextSettings | None):
 
 
 async def _run_shell(command: str) -> str:
+    import asyncio
     import subprocess
 
-    try:
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-        output = result.stdout
-        if result.stderr:
-            output += f"\nSTDERR: {result.stderr}"
-        if result.returncode != 0:
-            output += f"\nExit code: {result.returncode}"
-        return output or "(no output)"
-    except subprocess.TimeoutExpired:
-        return f"Command timed out after 30 seconds: {command}"
-    except Exception as e:
-        return f"Error executing command: {e}"
+    def _blocking_run() -> str:
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            output = result.stdout
+            if result.stderr:
+                output += f"\nSTDERR: {result.stderr}"
+            if result.returncode != 0:
+                output += f"\nExit code: {result.returncode}"
+            return output or "(no output)"
+        except subprocess.TimeoutExpired:
+            return f"Command timed out after 30 seconds: {command}"
+        except Exception as e:
+            return f"Error executing command: {e}"
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _blocking_run)

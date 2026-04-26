@@ -68,22 +68,18 @@ fish/                 - Fish shell plugin (future)
 
 This project is intended to run locally for personal use. Dev ergonomics: runtime state (logs, database, PID file, sessions, history, credentials) should stay colocated with the repo while developing, not scattered under `~/.local/share/fin/`.
 
-**Current state:** partially wired. Some paths honor env vars, others are still hardcoded — see the table below. A future session should introduce a single `FIN_DATA_DIR` env var and derive everything from it. See `handoff.md` → "Local Dev Paths" sketch for the plan.
+**Current state:** All runtime paths derive from `FIN_DATA_DIR` (default `~/.local/share/fin`). Set `FIN_DATA_DIR=./.fin` to keep state local to the repo.
 
 | Path | Default location | Env override |
 |------|------------------|--------------|
-| Hub log | `~/.local/share/fin/hub.log` | `FIN_SERVER__LOG_PATH` ✅ |
-| Hub DB | `~/.local/share/fin/hub.db` | `FIN_SERVER__DB_PATH` ✅ |
-| PID file | `~/.local/share/fin/hub.pid` | **none yet** |
-| Sessions | `~/.local/share/fin/sessions/` | **none yet** |
-| REPL history | `~/.local/share/fin/history` | **none yet** |
-| Credentials | `~/.local/share/fin/credentials.json` | **none yet** |
+| Hub log | `$FIN_DATA_DIR/hub.log` | `FIN_DATA_DIR` (or `FIN_SERVER__LOG_PATH`) |
+| Hub DB | `$FIN_DATA_DIR/hub.db` | `FIN_DATA_DIR` (or `FIN_SERVER__DB_PATH`) |
+| PID file | `$FIN_DATA_DIR/hub.pid` | `FIN_DATA_DIR` |
+| Sessions | `$FIN_DATA_DIR/sessions/` | `FIN_DATA_DIR` |
+| REPL history | `$FIN_DATA_DIR/history` | `FIN_DATA_DIR` |
+| Credentials | `$FIN_DATA_DIR/credentials.json` | `FIN_DATA_DIR` |
 
-**Current dev overrides** (in `devenv.nix`):
-
-- `FIN_SERVER__LOG_PATH = "./hub.log"` — hub log goes to repo root
-
-**Goal:** a single env var in `devenv.nix` pins everything under, e.g., `./.fin/`. Add `.fin/` to `.gitignore`.
+**Dev override** (in `devenv.nix`): `FIN_DATA_DIR = "./.fin"` — all runtime state stays in `.fin/` (git-ignored).
 
 **When adding a new runtime path:** plumb it through `src/fin_assist/paths.py`, honor `FIN_DATA_DIR`, and update the table above.
 

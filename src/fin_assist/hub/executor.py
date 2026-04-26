@@ -48,11 +48,11 @@ from typing import TYPE_CHECKING, Any
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
-from google.protobuf.json_format import MessageToDict
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.tools import ApprovalDecision
+from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from a2a.server.events import EventQueue
@@ -60,12 +60,6 @@ if TYPE_CHECKING:
     from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.agents.step import StepEvent
     from fin_assist.hub.context_store import ContextStore
-
-
-def _struct_to_dict(struct) -> dict[str, Any]:
-    if not struct or not struct.fields:
-        return {}
-    return MessageToDict(struct, preserving_proto_field_name=True)
 
 
 class Executor(AgentExecutor):
@@ -336,7 +330,7 @@ class Executor(AgentExecutor):
 
         decisions: list[ApprovalDecision] = []
         for part in message.parts:
-            meta = _struct_to_dict(part.metadata) if part.metadata else {}
+            meta = struct_to_dict(part.metadata) if part.metadata else {}
             if meta.get("type") == "approval_result":
                 for d in meta.get("decisions", []):
                     decisions.append(

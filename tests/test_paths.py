@@ -30,7 +30,8 @@ class TestPathsFinDataDir:
         _reload_paths(str(tmp_path / "fin-data"))
         assert paths_module.DATA_DIR == tmp_path / "fin-data"
 
-    def test_paths_default_still_home_local_share(self):
+    def test_paths_default_still_home_local_share(self, monkeypatch):
+        monkeypatch.delenv("FIN_DATA_DIR", raising=False)
         importlib.reload(paths_module)
         assert paths_module.DATA_DIR == Path("~/.local/share/fin").expanduser()
 
