@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from fin_assist.hub.context_store import (
-    _CONTEXT_STORE_VERSION,
-    _VERSION_PACK,
-    ContextStore,
-)
+from fin_assist.hub.context_store import ContextStore
 
 
 @pytest.fixture
@@ -58,30 +54,3 @@ class TestPersistence:
         store2 = ContextStore(db_path=db)
         loaded = await store2.load("ctx-x")
         assert loaded == b"persisted"
-
-
-class TestVersionByte:
-    def test_wrap_payload_prepends_version(self) -> None:
-        payload = b'{"data": true}'
-        wrapped = ContextStore.wrap_payload(payload)
-        version = _VERSION_PACK.unpack(wrapped[: _VERSION_PACK.size])[0]
-        assert version == _CONTEXT_STORE_VERSION
-        assert wrapped[_VERSION_PACK.size :] == payload
-
-    def test_unwrap_payload_strips_version(self) -> None:
-        payload = b"hello"
-        wrapped = ContextStore.wrap_payload(payload)
-        assert ContextStore.unwrap_payload(wrapped) == payload
-
-    def test_unwrap_payload_rejects_wrong_version(self) -> None:
-        bad_version = _VERSION_PACK.pack(255) + b"payload"
-        with pytest.raises(ValueError, match="Unsupported context store version 255"):
-            ContextStore.unwrap_payload(bad_version)
-
-    def test_unwrap_payload_rejects_too_short(self) -> None:
-        with pytest.raises(ValueError, match="too short"):
-            ContextStore.unwrap_payload(b"")
-
-    def test_roundtrip(self) -> None:
-        payload = b"some binary data \x00\xff"
-        assert ContextStore.unwrap_payload(ContextStore.wrap_payload(payload)) == payload

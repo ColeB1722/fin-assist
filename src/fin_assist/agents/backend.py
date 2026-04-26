@@ -34,7 +34,6 @@ and message history for ``RunResult``.
 from __future__ import annotations
 
 import base64
-import struct
 from collections.abc import AsyncIterator, Sequence  # noqa: TC003
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -59,26 +58,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import TextPart as PydanticTextPart
 
 from fin_assist.agents.metadata import MissingCredentialsError
+from fin_assist.agents.serialization import unwrap_payload, wrap_payload
 from fin_assist.agents.step import StepEvent
 from fin_assist.agents.tools import ApprovalDecision, DeferredToolCall
 
 _message_ta = TypeAdapter(list[ModelMessage])
-
-_CONTEXT_STORE_VERSION = 1
-_VERSION_PACK = struct.Struct("!B")
-
-
-def _wrap_payload(data: bytes) -> bytes:
-    return _VERSION_PACK.pack(_CONTEXT_STORE_VERSION) + data
-
-
-def _unwrap_payload(data: bytes) -> bytes:
-    if len(data) < _VERSION_PACK.size:
-        raise ValueError(f"Context store data too short ({len(data)} bytes)")
-    version = _VERSION_PACK.unpack(data[: _VERSION_PACK.size])[0]
-    if version != _CONTEXT_STORE_VERSION:
-        raise ValueError(f"Unsupported context store version {version}")
-    return data[_VERSION_PACK.size :]
 
 
 if TYPE_CHECKING:
@@ -317,10 +301,10 @@ class PydanticAIBackend:
 
     def serialize_history(self, messages: list[Any]) -> bytes:
         payload = _message_ta.dump_json(messages)
-        return _wrap_payload(payload)
+        return wrap_payload(payload)
 
     def deserialize_history(self, data: bytes) -> list[Any]:
-        payload = _unwrap_payload(data)
+        payload = unwrap_payload(data)
         return _message_ta.validate_json(payload)
 
     def convert_result_to_part(self, result: Any) -> Part:
