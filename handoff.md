@@ -2,20 +2,21 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-25)**: Phases A–C complete, code reviewed, merged via PR #87. Executor `append=True` artifact bug fixed. 635 tests passing, 91% coverage, CI green.
+**Current state (2026-04-26)**: Phases A–C complete, code reviewed, merged via PR #87. `fin do` input panel + `--edit` + aggregation removal implemented. 635+ tests passing, CI green.
 
-**Two active sketches + one deferred:**
+**Three complete + one deferred:**
 
 1. **Executor rework + tool calling** — Phase A + Phase B complete. Tools registered, context-as-tools working, CLI flags wired.
 2. **ContextProviders → dual path** — **Resolved in Phase B.** Model-driven path (tool calls) and user-driven path (`--file`/`--git-diff` CLI flags) both implemented. Context UX redesign deferred (see sketch below).
 3. **HITL approval** — **Phase C complete.** `ApprovalPolicy` on `ToolDefinition`, deferred tool flow, approval widget in CLI.
 4. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
 
-**Next session plan:** remove built-in agents, fix artifact-merge bug, local dev paths. See "Next Session" section below.
+**Next session plan:** `fin do` input panel + `--edit` flag + aggregation removal. See "Next Session" section below.
 
 **Deferred:**
 - Context UX redesign — both paths work, model-driven is strictly more capable, user-driven needs rethinking. See "Context UX" sketch.
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)) — revisit when a second backend is needed
+- **`_CONTEXT_TYPE_MAP` centralization** — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool-name→context-type mappings, coupling the agent spec to context internals. Tests in `test_spec.py` read from this private attribute. Should be centralized (e.g., on `ContextType` or a dedicated mapping in the context module) so both `AgentSpec.context_type_for_tool()` and the context providers share a single source of truth. Also unblocks fixing `hub/factory.py:124` which mutates `agent._tool_registry` (a private attribute) — once the map is public, `requires_approval` can access the registry through a cleaner interface.
 
 ---
 

@@ -275,7 +275,11 @@ async def render_stream(
         # a stray spinner frame in the terminal.  Replace the live
         # renderable with empty ``Text`` so nothing is committed.
         if not accumulated_text:
-            live.update(Text(""), refresh=True)
+            if final_result is not None and final_result.output and not deferred_calls:
+                accumulated_text = final_result.output
+                live.update(Markdown(accumulated_text), refresh=True)
+            else:
+                live.update(Text(""), refresh=True)
 
     if final_result is not None:
         if accumulated_thinking and not final_result.thinking:

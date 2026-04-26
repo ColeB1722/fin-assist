@@ -768,6 +768,8 @@ class TestDefaultAgentResolution:
             result = _run_main("do")
 
         assert result == 0
+        mock_client.stream_agent.assert_called_once()
+        assert mock_client.stream_agent.call_args[0][0] == "my-agent"
 
 
 class TestDoInputPanel:

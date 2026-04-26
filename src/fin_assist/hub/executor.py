@@ -42,6 +42,7 @@ Part (``metadata.type = "approval_result"``), the Executor reconstructs
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +61,8 @@ if TYPE_CHECKING:
     from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.agents.step import StepEvent
     from fin_assist.hub.context_store import ContextStore
+
+logger = logging.getLogger(__name__)
 
 
 class Executor(AgentExecutor):
@@ -331,9 +334,13 @@ class Executor(AgentExecutor):
             meta = struct_to_dict(part.metadata) if part.metadata else {}
             if meta.get("type") == "approval_result":
                 for d in meta.get("decisions", []):
+                    tool_call_id = d.get("tool_call_id", "")
+                    if not tool_call_id:
+                        logger.warning("Approval decision missing tool_call_id, skipping")
+                        continue
                     decisions.append(
                         ApprovalDecision(
-                            tool_call_id=d.get("tool_call_id", ""),
+                            tool_call_id=tool_call_id,
                             approved=d.get("approved", False),
                             override_args=d.get("override_args"),
                             denial_reason=d.get("denial_reason"),

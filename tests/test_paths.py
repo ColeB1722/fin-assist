@@ -65,6 +65,7 @@ class TestPathsFinDataDir:
             ],
             capture_output=True,
             text=True,
+            timeout=30,
             env={
                 **os.environ,
                 "FIN_DATA_DIR": str(custom),

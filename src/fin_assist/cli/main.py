@@ -300,6 +300,9 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                         ),
                         show_thinking=args.show_thinking,
                     )
+                else:
+                    render_info("Tool call cancelled")
+                    return 0
 
             response = await handle_post_response(result)
             return response.exit_code

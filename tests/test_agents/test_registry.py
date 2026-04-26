@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS
+from typing import get_args
+
+from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS, OutputTypeName, PromptName
 from fin_assist.agents.results import CommandResult
 
 
@@ -14,7 +16,7 @@ class TestOutputTypes:
         assert OUTPUT_TYPES["command"] is CommandResult
 
     def test_has_expected_keys(self) -> None:
-        assert set(OUTPUT_TYPES.keys()) == {"text", "command"}
+        assert set(OUTPUT_TYPES.keys()) == set(get_args(OutputTypeName))
 
 
 class TestSystemPrompts:
@@ -37,4 +39,4 @@ class TestSystemPrompts:
         assert len(SYSTEM_PROMPTS["test"]) > 0
 
     def test_has_expected_keys(self) -> None:
-        assert set(SYSTEM_PROMPTS.keys()) == {"chain-of-thought", "shell", "test"}
+        assert set(SYSTEM_PROMPTS.keys()) == set(get_args(PromptName))
