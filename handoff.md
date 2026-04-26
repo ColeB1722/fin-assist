@@ -4,35 +4,35 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Current state (2026-04-25)**: Phases A–C complete, code reviewed, merged via PR #87. Executor `append=True` artifact bug fixed. 635 tests passing, 91% coverage, CI green.
 
-**Three known structural gaps** (down from four — HITL folded into the unified sketch):
+**Two active sketches + one deferred:**
 
 1. **Executor rework + tool calling** — Phase A + Phase B complete. Tools registered, context-as-tools working, CLI flags wired.
-2. **ContextProviders → dual path** — **Resolved in Phase B.** Model-driven path (tool calls) and user-driven path (`--file`/`--git-diff` CLI flags) both implemented.
-3. **HITL approval** — **Phase C in progress.** Design sketch written, open questions Q2-Q4 resolved. `requires_approval: bool` removed, replaced by `ApprovalPolicy` on `ToolDefinition`. In-flight deferred tool flow replaces post-response approval widget.
+2. **ContextProviders → dual path** — **Resolved in Phase B.** Model-driven path (tool calls) and user-driven path (`--file`/`--git-diff` CLI flags) both implemented. Context UX redesign deferred (see sketch below).
+3. **HITL approval** — **Phase C complete.** `ApprovalPolicy` on `ToolDefinition`, deferred tool flow, approval widget in CLI.
 4. **Observability / tracing** — Design resolved (Phoenix + OTel). Implementation independent (Phase D).
 
-**Resolved by the unified sketch:**
-- HITL approval model → platform-level `ApprovalPolicy`, backend enforces, Executor verifies
-- ContextProviders integration → dual path: user-driven (existing design) + model-driven (tool calls)
-- StepHandle iteration model → event-driven (Option A) with Executor verification of approval compliance
+**Next session plan:** remove built-in agents, fix artifact-merge bug, local dev paths. See "Next Session" section below.
 
-**Still deferred:**
+**Deferred:**
+- Context UX redesign — both paths work, model-driven is strictly more capable, user-driven needs rethinking. See "Context UX" sketch.
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)) — revisit when a second backend is needed
 
 ---
 
 ## Next Session (2026-04-25)
 
-Manual test run surfaced a silent-exit bug in `fin do shell "…"`: CLI exits 0 with no output. Root cause is a client-side artifact-merge bug in `stream_agent`. Deeper question surfaced: the package ships with `default` and `shell` agents baked into `_DEFAULT_AGENTS`, which conflicts with the repo's ethos as a "platform, not a product." Decision: **go clean-slate.** Remove `default` and `shell` from the package entirely; the only agent during development is `test`, defined in a version-controlled `./config.toml`.
+Manual test run surfaced a silent-exit bug in `fin do shell "…"`: CLI exits 0 with no output. Root cause is a client-side artifact-merge bug compounded by thin test coverage. A separate design session revised the plan:
 
-Four sketches below, do in order:
+**Core decision: remove built-in agents entirely.** The platform ships with zero hardcoded agents. All agents are user-defined via `config.toml`. This kills the "shell migration" loose end (sketch #4 from previous plan — nothing to migrate) and forces the platform to be pure infrastructure.
 
-1. **Local Dev Paths** — unify runtime state under `FIN_DATA_DIR`, localize dev env under `./.fin/`. Independent; quickest win.
-2. **Clean-Slate Agents** — empty `_DEFAULT_AGENTS`, delete `shell`/`default`/`CommandResult`/`SHELL_INSTRUCTIONS`, check in `./config.toml` as the dev source of truth with a single `test` agent declared.
-3. **Client Artifact-Merge Fix** — the actual silent-exit bug. Regression tests target the `test` agent from #2.
-4. **Sweep docs + tests** — `docs/architecture.md`, `docs/manual-testing.md`, integration fixtures, CLI `nargs` defaults. Purge `default`/`shell` assumptions.
+**Four sketches, in dependency order:**
 
-Each is its own commit (or PR). #2 is the biggest scope — multiple files, test fixture rewrites, doc updates — but it's all mechanical once the design is settled.
+1. **Local Dev Paths** — quickest win; unblocks ergonomics.
+2. **Remove Built-in Agents** — empty `_DEFAULT_AGENTS`, TOML merge fix, `test` agent in local config for manual platform testing, `[general] default_agent` config field, helpful error when no agents exist.
+3. **Client Artifact-Merge Fix** — the actual silent-exit bug. Regression test uses whatever agent is in local config.
+4. **Context UX** — **deferred to a future session.** Dual-path context (user-driven vs model-driven) has known gaps but both paths work. Document gaps; fix `ContextSettings` bug in tool callables as a one-line fix during sketch #2. Full context UX redesign is its own sketch later.
+
+Each is its own commit (or PR).
 
 ---
 
@@ -85,51 +85,31 @@ Each is its own commit (or PR). #2 is the biggest scope — multiple files, test
 
 ---
 
-### Clean-Slate Agents (2026-04-25) — Design Sketch
+### Remove Built-in Agents (2026-04-25) — Design Sketch
 
 **Status: Design sketch, not started. Depends on: Local Dev Paths (for `./config.toml` to live alongside `./.fin/`).**
 
-**Problem.** The package ships with `default` and `shell` agents baked into `_DEFAULT_AGENTS` (`config/schema.py:80-104`). Those two agents carry UX assumptions (`default` = chain-of-thought assistant; `shell` = one-shot command generator) that the platform itself has no business owning. The repo's stated identity is "expandable personal AI agent platform" — but a platform that ships two specific agents is a product with extension points, not a platform.
+**Problem.** The platform ships two hardcoded agents (`default`, `shell`) in `_DEFAULT_AGENTS`. This conflates platform infrastructure with agent design — the platform should be pure infrastructure with zero opinions about what agents exist. The shell agent is half-migrated from the old approval model, creating a phantom "pending migration" that's really a UX decision, not a platform task. Meanwhile, `fin do "prompt"` hardcodes the default agent name as `"default"` rather than reading from config.
 
-Concrete symptoms of the mismatch:
+**Goal.** Empty `_DEFAULT_AGENTS`. All agents defined in `config.toml`. `fin do "prompt"` routes to `[general] default_agent` in TOML. No default set → clear error with setup guidance. The platform is pure infrastructure — agents are entirely user-defined.
 
-- **The `shell` agent is half-migrated.** Phase C moved it from `requires_approval=True` → `tools=["run_shell"]` but left `output_type="command"` + `SHELL_INSTRUCTIONS` telling the model to output a raw command string. The model produces a `CommandResult`, never calls `run_shell`, and the approval widget is unreachable through `shell`. `docs/manual-testing.md` describes the "finished" state as current — it isn't. This is a permanent source of confusion.
-- **Tests are load-bearing on baked-in names.** `tests/integration/conftest.py::_make_agent_specs` hardcodes `shell`/`default`. `tests/test_config.py` asserts both are present by default. Any refactor has to edit both tests and defaults in lockstep.
-- **Dead-code footprint.** `CommandResult`, `SHELL_INSTRUCTIONS`, `CHAIN_OF_THOUGHT_INSTRUCTIONS`, the `"command"` entry in `OUTPUT_TYPES` registry — all exist only to serve `default` and `shell`. Deleting the agents deletes the support code too.
-- **Tuning to pass tests.** To make manual test A3 work (approval widget), someone has to "finish" the shell migration. That's the platform-testing concerns leaking into UX design of a specific agent.
+**Design.**
 
-**Design.** Empty `_DEFAULT_AGENTS`. Delete `default`, `shell`, and all their support code. Check in a version-controlled `./config.toml` that declares a single `test` agent covering every pluggable platform axis. `./config.toml` serves double duty as (a) the source of truth for dev agent config and (b) a living example of how to declare agents.
+1. **Empty `_DEFAULT_AGENTS`.** Change `_DEFAULT_AGENTS` to `{}`. The `Config.agents` field stays `dict[str, AgentConfig]` with an empty default. All agents come from config.
 
-Steps:
+2. **`[general] default_agent` config field.** Add `default_agent: str | None = None` to `Config` (or the general settings section). CLI resolves the default agent name from config instead of hardcoding `"default"`:
+   - `fin do "prompt"` → reads `config.general.default_agent` → uses that agent name
+   - No default set → error: "No default agent configured. Set `[general] default_agent = \"myagent\"` in config.toml or use `fin do <agent> \"prompt\"`."
+   - Show a minimal TOML example in the error message (one agent + default_agent)
+   - Same for `fin talk` (no agent arg → uses default)
 
-1. **Empty `_DEFAULT_AGENTS`** in `config/schema.py`. Change to `_DEFAULT_AGENTS: dict[str, AgentConfig] = {}`. Remove the module-level block defining `default` and `shell`.
+3. **TOML agent merging — must fix.** pydantic-settings currently replaces the `agents` dict wholesale when TOML defines any `[agents.<name>]`. So a `config.toml` that only declares `[agents.assistant]` *loses* any other agents defined elsewhere. Fix: merge in `loader.py` — before returning, merge TOML `config.agents` into defaults (TOML wins per-key). Since defaults are now empty, this only matters when users have multiple config sources, but the fix is still needed for correctness. Add a unit test: TOML with `[agents.assistant]` and `[agents.coder]` → config has both.
 
-2. **Delete code supporting `default` and `shell`:**
-   - `agents/results.py` → delete `CommandResult` class (and the file if it's the only content).
-   - `agents/registry.py` → `OUTPUT_TYPES` drops `"command"`; keeps `"text"` only. `SYSTEM_PROMPTS` drops `"shell"` and `"chain-of-thought"` (replaced by `"test"`).
-   - `llm/prompts.py` → delete `SHELL_INSTRUCTIONS` and `CHAIN_OF_THOUGHT_INSTRUCTIONS`. Add `TEST_INSTRUCTIONS`.
-   - `agents/__init__.py` → drop `CommandResult` from re-exports.
-
-3. **Add `TEST_INSTRUCTIONS`** (in `llm/prompts.py`). Engineered for deterministic feature-triggering:
-
-    ```
-    You are a test agent. Your job is to exercise specific platform features on command.
-
-    When the user says "test approval", call the `run_shell` tool with command `echo approved`.
-    When the user says "test read", call the `read_file` tool with path "/etc/hostname".
-    When the user says "test diff", call the `git_diff` tool with no args.
-    When the user says "test thinking", think step-by-step for 3 sentences, then reply "done".
-    When the user says "test text", reply "hello world" with no tool calls.
-    Otherwise, respond naturally.
-    ```
-
-4. **Check in `./config.toml`** at the repo root with a banner comment and a single `[agents.test]` block:
+4. **Local `config.toml` with a `test` agent.** For manual platform testing, a local `config.toml` in the repo root defines a `test` agent that exercises every pluggable axis:
 
     ```toml
-    # fin-assist dev config — checked in as a working example.
-    # This file is picked up automatically when fin runs with cwd = repo root.
-    # Copy to ~/.config/fin/config.toml for user-wide config.
-    # See docs/configuration.md for the full schema.
+    [general]
+    default_agent = "test"
 
     [agents.test]
     description = "Platform test agent — exercises every pluggable axis."
@@ -141,65 +121,69 @@ Steps:
     tags = ["test", "internal"]
     ```
 
-    Axes covered: text output + thinking deltas + both serving modes + no-approval tool (`read_file`) + approval-gated tool (`run_shell`) + a second no-approval tool for tool-call event coverage (`git_diff`).
+    Axes covered: text output + thinking deltas + both serving modes + one no-approval tool (`read_file`) + one approval-gated tool (`run_shell`) + a second no-approval tool for tool-call event coverage (`git_diff`).
 
-5. **No TOML agent merging needed.** With `_DEFAULT_AGENTS = {}`, `config.toml` is the only source of agents. pydantic-settings' replace-not-merge behavior is fine — there's nothing to merge.
+5. **`test` system prompt.** New entry in `SYSTEM_PROMPTS` registry (`agents/registry.py` → `llm/prompts.py`). Engineered to make the model deterministically call the requested tool based on the user's prompt:
 
-6. **CLI default-agent handling** (`cli/main.py:357, 385`). Currently `nargs="?", default="default"`. Clean-slate options:
+    ```
+    You are a test agent. Your job is to exercise specific platform features on command.
 
-    - **(a) Remove the default.** `nargs=1` on `agent`; `fin do "hello"` errors with "agent required". Explicit but a minor UX hit.
-    - **(b) Read from config.** `config.general.default_agent: str | None = None`; CLI uses it when `agent` is omitted. If unset and no agent given → error. Adds one setting; enables `./config.toml` to re-establish the shortcut via `[general] default_agent = "test"`.
-    - **(c) Drop the shortcut entirely.** Simplest. `fin do test "hello"` always.
+    When the user says "test approval", call the `run_shell` tool with `echo approved`.
+    When the user says "test read", call the `read_file` tool with path "/etc/hostname".
+    When the user says "test diff", call the `git_diff` tool with no args.
+    When the user says "test thinking", think step-by-step for 3 sentences, then reply "done".
+    When the user says "test text", reply "hello world" with no tool calls.
+    Otherwise, respond naturally.
+    ```
 
-    **Recommendation: (b).** Configurable default preserves the shortcut for whoever wants it, without the package hardcoding a name. `./config.toml` in the dev repo sets `default_agent = "test"` and `fin do "hello"` works. For a user with a custom `~/.config/fin/config.toml`, they choose.
+6. **ContextSettings fix in tool callables.** One-line bug fix: tool callables in `agents/tools.py` (`_read_file`, `_git_diff`, etc.) instantiate `ContextProvider`s without passing `ContextSettings`. The user-driven path passes `config.context` but the model-driven path uses defaults. Fix: pass settings through. This is a bug, not a design change.
 
-7. **Integration test fixtures rewrite.** `tests/integration/conftest.py::_make_agent_specs` builds agent specs programmatically for `test` (mirroring the `./config.toml` block). `FakeBackend` stays unchanged — it's backend-protocol-shaped, not agent-name-shaped. Tests that reference agent names by hardcoded string update to `"test"`.
+7. **Error message for zero agents.** When the hub starts with no agents configured (empty `config.agents` and no TOML), the startup should still succeed (the platform is valid with zero agents). But any CLI command that tries to use an agent should error clearly: "No agents configured. Add an `[agents.<name>]` section to your config file."
+
+8. **`CommandResult` and `SHELL_INSTRUCTIONS` stay in the registry.** They're framework features, not agent-specific. Any user-defined agent can opt into `output_type = "command"` or `system_prompt = "shell"` via config.
+
+9. **No code changes to `shell` agent config or system prompt.** The shell agent simply ceases to exist as a built-in. If a user wants a shell agent, they define one in TOML. The half-migration question is moot — there's nothing to migrate.
 
 **Tests to write first (TDD).**
 
-Delete:
-
-- `test_config.py::test_config_has_default_agents` — no longer meaningful.
-- `test_config.py::test_shell_config` — no longer meaningful.
-- `test_agents/test_registry.py` entries for `"command"` output type and `"shell"` / `"chain-of-thought"` prompts.
-- `test_agents/test_backend.py` tests that construct a shell/default spec directly — replace with test-agent specs.
-
-Add:
-
-- `test_config.py::test_default_agents_is_empty` — `_DEFAULT_AGENTS == {}` and `Config().agents == {}`.
-- `test_config.py::test_agents_loaded_from_cwd_config_toml` — create tmp `./config.toml` with `[agents.foo]`, `load_config()`, assert `config.agents["foo"]` exists.
-- `test_config.py::test_repo_config_toml_loads` — load the actual `./config.toml` from the repo, assert `test` agent validates.
-- `test_main.py::test_do_without_agent_arg_uses_general_default_agent` — config with `general.default_agent = "test"`; `fin do "hello"` dispatches to `test`.
-- `test_main.py::test_do_without_agent_arg_errors_when_no_default` — config with no default; `fin do "hello"` exits 1 with clear message.
-- Integration: `test_test_agent_streams_text` — dispatch `"test text"` to `test` agent → assert `events[-1].result.output == "hello world"`. (Also catches Sketch #3 bug.)
-- Integration: `test_test_agent_triggers_approval` — dispatch `"test approval"` → assert `events[-1].kind == "input_required"` AND `len(events[-1].deferred_calls) == 1` AND `deferred_calls[0].tool_name == "run_shell"`.
+- `test_default_agents_empty` — `_DEFAULT_AGENTS` is `{}`.
+- `test_loader_merges_toml_agents` — TOML declaring `[agents.assistant]` → `config.agents` has `assistant`.
+- `test_loader_toml_agent_keys_merge` — TOML declaring `[agents.assistant]` and `[agents.coder]` → both present.
+- `test_default_agent_from_config` — `Config(default_agent="assistant", agents={"assistant": AgentConfig(...)})` → CLI resolves default to "assistant".
+- `test_no_default_agent_error` — `Config(default_agent=None, agents={...})` → `fin do "prompt"` → error with TOML example.
+- `test_no_agents_configured_error` — `Config(agents={})` → `fin do test "prompt"` → error about no agents.
+- `test_test_agent_config_parses` — the actual `./config.toml` block validates into an `AgentConfig`.
+- `test_tool_callables_pass_context_settings` — `_read_file` etc. receive and use `ContextSettings`.
+- Integration: `test_test_agent_streams_text` — dispatch "test text" → assert output contains "hello world".
+- Integration: `test_test_agent_triggers_approval` — dispatch "test approval" → assert `input_required` with `run_shell` deferred call.
 
 **Risks / considerations.**
 
-- **Blast radius.** Roughly 20 files touched (package source + tests + docs). All mechanical — no algorithmic changes. Doing it in one PR avoids a broken intermediate state where defaults are empty but tests still reference them.
-- **Fresh clone UX.** A user cloning the repo needs `./config.toml` present for `fin do …` to work. It's checked in, so present by default. Risk: if someone runs `fin do …` from a cwd *other than* the repo, and has no `~/.config/fin/config.toml`, it errors "no agents configured." Acceptable for dev (you're always in the repo); needs a better onboarding story before public release. Out of scope for now.
-- **Doc sweep required.** `docs/architecture.md` and `docs/manual-testing.md` both reference `default`/`shell` heavily. Sketch #4 covers this.
-- **Prompt determinism.** The `test` agent depends on the LLM following `TEST_INSTRUCTIONS` verbatim. If flakes appear, tighten the prompt or pin to a specific model via `FIN_GENERAL__DEFAULT_MODEL` in devenv. CI still uses `FakeBackend` (unit layer, no LLM calls).
-- **Losing `CHAIN_OF_THOUGHT_INSTRUCTIONS`.** That prompt is reasonable and future users might want it. Acceptable loss — it can be resurrected from git history or someone's personal config when a real assistant agent is designed.
+- **Fresh install experience.** A bare `fin` install with no config has zero agents and no default. Every command errors until the user writes config. This is acceptable — it's a personal platform, not a consumer product. The error message must be excellent (show a complete minimal TOML example).
+- **TOML discovery.** The existing cwd-discovery in `loader.py:_resolve_config_path` finds `config.toml` in the current directory. This works for local dev (repo root). For installed use, users need `~/.config/fin/config.toml`. Both paths already work.
+- **Prompt determinism.** LLMs aren't 100% deterministic. The `test` prompt must be brittle enough that any reasonable model follows it verbatim. If flakes appear, tighten the prompt or gate the test on a specific model.
+- **Breaking change.** Anyone relying on `fin do default "..."` or `fin do shell "..."` will break. Since this is a personal platform with one user, this is fine. The error messages guide migration.
 
-**Out of scope.** Designing a replacement `default` agent for end users. That's a future UX call. This sketch is about cleaning up the platform, not shipping a product.
+**Out of scope.** Adding agent variants beyond `test` upfront. Deciding the long-term UX for a shell-like agent. That's a separate design decision when the need arises.
 
 ---
 
 ### Client Artifact-Merge Fix (2026-04-25) — Design Sketch
 
-**Status: Design sketch, not started. Depends on: Clean-Slate Agents (for the regression test to target the `test` agent and for `FakeBackend` fixtures to be on the new naming).**
+**Status: Design sketch, not started. Depends on: Test Agent (for the regression test to be agent-driven and realistic).**
 
 **Problem.** `HubClient.stream_agent()` in `cli/client.py:312-394` walks the A2A protocol response stream and, for each `artifact_update`, yields `text_delta` / `thinking_delta` events directly — but never appends the streamed artifact into `task.artifacts`. When the task reaches a terminal state, `_extract_result(task)` walks `task.artifacts` (empty) and returns `AgentResult(output="")`. Compare `_send_and_wait` (line 413-432) which maintains a parallel artifact list and splices it back into `task.artifacts` before extraction. The splice was dropped in commit `b18f920` ("streaming fix") when the streaming path was refactored.
 
-**Symptoms (observed on `feature/tools-plus`, 2026-04-25).**
+**Symptoms.**
 
-- `fin do shell "echo hello"` exits 0 with no rendered output. Pre-clean-slate, the shell agent emits a structured `CommandResult` with no `text_delta` events — nothing renders in `render_stream`, and `result.output == ""` so `handle_post_response` prints nothing either. Post-clean-slate the `shell` agent is gone, but the bug reproduces anytime a backend produces structured output or ends without text deltas.
-- `default` agent (pre-clean-slate) renders fine on-screen via `Live` deltas but `result.output == ""` — session continuity and any post-stream consumer is silently broken.
-- Deferred approval flow: `input_required` event still fires (state-based), but `event.deferred_calls = []` because `_extract_deferred_calls(task)` walks the same empty `task.artifacts`. The approval widget receives zero calls → silently no-ops. Tests A3, B1–B7, I1–I5 can't pass.
+- `fin do shell "echo hello"` exits 0 with no rendered output (shell agent emits a structured `CommandResult` with no `text_delta` events — nothing renders in `render_stream`, and `result.output == ""` so `handle_post_response` prints nothing either).
+- `default` agent renders fine on-screen (via `Live` deltas) but `result.output == ""` — session continuity and any post-stream consumer is silently broken.
+- Deferred approval flow: `input_required` event still fires (state-based), but `event.deferred_calls = []` because `_extract_deferred_calls(task)` walks the same empty `task.artifacts`. The approval widget receives zero calls → silently no-ops.
 - Integration tests pass because `TestStreamingRoundTrip` asserts only `events[-1].kind == "completed"` and `result.success is True`; never checks `result.output`. `TestDeferredApprovalFlow.test_stream_yields_input_required` checks the event kind but not `len(deferred_calls) > 0`.
 
-**Design.** Mirror `_send_and_wait`'s pattern inside `stream_agent`:
+**Design.**
+
+Mirror `_send_and_wait`'s pattern inside `stream_agent`:
 
 ```python
 task: Task | None = None
@@ -228,7 +212,7 @@ if task is not None:
     ...  # rest unchanged
 ```
 
-Minimal and surgical. Matches `_send_and_wait` exactly, so there's a visible consistency invariant between the two methods.
+Minimal and surgical. Matches the existing `_send_and_wait` implementation exactly, so there's a visible consistency invariant between the two methods.
 
 **Tests to write first (TDD).**
 
@@ -236,71 +220,76 @@ Unit tests in `tests/test_cli/test_client.py`:
 
 - `test_stream_agent_populates_result_output_from_artifacts` — mock A2A client yielding `[initial_task, artifact_update(text="hello world"), status_update(COMPLETED)]` → assert `events[-1].result.output == "hello world"`.
 - `test_stream_agent_populates_deferred_calls_from_artifacts` — same setup but final state INPUT_REQUIRED with a deferred-metadata part → assert `len(events[-1].deferred_calls) == 1` and fields populated.
-- `test_stream_agent_preserves_existing_task_artifacts` — if the final `task` event already has artifacts, don't duplicate. Test the `if not task.artifacts` guard explicitly.
+- `test_stream_agent_preserves_existing_task_artifacts` — if the final `task` event already has artifacts (non-streaming server variant), don't duplicate. The `if not task.artifacts` guard covers this; test it explicitly.
 
-Integration tests:
+Integration tests (tighten existing):
 
-- Tighten `TestStreamingRoundTrip.test_stream_ends_with_completed` — add `assert events[-1].result.output == "response from test"` (or whatever `FakeBackend` returns for the `test` agent fixture).
-- Tighten `TestDeferredApprovalFlow.test_stream_yields_input_required` — add `assert len(terminal_events[-1].deferred_calls) == 1`.
-- New: `test_test_agent_streams_text` / `test_test_agent_triggers_approval` from Sketch #2 — validate end-to-end against real LLM invocation (marked as slow/network; skip in CI).
+- `TestStreamingRoundTrip.test_stream_ends_with_completed` — add `assert events[-1].result.output == "response from default"`.
+- `TestDeferredApprovalFlow.test_stream_yields_input_required` — add `assert len(terminal_events[-1].deferred_calls) == 1`.
 
 **Risks / considerations.**
 
-- **Double-append risk.** If the A2A protocol ever sends artifacts both as `artifact_update` chunks AND embedded in a later `task` event, the `if not task.artifacts` guard prevents duplication. The guard mirrors `_send_and_wait`.
-- **Memory on long streams.** Collecting all artifacts plus yielding deltas means text is retained twice until terminal. Trivial for current single-artifact-per-task pattern. Revisit if streaming produces many artifacts.
-- **Doesn't fix the test-integration gap alone.** Tests asserting only on `kind`/`success` keep passing. Tightening assertions is part of this fix.
+- **Double-append risk.** If the A2A protocol ever sends the final artifacts both as `artifact_update` chunks AND embedded in a later `task` event, the `if not task.artifacts` guard prevents duplication. The guard is already in `_send_and_wait`; keep the invariant consistent.
+- **Memory on long streams.** Collecting all artifacts plus yielding deltas means we keep text in memory twice until terminal. For the current single-artifact-per-task pattern this is trivial. If streaming ever produces many artifacts, revisit — but that's a future concern.
+- **Doesn't fix the test-integration gap alone.** Tests that assert only on `kind` and `success` will keep passing. Tightening assertions is part of this fix, not a follow-up.
 
-**Out of scope.** Refactoring `_send_and_wait` and `stream_agent` to share artifact-collection logic. They're similar enough; factoring is cosmetic and risks regressions.
+**Out of scope.** Refactoring `_send_and_wait` and `stream_agent` to share artifact-collection logic. They're already similar enough; factoring is cosmetic and risks regressions. Revisit if a third caller appears.
 
 ---
 
-### Doc & Test Sweep (2026-04-25) — Design Sketch
+### Retire "Phase C Shell Migration" Loose End (2026-04-25) — Moot
 
-**Status: Design sketch, not started. Depends on: Clean-Slate Agents (sketch #2) landing. Purely mechanical cleanup.**
+**Status: Moot — built-in agents are being removed (see "Remove Built-in Agents" sketch).**
 
-**Problem.** `default` and `shell` agent names are embedded across docs, tests, and CLI defaults. After sketch #2 deletes the agents, those references become dangling or misleading. This sketch is the mechanical sweep to remove them.
+The shell agent won't exist as a built-in anymore, so there's nothing to migrate. The platform supports the deferred-approval flow; whether any user-defined agent uses it is a config decision, not a platform task. `CommandResult` and `SHELL_INSTRUCTIONS` stay in the registry as framework features available to any agent via config.
 
-**Files and sections to edit.**
+---
 
-Source:
+### Context UX (2026-04-25) — Deferred Sketch
 
-- `src/fin_assist/cli/main.py:357, 385` — `nargs="?", default="default"` → handle per sketch #2 step 6 (read from `config.general.default_agent`).
+**Status: Deferred to a future session. Known gaps documented here. One bug fix (`ContextSettings` in tool callables) included in "Remove Built-in Agents" sketch.**
 
-Docs:
+**Current state.** Two paths for providing context to the model:
 
-- `docs/architecture.md:456-513, 790-795` — six references to `default`/`shell` agent configs. Replace the "Example agents" section with a single `test` agent example, or remove it and link to `./config.toml` as the canonical example.
-- `docs/manual-testing.md` — extensive rewrite:
-  - "Architecture note" at the top: rewrite for `test` agent. Point at `./config.toml` as the source of truth.
-  - Part 1 test tables: every `fin do default` / `fin do shell` → `fin do test`. Drop `E2` (shell-rejects-talk) and `E3` (default-supports-do) since they're agent-specific; replace with a generic "agent rejects unsupported mode" test using a contrived TOML entry.
-  - Part 2 tests: A3, B1–B7, I1–I5 all route through `test`. C1–C16 use `test` in talk mode. A6/E4 (default-agent shortcut) become "configured-default-agent shortcut" — depends on sketch #2 step 6.
-  - "Notes" at bottom: remove `default`/`shell` agent descriptions. Add a note pointing to `./config.toml`.
+**User-driven** (`--file`/`--git-diff` on `fin do`):
+- CLI reads file/diff content before sending to the hub
+- Prepends to prompt string: `Context:\n[FILE: path]\ncontent\n\nUser request:\nprompt`
+- Model sees one big string — can't distinguish reference material from request
+- Respects `ContextSettings` (max file size, etc.)
+- Only on `do`, not `talk`
+- `--git-log` flag not wired (low priority)
+- `supported_context_types` published in agent cards but never consumed for validation
 
-Tests:
+**Model-driven** (tool calls: `read_file`, `git_diff`, `git_log`, `shell_history`):
+- Model decides when it needs context, calls the tool, gets structured results back
+- Can iterate ("now read a different file", "show me more history")
+- **Bug:** does not respect `ContextSettings` — tool callables instantiate providers without passing settings (fix included in sketch #2)
+- Works in both `do` and `talk`
 
-- `tests/integration/conftest.py::_make_agent_specs` — rewrite to produce a single `test` spec.
-- `tests/integration/test_client_hub.py` — every hardcoded `"default"` / `"shell"` → `"test"`. `TestAgentDiscovery.test_discover_agents_returns_all_mounted` asserts `{"test"}` instead of `{"shell", "default"}`.
-- `tests/test_config.py::test_config_has_default_agents`, `test_shell_config`, `test_config_agents_from_toml` — delete or rewrite per sketch #2 TDD plan.
-- `tests/test_agents/test_spec.py` — every test constructing `AgentSpec` with `system_prompt="shell"` or `output_type="command"` → use `test` or a minimal generic config.
-- `tests/test_agents/test_backend.py` — same.
-- `tests/test_agents/test_registry.py` — drop tests for `"command"` output type and `"shell"`/`"chain-of-thought"` prompts; add test for `"text"` output and `"test"` prompt.
-- `tests/test_cli/test_main.py`, `test_display.py`, `test_approve.py`, `test_chat.py`, `test_prompt.py`, `test_client.py`, `test_hub/test_factory.py`, `test_hub/test_app.py`, `test_llm/test_prompts.py` — grep for `"default"`, `"shell"`, `SHELL_INSTRUCTIONS`, `CHAIN_OF_THOUGHT`, `CommandResult` and update/delete each match.
+**Known gaps.**
 
-handoff.md:
+1. **Prompt pollution.** User-driven context merges everything into one string. The model can't reason about "this is reference, this is my request" separately. Tool-call context doesn't have this problem.
 
-- Existing Phase C sketch (around line ~810 after re-numbering) — add a status note: "Phase C platform work complete. The `shell` agent referenced in the original sketch was deleted as part of the clean-slate agents refactor — its role as the approval-flow canary is now held by the `test` agent defined in `./config.toml`."
-- Config-Driven Redesign sketch — similar status note.
+2. **Dual-path `ContextSettings` inconsistency.** `--file` respects `max_file_size` from config; `read_file` tool doesn't. Same provider, different limits depending on how it's invoked. (Bug fix in sketch #2.)
 
-**Tests to run (no new tests beyond sketch #2).**
+3. **`supported_context_types` dead code.** Published in agent cards, never consumed. `--file` works on any agent regardless of tools list.
 
-- `just ci` — full suite must pass.
-- Manual smoke: `fin start && fin agents` → lists `test`; `fin do test "test text"` → renders "hello world"; `fin do test "test approval"` → approval widget; `fin stop`.
+4. **`build_user_message`/`format_context` in `llm/prompts.py` are dead code.** Duplicates `_inject_context` logic but nothing calls them from the request path.
 
-**Risks / considerations.**
+5. **Talk mode has zero user-driven context.** No `@`-completion, no flags. Model can only get context via tool calls — which works fine but removes the user-steering benefit.
 
-- **Grep-and-replace false positives.** The string `"default"` appears in contexts unrelated to the default agent (e.g., `default=None` function params, Rich panel `border_style="default"`). Review each hit manually.
-- **Commit size.** Probably 500–1000 line diff across 20+ files. Single PR is fine; the scope is contained.
+6. **`git_status` provider orphaned.** `GitContext` provides `git_status` but it's not exposed as a tool or CLI flag.
 
-**Out of scope.** Restructuring docs (this sketch is about updating references, not redesigning the docs themselves).
+7. **`Environment` provider entirely unwired.** Intentionally not exposed (sensitive), no CLI flag.
+
+**Why defer.** Both paths work today. The model-driven path is strictly more capable. Redesigning the user-driven path is a UX decision that deserves its own focused session. Key questions for that session:
+
+- Should user-driven context be a *hint* (steer the model to read a file via tool) rather than raw injection?
+- Should `@`-completion in talk mode still happen, or is model-driven context sufficient?
+- Should `--file`/`--git-diff` survive, evolve, or be replaced?
+- How should `supported_context_types` be consumed — validation, auto-suggestion, both?
+
+**What's happening this round.** Fix the `ContextSettings` bug in tool callables. Everything else waits.
 
 ---
 

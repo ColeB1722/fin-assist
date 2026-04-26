@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from fin_assist.config.schema import ContextSettings
+
 
 @dataclass
 class ApprovalPolicy:
@@ -128,12 +130,17 @@ class ToolRegistry:
         return [self._tools[n] for n in tool_names if n in self._tools]
 
 
-def create_default_registry() -> ToolRegistry:
+def create_default_registry(
+    context_settings: ContextSettings | None = None,
+) -> ToolRegistry:
     """Create a ``ToolRegistry`` pre-loaded with built-in context tools.
 
     The built-in tools wrap existing ``ContextProvider`` classes as
     model-driven tool callables.  They are read-only and require no
     approval.  The ``run_shell`` tool requires approval for every call.
+
+    ``context_settings`` is forwarded to provider constructors so tool
+    callables respect the same limits as the user-driven context path.
     """
     registry = ToolRegistry()
 
@@ -144,7 +151,7 @@ def create_default_registry() -> ToolRegistry:
                 "Read a file and return its contents. "
                 "Use this to inspect source code, config files, or any text file."
             ),
-            callable=_read_file,
+            callable=_make_read_file(context_settings),
             parameters_schema={
                 "type": "object",
                 "properties": {
@@ -165,7 +172,7 @@ def create_default_registry() -> ToolRegistry:
         ToolDefinition(
             name="git_diff",
             description="Show unstaged and staged changes in the current git repository.",
-            callable=_git_diff,
+            callable=_make_git_diff(context_settings),
             parameters_schema={
                 "type": "object",
                 "properties": {},
@@ -177,7 +184,7 @@ def create_default_registry() -> ToolRegistry:
         ToolDefinition(
             name="git_log",
             description="Show recent git commit history (last 10 commits).",
-            callable=_git_log,
+            callable=_make_git_log(context_settings),
             parameters_schema={
                 "type": "object",
                 "properties": {},
@@ -189,7 +196,7 @@ def create_default_registry() -> ToolRegistry:
         ToolDefinition(
             name="shell_history",
             description="Show recent shell command history from the user's fish shell.",
-            callable=_shell_history,
+            callable=_make_shell_history(context_settings),
             parameters_schema={
                 "type": "object",
                 "properties": {
@@ -230,44 +237,56 @@ def create_default_registry() -> ToolRegistry:
     return registry
 
 
-async def _read_file(path: str) -> str:
-    from fin_assist.context.files import FileFinder
+def _make_read_file(settings: ContextSettings | None):
+    async def _read_file(path: str) -> str:
+        from fin_assist.context.files import FileFinder
 
-    finder = FileFinder()
-    item = finder.get_item(path)
-    if item.status != "available":
-        return f"Error reading file '{path}': {item.error_reason}"
-    return item.content
+        finder = FileFinder(settings=settings)
+        item = finder.get_item(path)
+        if item.status != "available":
+            return f"Error reading file '{path}': {item.error_reason}"
+        return item.content
 
-
-async def _git_diff() -> str:
-    from fin_assist.context.git import GitContext
-
-    ctx = GitContext()
-    item = ctx.get_item("git_diff:diff")
-    if item.status != "available":
-        return f"Error getting git diff: {item.error_reason}"
-    return item.content
+    return _read_file
 
 
-async def _git_log() -> str:
-    from fin_assist.context.git import GitContext
+def _make_git_diff(settings: ContextSettings | None):
+    async def _git_diff() -> str:
+        from fin_assist.context.git import GitContext
 
-    ctx = GitContext()
-    item = ctx.get_item("git_log:log")
-    if item.status != "available":
-        return f"Error getting git log: {item.error_reason}"
-    return item.content
+        ctx = GitContext(settings=settings)
+        item = ctx.get_item("git_diff:diff")
+        if item.status != "available":
+            return f"Error getting git diff: {item.error_reason}"
+        return item.content
+
+    return _git_diff
 
 
-async def _shell_history(query: str = "") -> str:
-    from fin_assist.context.history import ShellHistory
+def _make_git_log(settings: ContextSettings | None):
+    async def _git_log() -> str:
+        from fin_assist.context.git import GitContext
 
-    history = ShellHistory()
-    items = history.search(query) if query else history.get_all()
-    if not items:
-        return "No shell history available."
-    return "\n".join(item.content for item in items)
+        ctx = GitContext(settings=settings)
+        item = ctx.get_item("git_log:log")
+        if item.status != "available":
+            return f"Error getting git log: {item.error_reason}"
+        return item.content
+
+    return _git_log
+
+
+def _make_shell_history(settings: ContextSettings | None):
+    async def _shell_history(query: str = "") -> str:
+        from fin_assist.context.history import ShellHistory
+
+        history = ShellHistory(settings=settings)
+        items = history.search(query) if query else history.get_all()
+        if not items:
+            return "No shell history available."
+        return "\n".join(item.content for item in items)
+
+    return _shell_history
 
 
 async def _run_shell(command: str) -> str:

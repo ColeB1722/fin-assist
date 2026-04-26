@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
+    from fin_assist.config.schema import ContextSettings
 
 
 def _extract_card_meta(sub_app: FastAPI) -> dict:
@@ -46,6 +47,7 @@ def create_hub_app(
     db_path: str = ":memory:",
     base_url: str = "http://127.0.0.1:4096",
     backend_factory: Callable[[AgentSpec], AgentBackend] | None = None,
+    context_settings: ContextSettings | None = None,
 ) -> FastAPI:
     """Build and return the parent FastAPI hub application.
 
@@ -61,10 +63,13 @@ def create_hub_app(
                          for each ``AgentSpec``.  When ``None`` (default) each
                          agent gets a ``PydanticAIBackend``.  Inject fakes for
                          integration tests.
+        context_settings: Optional ``ContextSettings`` forwarded to tool
+                         callables so model-driven tools respect the same
+                         limits as the user-driven context path.
     """
     agents = agents or []
     context_store = ContextStore(db_path=db_path)
-    factory = AgentFactory(context_store=context_store)
+    factory = AgentFactory(context_store=context_store, context_settings=context_settings)
 
     app = FastAPI(
         title="fin-assist Agent Hub",

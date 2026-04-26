@@ -219,7 +219,12 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         for name, ac in config.agents.items()
         if ac.enabled
     ]
-    app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
+    app = create_hub_app(
+        agents=agents,
+        db_path=db_path,
+        base_url=f"http://{host}:{port}",
+        context_settings=config.context,
+    )
     uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(uvicorn_config)
     asyncio.run(server.serve(sockets=[sock]))
@@ -354,7 +359,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a one-shot query to an agent (no memory).",
     )
     do_parser.add_argument(
-        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+        "agent",
+        nargs="?",
+        default=None,
+        help="Name of the agent to use (default: from config or 'default').",
     )
     do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
     do_parser.add_argument(
@@ -382,7 +390,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Start a multi-turn chat session with an agent.",
     )
     talk_parser.add_argument(
-        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+        "agent",
+        nargs="?",
+        default=None,
+        help="Name of the agent to use (default: from config or 'default').",
     )
     talk_parser.add_argument(
         "message",
@@ -436,6 +447,28 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.command in ("do", "talk") and args.agent is None:
+        agent = config.general.default_agent
+        if agent is None:
+            if not config.agents:
+                render_error(
+                    "No agents configured. "
+                    "Add an [agents.*] section to config.toml.\n"
+                    "Example:\n\n"
+                    "  [agents.default]\n"
+                    '  system_prompt = "chain-of-thought"\n'
+                    '  tools = ["read_file", "git_diff", "run_shell"]'
+                )
+            else:
+                names = ", ".join(config.agents)
+                render_error(
+                    "No default agent set. Specify an agent name or set "
+                    "[general] default_agent in config.toml.\n"
+                    f"Available agents: {names}"
+                )
+            return 1
+        args.agent = agent
 
     match args.command:
         case "agents":

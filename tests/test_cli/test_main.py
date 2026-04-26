@@ -703,3 +703,64 @@ class TestMainArgParsing:
         with pytest.raises(SystemExit) as exc_info:
             main(["unknown-cmd"])
         assert exc_info.value.code != 0
+
+
+class TestDefaultAgentResolution:
+    def test_do_without_agent_and_no_default_returns_1(self):
+        from fin_assist.config.schema import Config
+
+        with (
+            patch("fin_assist.cli.main.load_config", return_value=(Config(), None)),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("do", "hello")
+        assert result == 1
+        msg = mock_error.call_args[0][0]
+        assert "No agents" in msg or "No default" in msg
+
+    def test_talk_without_agent_and_no_default_returns_1(self):
+        from fin_assist.config.schema import Config
+
+        with (
+            patch("fin_assist.cli.main.load_config", return_value=(Config(), None)),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("talk")
+        assert result == 1
+        msg = mock_error.call_args[0][0]
+        assert "No agents" in msg or "No default" in msg
+
+    def test_do_uses_default_agent_from_config(self):
+        agent = _make_discovered("my-agent")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="ok"),
+        )
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.main.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="ok"), []),
+            ),
+            patch(
+                "fin_assist.cli.main.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+            patch("fin_assist.cli.main.load_config") as mock_load,
+        ):
+            from fin_assist.config.schema import Config, GeneralSettings
+
+            config = Config(general=GeneralSettings(default_agent="my-agent"))
+            mock_load.return_value = (config, None)
+            result = _run_main("do", "hello")
+
+        assert result == 0

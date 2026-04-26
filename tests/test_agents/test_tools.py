@@ -482,3 +482,17 @@ class TestRunShellCallable:
             result = await _invoke(tool, command="bad cmd")
         assert "Error executing command" in result
         assert "no fork" in result
+
+
+class TestCreateDefaultRegistryContextSettings:
+    def test_accepts_context_settings(self):
+        from fin_assist.config.schema import ContextSettings
+
+        settings = ContextSettings(max_file_size=500)
+        registry = create_default_registry(context_settings=settings)
+        assert registry is not None
+        assert len(registry.list_tools()) > 0
+
+    def test_none_context_settings_works(self):
+        registry = create_default_registry(context_settings=None)
+        assert registry is not None

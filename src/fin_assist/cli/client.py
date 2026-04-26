@@ -348,10 +348,12 @@ class HubClient:
 
         task: Task | None = None
         accumulated_thinking: list[str] = []
+        collected_artifacts: list[Any] = []
 
         async for response in client.send_message(request):
             is_terminal, resp_task, artifact = self._process_response(response)
             if artifact is not None:
+                collected_artifacts.append(artifact)
                 for part in artifact.parts:
                     if not part.text:
                         continue
@@ -370,6 +372,10 @@ class HubClient:
                 break
 
         if task is not None:
+            if collected_artifacts and not task.artifacts:
+                for artifact in collected_artifacts:
+                    task.artifacts.append(artifact)
+
             state = task.status.state
             result = self._extract_result(task)
             if accumulated_thinking and not result.thinking:

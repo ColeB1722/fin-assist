@@ -17,6 +17,7 @@ from fin_assist.config.schema import (
     ProviderConfig,
     ServerSettings,
 )
+from fin_assist.paths import DATA_DIR
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +38,7 @@ class TestGeneralSettings:
         settings = GeneralSettings()
         assert settings.default_provider == "anthropic"
         assert settings.default_model == "claude-sonnet-4-6"
+        assert settings.default_agent is None
         assert settings.thinking_effort == "medium"
         assert settings.keybinding == "ctrl-enter"
 
@@ -45,11 +47,13 @@ class TestGeneralSettings:
         settings = GeneralSettings(
             default_provider="ollama",
             default_model="llama3",
+            default_agent="test",
             thinking_effort="low",
             keybinding="ctrl-space",
         )
         assert settings.default_provider == "ollama"
         assert settings.default_model == "llama3"
+        assert settings.default_agent == "test"
         assert settings.thinking_effort == "low"
         assert settings.keybinding == "ctrl-space"
 
@@ -86,7 +90,7 @@ class TestServerSettings:
         settings = ServerSettings()
         assert settings.host == "127.0.0.1"
         assert settings.port == 4096
-        assert settings.db_path == "~/.local/share/fin/hub.db"
+        assert settings.db_path.endswith("hub.db")
 
     def test_server_settings_custom_values(self) -> None:
         settings = ServerSettings(host="0.0.0.0", port=8080, db_path="/tmp/test.db")
@@ -309,7 +313,7 @@ port = 9000
         config, _ = load_config(config_file)
         assert config.server.port == 9000
         assert config.server.host == "127.0.0.1"
-        assert config.server.db_path == "~/.local/share/fin/hub.db"
+        assert config.server.db_path.endswith("hub.db")
 
     def test_load_config_path_default(self, tmp_path: Path) -> None:
         """Test that default path is ~/.config/fin/config.toml."""
@@ -447,12 +451,13 @@ class TestAgentConfig:
         assert ac.serving_modes == ["do"]
         assert ac.output_type == "command"
 
-    def test_config_has_default_agents(self) -> None:
+    def test_config_has_empty_default_agents(self) -> None:
         config = Config()
-        assert "default" in config.agents
-        assert "shell" in config.agents
-        assert config.agents["default"].output_type == "text"
-        assert config.agents["shell"].output_type == "command"
+        assert config.agents == {}
+
+    def test_config_default_agent_is_none(self) -> None:
+        config = Config()
+        assert config.general.default_agent is None
 
     def test_config_agents_from_toml(self, tmp_path: Path) -> None:
         config_file = tmp_path / "config.toml"
@@ -468,3 +473,17 @@ class TestAgentConfig:
         )
         config, _ = load_config(config_file)
         assert config.agents["shell"].serving_modes == ["do"]
+
+
+class TestServerSettingsDataDir:
+    """ServerSettings defaults derive from paths.DATA_DIR."""
+
+    def test_server_settings_db_path_matches_data_dir(self):
+        assert ServerSettings().db_path == str(DATA_DIR / "hub.db")
+        assert ServerSettings().log_path == str(DATA_DIR / "hub.log")
+
+    def test_fin_server_log_path_env_overrides_data_dir(self):
+        with patch.dict(os.environ, {"FIN_SERVER__LOG_PATH": "/var/log/fin.log"}):
+            config = Config()
+            assert config.server.log_path == "/var/log/fin.log"
+            assert config.server.db_path == str(DATA_DIR / "hub.db")

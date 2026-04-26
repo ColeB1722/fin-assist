@@ -20,6 +20,8 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from fin_assist.paths import DATA_DIR
+
 ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 ServingMode = Literal["do", "talk"]
@@ -30,6 +32,7 @@ class GeneralSettings(BaseModel):
 
     default_provider: str = "anthropic"
     default_model: str = "claude-sonnet-4-6"
+    default_agent: str | None = None
     thinking_effort: ThinkingEffort = "medium"
     keybinding: str = "ctrl-enter"
 
@@ -56,8 +59,8 @@ class ServerSettings(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = 4096
-    db_path: str = "~/.local/share/fin/hub.db"
-    log_path: str = "~/.local/share/fin/hub.log"
+    db_path: str = str(DATA_DIR / "hub.db")
+    log_path: str = str(DATA_DIR / "hub.log")
 
 
 class AgentConfig(BaseModel):
@@ -77,31 +80,7 @@ class AgentConfig(BaseModel):
     tools: list[str] = Field(default_factory=list)
 
 
-_DEFAULT_AGENTS: dict[str, AgentConfig] = {
-    "default": AgentConfig(
-        description=(
-            "General-purpose assistant. Helps with questions, "
-            "shell commands, brainstorming, and more."
-        ),
-        system_prompt="chain-of-thought",
-        output_type="text",
-        thinking="medium",
-        serving_modes=["do", "talk"],
-        tools=["read_file", "git_diff", "git_log", "shell_history"],
-    ),
-    "shell": AgentConfig(
-        description=(
-            "One-shot shell command generator. Give it a natural-language "
-            "request and get back a ready-to-run command."
-        ),
-        system_prompt="shell",
-        output_type="command",
-        thinking="off",
-        serving_modes=["do"],
-        tools=["run_shell"],
-        tags=["shell", "one-shot"],
-    ),
-}
+_DEFAULT_AGENTS: dict[str, AgentConfig] = {}
 
 
 class Config(BaseSettings):

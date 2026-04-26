@@ -149,6 +149,17 @@ class TestStreamingRoundTrip:
         assert events[-1].result is not None
         assert events[-1].result.success is True
 
+    async def test_stream_populates_result_output_from_artifacts(
+        self, hub_client: HubClient
+    ) -> None:
+        events = []
+        async for event in hub_client.stream_agent("default", "hello"):
+            events.append(event)
+
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].result.output != ""
+
     async def test_stream_with_thinking(self, fake_agents: list[AgentSpec]) -> None:
         def factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(response="answer", thinking=["hmm", "let me think"])

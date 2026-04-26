@@ -35,7 +35,7 @@
     ANTHROPIC_API_KEY = config.secretspec.secrets.ANTHROPIC_API_KEY or "";
     FIN_GENERAL__DEFAULT_PROVIDER = "openrouter";
     FIN_GENERAL__DEFAULT_MODEL = "google/gemini-2.5-flash";
-    FIN_SERVER__LOG_PATH = "./hub.log";
+    FIN_DATA_DIR = "./.fin";
   };
 
   git-hooks.hooks = {

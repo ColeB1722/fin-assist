@@ -24,11 +24,17 @@ class TestSystemPrompts:
     def test_shell_exists(self) -> None:
         assert "shell" in SYSTEM_PROMPTS
 
+    def test_test_exists(self) -> None:
+        assert "test" in SYSTEM_PROMPTS
+
     def test_chain_of_thought_is_non_empty(self) -> None:
         assert len(SYSTEM_PROMPTS["chain-of-thought"]) > 0
 
     def test_shell_is_non_empty(self) -> None:
         assert len(SYSTEM_PROMPTS["shell"]) > 0
 
+    def test_test_is_non_empty(self) -> None:
+        assert len(SYSTEM_PROMPTS["test"]) > 0
+
     def test_has_expected_keys(self) -> None:
-        assert set(SYSTEM_PROMPTS.keys()) == {"chain-of-thought", "shell"}
+        assert set(SYSTEM_PROMPTS.keys()) == {"chain-of-thought", "shell", "test"}
