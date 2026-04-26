@@ -83,6 +83,19 @@ This project is intended to run locally for personal use. Dev ergonomics: runtim
 
 **When adding a new runtime path:** plumb it through `src/fin_assist/paths.py`, honor `FIN_DATA_DIR`, and update the table above.
 
+### Env var naming convention
+
+This split is **project-specific**, not an industry standard — but we apply it consistently so the reading mechanism is obvious from the name:
+
+| Pattern | Read by | Example | When to use |
+|---------|---------|---------|-------------|
+| `FIN_<NAME>` (single `_`) | `os.environ.get()` directly | `FIN_DATA_DIR` | Bootstrap vars needed before pydantic loads (paths, feature flags) |
+| `FIN_<SECTION>__<FIELD>` (double `__`) | pydantic-settings | `FIN_GENERAL__DEFAULT_MODEL`, `FIN_SERVER__PORT` | Anything in `config/schema.py` — `env_nested_delimiter="__"` maps `SECTION__FIELD` → `config.section.field` |
+
+**Context:** Double-underscore as a nested-section delimiter is a pydantic-settings convention (also used by ASP.NET Core and others) — it's not in POSIX or any RFC. We adopted it for config and kept flat bootstrap vars on single underscore to signal "this is read before pydantic is initialized."
+
+**When adding a new env var:** if it feeds into pydantic config, add it to `config/schema.py` and it becomes `FIN_<SECTION>__<FIELD>` automatically. If it must be read at import time (like `paths.py`), use `FIN_<NAME>` via `os.environ.get()` and document it in the Local Development Paths table.
+
 ## Key Decisions
 
 | Decision | Choice | Rationale |

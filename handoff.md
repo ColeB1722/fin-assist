@@ -17,6 +17,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 - Context UX redesign — both paths work, model-driven is strictly more capable, user-driven needs rethinking. See "Context UX" sketch.
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)) — revisit when a second backend is needed
 - **`_CONTEXT_TYPE_MAP` centralization** — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool-name→context-type mappings, coupling the agent spec to context internals. Tests in `test_spec.py` read from this private attribute. Should be centralized (e.g., on `ContextType` or a dedicated mapping in the context module) so both `AgentSpec.context_type_for_tool()` and the context providers share a single source of truth. Also unblocks fixing `hub/factory.py:124` which mutates `agent._tool_registry` (a private attribute) — once the map is public, `requires_approval` can access the registry through a cleaner interface.
+- **CLI capabilities listing** ([#88](https://github.com/ColeB1722/fin-assist/issues/88)) — `fin list tools/prompts/output-types/backends` to make the platform self-documenting. Could also simplify runtime parsing (config validation against registries, eliminate `Literal` types in favor of registry-as-source-of-truth, fold `_CONTEXT_TYPE_MAP` into tool definitions).
 
 ---
 

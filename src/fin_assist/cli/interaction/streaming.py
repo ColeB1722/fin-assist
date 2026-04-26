@@ -73,13 +73,15 @@ def _format_tool_call(event: StreamEvent) -> Text:
 
 def _key_arg_for_tool(tool_name: str, args: dict[str, Any]) -> str:
     """Return the most informative arg value for inline display."""
-    if tool_name == "run_shell" and "command" in args:
-        return str(args["command"])
-    if tool_name == "read_file" and "path" in args:
-        return str(args["path"])
-    if tool_name == "shell_history" and "query" in args and args["query"]:
-        return str(args["query"])
-    return ""
+    match tool_name, args:
+        case "run_shell", {"command": command}:
+            return str(command)
+        case "read_file", {"path": path}:
+            return str(path)
+        case "shell_history", {"query": query} if query:
+            return str(query)
+        case _:
+            return ""
 
 
 def _format_tool_result(event: StreamEvent) -> Text:

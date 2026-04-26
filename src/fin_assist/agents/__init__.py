@@ -9,5 +9,3 @@ pay the cost of importing ``pydantic_ai`` / ``fastmcp`` / ``mcp`` /
 warm cache and is only needed when actually constructing/using a
 backend.
 """
-
-from __future__ import annotations

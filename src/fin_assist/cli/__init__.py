@@ -7,5 +7,3 @@ cannot transitively trigger the ``fin_assist.agents.backend`` →
 ``pydantic_ai`` import chain (~1s) when the caller only needs a
 lightweight type.
 """
-
-from __future__ import annotations

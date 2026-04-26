@@ -364,27 +364,27 @@ class HubClient:
                 for part in artifact.parts:
                     if not part.text and not part.HasField("data") and not part.metadata:
                         continue
-                    if _is_thinking(part):
-                        accumulated_thinking.append(part.text)
-                        yield StreamEvent(kind="thinking_delta", text=part.text)
-                    elif _is_deferred(part):
-                        continue
-                    elif _is_tool_call(part):
-                        meta = struct_to_dict(part.metadata)
-                        yield StreamEvent(
-                            kind="tool_call",
-                            tool_name=meta.get("tool_name", ""),
-                            tool_args=meta.get("args", {}),
-                        )
-                    elif _is_tool_result(part):
-                        meta = struct_to_dict(part.metadata)
-                        yield StreamEvent(
-                            kind="tool_result",
-                            text=part.text,
-                            tool_name=meta.get("tool_name", ""),
-                        )
-                    else:
-                        yield StreamEvent(kind="text_delta", text=part.text)
+                    meta = struct_to_dict(part.metadata)
+                    match meta.get("type"):
+                        case "thinking":
+                            accumulated_thinking.append(part.text)
+                            yield StreamEvent(kind="thinking_delta", text=part.text)
+                        case "deferred":
+                            continue
+                        case "tool_call":
+                            yield StreamEvent(
+                                kind="tool_call",
+                                tool_name=meta.get("tool_name", ""),
+                                tool_args=meta.get("args", {}),
+                            )
+                        case "tool_result":
+                            yield StreamEvent(
+                                kind="tool_result",
+                                text=part.text,
+                                tool_name=meta.get("tool_name", ""),
+                            )
+                        case _:
+                            yield StreamEvent(kind="text_delta", text=part.text)
             if resp_task is not None:
                 task = resp_task
             if response.HasField("status_update") and task is not None:
@@ -402,18 +402,18 @@ class HubClient:
             if accumulated_thinking and not result.thinking:
                 result.thinking = accumulated_thinking
             if state == TaskState.TASK_STATE_INPUT_REQUIRED:
-                deferred_calls = _extract_deferred_calls(task)
                 yield StreamEvent(
                     kind="input_required",
                     result=result,
-                    deferred_calls=deferred_calls,
+                    deferred_calls=_extract_deferred_calls(task),
                 )
             elif result.auth_required:
                 yield StreamEvent(kind="auth_required", result=result)
-            elif result.success:
-                yield StreamEvent(kind="completed", result=result)
             else:
-                yield StreamEvent(kind="failed", result=result)
+                yield StreamEvent(
+                    kind="completed" if result.success else "failed",
+                    result=result,
+                )
         else:
             yield StreamEvent(
                 kind="failed",

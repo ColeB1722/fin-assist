@@ -403,33 +403,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     do_parser.add_argument(
         "--agent",
-        dest="agent",
         default=None,
         help="Name of the agent to use (default: from config or 'default').",
     )
     do_parser.add_argument("prompt", nargs="?", help="The prompt to send.")
     do_parser.add_argument(
         "--edit",
-        dest="edit",
         action="store_true",
         help="Open input panel pre-filled with prompt for editing before sending.",
     )
     do_parser.add_argument(
         "--show-thinking",
-        dest="show_thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the output.",
     )
     do_parser.add_argument(
         "--file",
-        dest="files",
+        dest="files",  # action="append" + singular flag → plural attribute
         action="append",
         default=[],
         help="Inject file contents as context (may be specified multiple times).",
     )
     do_parser.add_argument(
         "--git-diff",
-        dest="git_diff",
         action="store_true",
         help="Inject git diff as context.",
     )
@@ -440,7 +436,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     talk_parser.add_argument(
         "--agent",
-        dest="agent",
         default=None,
         help="Name of the agent to use (default: from config or 'default').",
     )
@@ -452,25 +447,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     talk_parser.add_argument(
         "--edit",
-        dest="edit",
         action="store_true",
         help="Open input panel pre-filled with message for editing before sending.",
     )
     talk_parser.add_argument(
         "--list",
-        dest="list_sessions",
+        dest="list_sessions",  # avoid shadowing builtin `list`
         action="store_true",
         help="List saved sessions for the agent.",
     )
     talk_parser.add_argument(
         "--resume",
-        dest="resume",
         metavar="SESSION_ID",
         help="Resume a saved session.",
     )
     talk_parser.add_argument(
         "--show-thinking",
-        dest="show_thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the chat output.",
     )
