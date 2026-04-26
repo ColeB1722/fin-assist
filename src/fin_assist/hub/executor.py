@@ -112,6 +112,7 @@ class Executor(AgentExecutor):
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id or str(uuid.uuid4())
         context_id = context.context_id or str(uuid.uuid4())
+        logger.info("execute start task_id=%s context_id=%s", task_id, context_id)
         updater = TaskUpdater(
             event_queue=event_queue,
             task_id=task_id,
@@ -130,6 +131,7 @@ class Executor(AgentExecutor):
         # 1. Check credentials
         missing = self._backend.check_credentials()
         if missing:
+            logger.warning("auth required task_id=%s missing=%s", task_id, missing)
             exc = MissingCredentialsError(providers=missing)
             auth_msg = updater.new_agent_message(parts=[Part(text=str(exc))])
             await updater.requires_auth(message=auth_msg)
@@ -143,9 +145,17 @@ class Executor(AgentExecutor):
         message_history: list[Any] = (
             self._backend.deserialize_history(serialized_history) if serialized_history else []
         )
+        logger.debug(
+            "history loaded task_id=%s resumed=%s message_count=%d",
+            task_id,
+            serialized_history is not None,
+            len(message_history),
+        )
 
         # 3. Check for resume (approval_result in incoming message)
         deferred_results = self._extract_approval_results(context.message)
+        if deferred_results is not None:
+            logger.info("resuming from approval task_id=%s", task_id)
 
         # 4. Run backend with step-driven dispatch
         artifact_id = str(uuid.uuid4())
@@ -171,6 +181,7 @@ class Executor(AgentExecutor):
                 result: RunResult = await handle.result()
                 if raw_context_id:
                     await self._context_store.save(raw_context_id, result.serialized_history)
+                logger.info("paused for approval task_id=%s", task_id)
                 deferred_msg = updater.new_agent_message(parts=[Part(text="Waiting for approval")])
                 await updater.requires_input(message=deferred_msg)
                 return
@@ -186,6 +197,7 @@ class Executor(AgentExecutor):
             created_artifacts.add(artifact_id)
             result = await handle.result()
         except Exception:
+            logger.exception("execute failed task_id=%s", task_id)
             await updater.failed()
             raise
 
@@ -203,6 +215,7 @@ class Executor(AgentExecutor):
                 created_artifacts,
             )
 
+        logger.info("execute complete task_id=%s", task_id)
         await updater.complete()
 
     async def _dispatch_step_event(
@@ -353,9 +366,11 @@ class Executor(AgentExecutor):
         return self._backend.build_deferred_results(decisions)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
+        task_id = context.task_id or str(uuid.uuid4())
+        logger.info("cancel task_id=%s", task_id)
         updater = TaskUpdater(
             event_queue=event_queue,
-            task_id=context.task_id or str(uuid.uuid4()),
+            task_id=task_id,
             context_id=context.context_id or str(uuid.uuid4()),
         )
         await updater.cancel()

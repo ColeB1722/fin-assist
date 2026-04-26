@@ -115,6 +115,17 @@ This split is **project-specific**, not an industry standard — but we apply it
 - Use `pytest-textual-snapshot` for TUI tests
 - Run `just test-cov` for coverage report
 
+## Logging
+
+- **Hub**: `src/fin_assist/hub/logging.py` configures a rotating file handler writing to `$FIN_DATA_DIR/hub.log`. All `logging.getLogger(__name__)` calls anywhere in the hub inherit this handler — no per-module setup needed.
+- **Levels**:
+  - `INFO` for lifecycle events (task start/end, auth required, pause for approval, resume, agent mount)
+  - `WARNING` for recoverable anomalies (missing credentials, malformed payloads)
+  - `DEBUG` for per-event internals (history load, event dispatch details)
+  - `logger.exception(...)` for caught-and-re-raised exceptions so stack traces land in hub.log
+- **CLI**: no logging configured — user-facing messages go via `render_info` / `render_error` in `cli/display.py`. A `--verbose` → `$FIN_DATA_DIR/cli.log` story is planned but not implemented.
+- **When adding logs**: prefer structured key=value fields (`task_id=%s`, `missing=%s`) over prose so future log aggregation is easier. Don't log anything that could contain user secrets (API keys, file contents beyond path).
+
 ## Session Handoffs (handoff.md)
 
 `handoff.md` is the rolling context document for multi-session development. It enables seamless handoffs between coding sessions (including AI agent sessions).

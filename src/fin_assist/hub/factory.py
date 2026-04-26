@@ -17,6 +17,7 @@ as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from fin_assist.agents.spec import AgentSpec
     from fin_assist.config.schema import ContextSettings
     from fin_assist.hub.context_store import ContextStore
+
+logger = logging.getLogger(__name__)
 
 
 class AgentFactory:
@@ -144,4 +147,10 @@ class AgentFactory:
         app.routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
 
         app.state.agent_card = agent_card
+        logger.info(
+            "agent mounted name=%s tools=%s serving_modes=%s",
+            agent.name,
+            list(agent.tools),
+            list(meta.serving_modes),
+        )
         return app
