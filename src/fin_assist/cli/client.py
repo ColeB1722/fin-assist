@@ -63,6 +63,8 @@ class StreamEvent(BaseModel):
     kind: Literal[
         "text_delta",
         "thinking_delta",
+        "tool_call",
+        "tool_result",
         "completed",
         "failed",
         "auth_required",
@@ -71,6 +73,8 @@ class StreamEvent(BaseModel):
     text: str = ""
     result: AgentResult | None = None
     deferred_calls: list[dict[str, Any]] = Field(default_factory=list)
+    tool_name: str = ""
+    tool_args: dict[str, Any] = Field(default_factory=dict)
 
 
 def _part_struct_data(part) -> dict[str, Any] | None:
@@ -88,6 +92,16 @@ def _is_thinking(part) -> bool:
 def _is_deferred(part) -> bool:
     """Return whether a Part's metadata marks it as a deferred tool call."""
     return struct_to_dict(part.metadata).get("type") == "deferred"
+
+
+def _is_tool_call(part) -> bool:
+    """Return whether a Part's metadata marks it as a tool invocation."""
+    return struct_to_dict(part.metadata).get("type") == "tool_call"
+
+
+def _is_tool_result(part) -> bool:
+    """Return whether a Part's metadata marks it as a tool result."""
+    return struct_to_dict(part.metadata).get("type") == "tool_result"
 
 
 def _extract_deferred_calls(task) -> list[dict[str, Any]]:
@@ -194,7 +208,7 @@ class HubClient:
 
         for artifact in reversed(task.artifacts):
             for part in artifact.parts:
-                if _is_thinking(part):
+                if _is_thinking(part) or _is_tool_call(part) or _is_tool_result(part):
                     continue
                 data = _part_struct_data(part)
                 if data is not None:
@@ -348,13 +362,27 @@ class HubClient:
             if artifact is not None:
                 collected_artifacts.append(artifact)
                 for part in artifact.parts:
-                    if not part.text:
+                    if not part.text and not part.HasField("data") and not part.metadata:
                         continue
                     if _is_thinking(part):
                         accumulated_thinking.append(part.text)
                         yield StreamEvent(kind="thinking_delta", text=part.text)
                     elif _is_deferred(part):
                         continue
+                    elif _is_tool_call(part):
+                        meta = struct_to_dict(part.metadata)
+                        yield StreamEvent(
+                            kind="tool_call",
+                            tool_name=meta.get("tool_name", ""),
+                            tool_args=meta.get("args", {}),
+                        )
+                    elif _is_tool_result(part):
+                        meta = struct_to_dict(part.metadata)
+                        yield StreamEvent(
+                            kind="tool_result",
+                            text=part.text,
+                            tool_name=meta.get("tool_name", ""),
+                        )
                     else:
                         yield StreamEvent(kind="text_delta", text=part.text)
             if resp_task is not None:

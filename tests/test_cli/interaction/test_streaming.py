@@ -8,7 +8,11 @@ import pytest
 
 from fin_assist.agents.metadata import AgentResult
 from fin_assist.cli.client import StreamEvent
-from fin_assist.cli.interaction.streaming import render_stream
+from fin_assist.cli.interaction.streaming import (
+    _format_tool_call,
+    _format_tool_result,
+    render_stream,
+)
 
 
 async def _events(*events: StreamEvent) -> AsyncIterator[StreamEvent]:
@@ -159,3 +163,135 @@ class TestRenderStreamInputRequired:
         final, deferred = await render_stream(events)
         assert len(deferred) == 1
         assert "partial" in final.output
+
+
+class TestFormatToolCall:
+    def test_run_shell_shows_command(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="run_shell",
+            tool_args={"command": "ls -F"},
+        )
+        rendered = _format_tool_call(event)
+        plain = rendered.plain
+        assert "run_shell" in plain
+        assert "ls -F" in plain
+
+    def test_read_file_shows_path(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="read_file",
+            tool_args={"path": "treefmt.toml"},
+        )
+        rendered = _format_tool_call(event)
+        plain = rendered.plain
+        assert "read_file" in plain
+        assert "treefmt.toml" in plain
+
+    def test_unknown_tool_uses_fallback_icon(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="custom_tool",
+            tool_args={"query": "search"},
+        )
+        rendered = _format_tool_call(event)
+        plain = rendered.plain
+        assert "custom_tool" in plain
+        assert "🔧" in plain
+
+    def test_git_diff_no_key_arg(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="git_diff",
+            tool_args={},
+        )
+        rendered = _format_tool_call(event)
+        plain = rendered.plain
+        assert "git_diff" in plain
+        assert ":" not in plain.split("git_diff", 1)[1]
+
+
+class TestFormatToolResult:
+    def test_single_line_result(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="No uncommitted changes",
+            tool_name="git_diff",
+        )
+        rendered = _format_tool_result(event)
+        plain = rendered.plain
+        assert "No uncommitted changes" in plain
+
+    def test_multiline_result_shows_line_count(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="line1\nline2\nline3",
+            tool_name="run_shell",
+        )
+        rendered = _format_tool_result(event)
+        plain = rendered.plain
+        assert "3 lines" in plain
+        assert "line1" in plain
+
+    def test_empty_result_produces_no_output(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="",
+            tool_name="run_shell",
+        )
+        rendered = _format_tool_result(event)
+        assert rendered.plain == ""
+
+    def test_long_single_line_truncated(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="x" * 200,
+            tool_name="run_shell",
+        )
+        rendered = _format_tool_result(event)
+        plain = rendered.plain
+        assert "…" in plain
+        assert len(plain) < 200
+
+
+class TestRenderStreamToolEvents:
+    async def test_tool_call_and_result_interleaved_with_text(self):
+        result = AgentResult(success=True, output="the answer")
+        events = _events(
+            StreamEvent(kind="text_delta", text="Let me check...\n"),
+            StreamEvent(
+                kind="tool_call",
+                tool_name="run_shell",
+                tool_args={"command": "ls -F"},
+            ),
+            StreamEvent(
+                kind="tool_result",
+                text="AGENTS.md  README.md",
+                tool_name="run_shell",
+            ),
+            StreamEvent(kind="text_delta", text="Here's what I found."),
+            StreamEvent(kind="completed", result=result),
+        )
+        final, deferred = await render_stream(events)
+        assert deferred == []
+        assert final.success is True
+
+    async def test_tool_call_event_does_not_pollute_text(self):
+        result = AgentResult(success=True, output="done")
+        events = _events(
+            StreamEvent(
+                kind="tool_call",
+                tool_name="read_file",
+                tool_args={"path": "config.toml"},
+            ),
+            StreamEvent(
+                kind="tool_result",
+                text="[global]\nexcludes = []",
+                tool_name="read_file",
+            ),
+            StreamEvent(kind="text_delta", text="The config is fine."),
+            StreamEvent(kind="completed", result=result),
+        )
+        final, deferred = await render_stream(events)
+        assert final.success is True
+        assert "config.toml" not in final.output

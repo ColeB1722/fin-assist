@@ -238,11 +238,10 @@ class Executor(AgentExecutor):
                         **event.metadata,
                     }
                 )
-                args_text = str(event.metadata.get("args", {}))
                 await self._emit_artifact(
                     updater,
                     artifact_id,
-                    [Part(text=args_text, metadata=tool_meta)],
+                    [Part(text="", metadata=tool_meta)],
                     created_artifacts,
                     last_chunk=False,
                 )
@@ -310,11 +309,10 @@ class Executor(AgentExecutor):
                 "args": getattr(deferred_content, "args", {}),
             }
         )
-        args_text = str(getattr(deferred_content, "args", {}))
         await self._emit_artifact(
             updater,
             artifact_id,
-            [Part(text=args_text, metadata=deferred_meta)],
+            [Part(text="", metadata=deferred_meta)],
             created_artifacts,
             last_chunk=False,
         )

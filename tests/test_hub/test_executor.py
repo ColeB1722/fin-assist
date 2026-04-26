@@ -703,7 +703,7 @@ class TestExecutorToolCallDispatch:
             for call in event_queue.enqueue_event.call_args_list
             if hasattr(call.args[0], "artifact")
         ]
-        tool_call_artifacts = []
+        tool_call_parts = []
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
@@ -713,12 +713,12 @@ class TestExecutorToolCallDispatch:
                     else {}
                 )
                 if meta_dict.get("type") == "tool_call":
-                    tool_call_artifacts.append((part, meta_dict))
+                    tool_call_parts.append((part, meta_dict))
 
-        assert len(tool_call_artifacts) == 1
-        part, meta = tool_call_artifacts[0]
+        assert len(tool_call_parts) == 1
+        part, meta = tool_call_parts[0]
         assert meta["tool_name"] == "read_file"
-        assert "path" in part.text
+        assert meta.get("args", {}).get("path") == "test.py"
 
     async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
         from google.protobuf.json_format import MessageToDict
@@ -748,7 +748,7 @@ class TestExecutorToolCallDispatch:
             for call in event_queue.enqueue_event.call_args_list
             if hasattr(call.args[0], "artifact")
         ]
-        tool_result_artifacts = []
+        tool_result_parts = []
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
@@ -758,10 +758,10 @@ class TestExecutorToolCallDispatch:
                     else {}
                 )
                 if meta_dict.get("type") == "tool_result":
-                    tool_result_artifacts.append((part, meta_dict))
+                    tool_result_parts.append((part, meta_dict))
 
-        assert len(tool_result_artifacts) == 1
-        part, meta = tool_result_artifacts[0]
+        assert len(tool_result_parts) == 1
+        part, meta = tool_result_parts[0]
         assert meta["tool_name"] == "read_file"
         assert part.text == "file contents here"
 

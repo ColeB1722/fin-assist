@@ -86,11 +86,11 @@ class TestServeCommand:
     def test_serve_starts_uvicorn(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config"),
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -102,11 +102,11 @@ class TestServeCommand:
     def test_serve_allows_host_override(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -118,11 +118,11 @@ class TestServeCommand:
     def test_serve_allows_port_override(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -165,11 +165,11 @@ class TestServeCommand:
         mock_server = MagicMock()
         mock_sock = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config"),
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=mock_sock),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -197,7 +197,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -215,7 +215,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -235,7 +235,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error"),
         ):
             mock_client = AsyncMock()
@@ -259,7 +259,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error", side_effect=rendered.append),
         ):
             mock_client = AsyncMock()
@@ -309,7 +309,7 @@ class TestAgentsCommand:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_agents_list"),
         ):
             result = _run_main("agents")
@@ -354,14 +354,14 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch(
-                "fin_assist.cli.main.render_stream",
+                "fin_assist.cli.interaction.streaming.render_stream",
                 new_callable=AsyncMock,
                 return_value=(AgentResult(success=True, output="ls -la"), []),
             ),
             patch(
-                "fin_assist.cli.main.handle_post_response",
+                "fin_assist.cli.interaction.response.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
             ),
@@ -382,7 +382,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "nonexistent", "do something")
@@ -417,7 +417,7 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
             result = _run_main("do", "shell", "do something")
@@ -522,10 +522,10 @@ class TestSessionIdFormat:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main._save_session", side_effect=capture_save),
             patch(
-                "fin_assist.cli.main.run_chat_loop",
+                "fin_assist.cli.interaction.chat.run_chat_loop",
                 new_callable=AsyncMock,
                 return_value="ctx-uuid-123",
             ),
@@ -744,14 +744,14 @@ class TestDefaultAgentResolution:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch(
-                "fin_assist.cli.main.render_stream",
+                "fin_assist.cli.interaction.streaming.render_stream",
                 new_callable=AsyncMock,
                 return_value=(AgentResult(success=True, output="ok"), []),
             ),
             patch(
-                "fin_assist.cli.main.handle_post_response",
+                "fin_assist.cli.interaction.response.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
             ),

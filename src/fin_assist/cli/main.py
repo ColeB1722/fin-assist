@@ -1,4 +1,12 @@
-"""CLI command dispatch for fin-assist client commands."""
+"""CLI command dispatch for fin-assist client commands.
+
+Heavy imports (``uvicorn``, ``coolname``, ``fin_assist.hub.app``,
+``fin_assist.cli.interaction.*``, ``fin_assist.cli.client``) are
+deferred into the command functions that need them so ``fin --help``
+and similar lightweight invocations stay fast.  The ``pydantic_ai``
+dependency chain alone costs ~1s at import time; pulling it in only
+when a command actually talks to an agent hub keeps cold-start snappy.
+"""
 
 from __future__ import annotations
 
@@ -11,15 +19,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import uvicorn
-from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
-
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from fin_assist.cli.client import DiscoveredAgent, HubClient
     from fin_assist.config.schema import ContextSettings
 
-from fin_assist.cli.client import DiscoveredAgent, HubClient
 from fin_assist.cli.display import (
     console,
     render_agents_list,
@@ -27,10 +32,6 @@ from fin_assist.cli.display import (
     render_info,
     render_session_list,
 )
-from fin_assist.cli.interaction.chat import run_chat_loop
-from fin_assist.cli.interaction.prompt import FinPrompt
-from fin_assist.cli.interaction.response import handle_post_response
-from fin_assist.cli.interaction.streaming import render_stream
 from fin_assist.cli.server import (
     ServerStartupError,
     check_status,
@@ -38,10 +39,6 @@ from fin_assist.cli.server import (
     stop_server,
 )
 from fin_assist.config.loader import load_config
-from fin_assist.context.files import FileFinder
-from fin_assist.context.git import GitContext
-from fin_assist.hub.app import create_hub_app
-from fin_assist.hub.logging import configure_logging
 from fin_assist.paths import SESSIONS_DIR
 
 # ---------------------------------------------------------------------------
@@ -92,6 +89,8 @@ def _inject_context(
     context_sections: list[str] = []
 
     if files:
+        from fin_assist.context.files import FileFinder
+
         finder = FileFinder(settings=context_settings)
         for path in files:
             item = finder.get_item(path)
@@ -101,6 +100,8 @@ def _inject_context(
                 context_sections.append(f"[FILE: {path}] Error: {item.error_reason}")
 
     if git_diff:
+        from fin_assist.context.git import GitContext
+
         git_ctx = GitContext(settings=context_settings)
         item = git_ctx.get_item("git_diff:diff")
         if item.status == "available":
@@ -130,6 +131,8 @@ async def _hub_client(config, config_path: Path | None = None) -> AsyncIterator[
 
     Commands catch the re-raised exceptions and return 1.
     """
+    from fin_assist.cli.client import HubClient  # deferred: pulls a2a-sdk (~0.5s)
+
     try:
         base_url = await ensure_server_running(config, config_path=config_path)
     except ServerStartupError as e:
@@ -176,8 +179,12 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     import errno
     import socket
 
+    import uvicorn
+
     from fin_assist.agents.spec import AgentSpec
     from fin_assist.credentials.store import CredentialStore
+    from fin_assist.hub.app import create_hub_app
+    from fin_assist.hub.logging import configure_logging
     from fin_assist.hub.pidfile import acquire as acquire_pidfile
     from fin_assist.paths import PID_FILE
 
@@ -233,6 +240,9 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
 async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
+    from fin_assist.cli.interaction.response import handle_post_response
+    from fin_assist.cli.interaction.streaming import render_stream
+
     try:
         async with _hub_client(config, config_path) as client:
             discovered, agents = await _get_agent_or_error(client, args.agent)
@@ -279,6 +289,11 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
 
 async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
+    from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
+
+    from fin_assist.cli.interaction.chat import run_chat_loop
+    from fin_assist.cli.interaction.prompt import FinPrompt
+
     if args.list_sessions:
         render_session_list(args.agent)
         return 0

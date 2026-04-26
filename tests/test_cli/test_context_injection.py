@@ -23,7 +23,7 @@ class TestInjectContextFileFlag:
         mock_item = ContextItem(
             id="test.py", type="file", content="print('hi')", status="available"
         )
-        with patch("fin_assist.cli.main.FileFinder") as mock_cls:
+        with patch("fin_assist.context.files.FileFinder") as mock_cls:
             mock_cls.return_value.get_item.return_value = mock_item
             result = _inject_context("explain this", files=["test.py"])
 
@@ -39,7 +39,7 @@ class TestInjectContextFileFlag:
             status="not_found",
             error_reason="file does not exist",
         )
-        with patch("fin_assist.cli.main.FileFinder") as mock_cls:
+        with patch("fin_assist.context.files.FileFinder") as mock_cls:
             mock_cls.return_value.get_item.return_value = mock_item
             result = _inject_context("explain", files=["missing.py"])
 
@@ -51,7 +51,7 @@ class TestInjectContextFileFlag:
             "a.py": ContextItem(id="a.py", type="file", content="code_a", status="available"),
             "b.py": ContextItem(id="b.py", type="file", content="code_b", status="available"),
         }
-        with patch("fin_assist.cli.main.FileFinder") as mock_cls:
+        with patch("fin_assist.context.files.FileFinder") as mock_cls:
             mock_cls.return_value.get_item = lambda path: items[path]
             result = _inject_context("review", files=["a.py", "b.py"])
 
@@ -66,7 +66,7 @@ class TestInjectContextGitDiff:
         mock_item = ContextItem(
             id="git_diff", type="git_diff", content="diff --git a/file", status="available"
         )
-        with patch("fin_assist.cli.main.GitContext") as mock_cls:
+        with patch("fin_assist.context.git.GitContext") as mock_cls:
             mock_cls.return_value.get_item.return_value = mock_item
             result = _inject_context("review changes", git_diff=True)
 
@@ -82,7 +82,7 @@ class TestInjectContextGitDiff:
             status="error",
             error_reason="git_not_available",
         )
-        with patch("fin_assist.cli.main.GitContext") as mock_cls:
+        with patch("fin_assist.context.git.GitContext") as mock_cls:
             mock_cls.return_value.get_item.return_value = mock_item
             result = _inject_context("review", git_diff=True)
 
@@ -98,8 +98,8 @@ class TestInjectContextCombined:
         file_item = ContextItem(id="f.py", type="file", content="code", status="available")
         diff_item = ContextItem(id="git_diff", type="git_diff", content="diff", status="available")
         with (
-            patch("fin_assist.cli.main.FileFinder") as file_cls,
-            patch("fin_assist.cli.main.GitContext") as git_cls,
+            patch("fin_assist.context.files.FileFinder") as file_cls,
+            patch("fin_assist.context.git.GitContext") as git_cls,
         ):
             file_cls.return_value.get_item.return_value = file_item
             git_cls.return_value.get_item.return_value = diff_item

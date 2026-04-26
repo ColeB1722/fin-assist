@@ -650,6 +650,40 @@ class TestStreamEventThinkingDelta:
         assert event.result is None
 
 
+class TestStreamEventToolCall:
+    def test_tool_call_fields(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="run_shell",
+            tool_args={"command": "ls -F"},
+        )
+        assert event.kind == "tool_call"
+        assert event.tool_name == "run_shell"
+        assert event.tool_args == {"command": "ls -F"}
+
+    def test_tool_call_defaults(self):
+        event = StreamEvent(kind="tool_call")
+        assert event.tool_name == ""
+        assert event.tool_args == {}
+
+
+class TestStreamEventToolResult:
+    def test_tool_result_fields(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="AGENTS.md  README.md",
+            tool_name="run_shell",
+        )
+        assert event.kind == "tool_result"
+        assert event.text == "AGENTS.md  README.md"
+        assert event.tool_name == "run_shell"
+
+    def test_tool_result_defaults(self):
+        event = StreamEvent(kind="tool_result")
+        assert event.text == ""
+        assert event.tool_name == ""
+
+
 class TestExtractFromArtifactsSkipsThinking:
     def test_skips_thinking_parts_in_artifacts(self):
         task = _make_task(
@@ -681,6 +715,48 @@ class TestExtractFromArtifactsSkipsThinking:
         result = HubClient._extract_result(task)
         assert result.output == ""
         assert result.thinking == ["just thinking"]
+
+    def test_skips_tool_call_parts_in_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "",
+                            metadata={
+                                "type": "tool_call",
+                                "tool_name": "run_shell",
+                                "args": {"command": "ls"},
+                            },
+                        ),
+                        _make_text_part("Here is the answer."),
+                    ],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "Here is the answer."
+
+    def test_skips_tool_result_parts_in_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "AGENTS.md  README.md",
+                            metadata={"type": "tool_result", "tool_name": "run_shell"},
+                        ),
+                        _make_text_part("The answer."),
+                    ],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "The answer."
 
 
 class TestExtractThinkingFromArtifacts:

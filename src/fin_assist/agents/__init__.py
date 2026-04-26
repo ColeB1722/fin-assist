@@ -1,45 +1,13 @@
+"""Agent protocol, registry, and implementations.
+
+This package intentionally exposes no symbols at the top level.  Import
+directly from submodules (``fin_assist.agents.metadata``,
+``fin_assist.agents.spec``, ``fin_assist.agents.backend``, etc.) so that
+callers who only need lightweight metadata types do not transitively
+pay the cost of importing ``pydantic_ai`` / ``fastmcp`` / ``mcp`` /
+``beartype`` via ``backend``.  That chain takes ~1s at import time on a
+warm cache and is only needed when actually constructing/using a
+backend.
+"""
+
 from __future__ import annotations
-
-from fin_assist.agents.backend import AgentBackend, PydanticAIBackend, RunResult
-from fin_assist.agents.metadata import (
-    AgentCardMeta,
-    AgentResult,
-    MissingCredentialsError,
-    ServingMode,
-)
-from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS, OutputTypeName, PromptName
-from fin_assist.agents.results import CommandResult
-from fin_assist.agents.spec import AgentSpec
-from fin_assist.agents.step import StepEvent, StepHandle
-from fin_assist.agents.tools import (
-    ApprovalDecision,
-    ApprovalPolicy,
-    DeferredToolCall,
-    ToolDefinition,
-    ToolRegistry,
-    create_default_registry,
-)
-
-__all__ = [
-    "ApprovalDecision",
-    "ApprovalPolicy",
-    "AgentBackend",
-    "AgentCardMeta",
-    "AgentResult",
-    "AgentSpec",
-    "CommandResult",
-    "DeferredToolCall",
-    "MissingCredentialsError",
-    "OUTPUT_TYPES",
-    "OutputTypeName",
-    "PydanticAIBackend",
-    "PromptName",
-    "RunResult",
-    "ServingMode",
-    "StepEvent",
-    "StepHandle",
-    "SYSTEM_PROMPTS",
-    "ToolDefinition",
-    "ToolRegistry",
-    "create_default_registry",
-]
