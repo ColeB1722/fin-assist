@@ -360,7 +360,7 @@ class PydanticAIBackend:
         if self._tool_registry:
             tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
             for td in tool_defs:
-                if td.approval_policy is not None and td.approval_policy.mode != "never":
+                if td.approval_policy is not None and td.approval_policy.mode == "always":
                     has_approval_tools = True
                     pydantic_tools.append(
                         Tool(

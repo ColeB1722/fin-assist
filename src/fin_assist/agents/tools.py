@@ -41,10 +41,19 @@ class ApprovalPolicy:
     pydantic-ai → ``requires_approval=True`` / ``ApprovalRequired`` /
     ``approval_required()`` toolset wrapper.  Future backends map to
     their own mechanism (LangGraph ``interrupt()``, etc.).
+
+    Only two modes exist today: ``"always"`` (every call is gated) and
+    ``"never"`` (no gate — equivalent to ``approval_policy=None``).  A
+    predicate-based ``"conditional"`` mode was considered but cut because
+    (a) nothing used it, (b) per-call predicates would require wrapping
+    the tool callable with framework-specific exceptions, breaking the
+    "platform types have zero framework imports" invariant, and (c) the
+    UX problem it was meant to solve (remember approval for a session) is
+    better handled client-side as session state.  Revisit if a real
+    server-side use case appears.
     """
 
-    mode: Literal["never", "always", "conditional"]
-    condition: Callable[[str, dict[str, Any]], bool] | None = None
+    mode: Literal["never", "always"]
     reason: str | None = None
 
 

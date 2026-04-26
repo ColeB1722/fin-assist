@@ -202,20 +202,12 @@ class TestApprovalPolicy:
     def test_always_mode(self) -> None:
         policy = ApprovalPolicy(mode="always", reason="test")
         assert policy.mode == "always"
-        assert policy.condition is None
         assert policy.reason == "test"
 
     def test_never_mode(self) -> None:
         policy = ApprovalPolicy(mode="never")
         assert policy.mode == "never"
-        assert policy.condition is None
         assert policy.reason is None
-
-    def test_conditional_mode_with_callable(self) -> None:
-        cond = lambda name, args: "sudo" in args.get("command", "")
-        policy = ApprovalPolicy(mode="conditional", condition=cond)
-        assert policy.mode == "conditional"
-        assert policy.condition is cond
 
 
 class TestDeferredToolCall:
