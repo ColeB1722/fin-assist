@@ -9,6 +9,7 @@ import pytest
 from fin_assist.agents.metadata import AgentResult
 from fin_assist.cli.client import StreamEvent
 from fin_assist.cli.interaction.streaming import (
+    _format_thinking_block,
     _format_tool_call,
     _format_tool_result,
     render_stream,
@@ -295,3 +296,33 @@ class TestRenderStreamToolEvents:
         final, deferred = await render_stream(events)
         assert final.success is True
         assert "config.toml" not in final.output
+
+
+class TestFormatThinkingBlock:
+    def test_empty_buffer_returns_none(self):
+        assert _format_thinking_block("") is None
+        assert _format_thinking_block("   \n  \n") is None
+
+    def test_prefixes_first_line_with_emoji(self):
+        block = _format_thinking_block("let me think")
+        assert block is not None
+        assert block.markup.startswith("> 💭 ")
+
+    def test_each_line_prefixed_with_quote_marker(self):
+        block = _format_thinking_block("line one\nline two\nline three")
+        assert block is not None
+        # Every line in the rendered markdown should be a blockquote line.
+        for line in block.markup.splitlines():
+            assert line.startswith(">"), f"unquoted line: {line!r}"
+
+    def test_single_emoji_on_first_line_only(self):
+        block = _format_thinking_block("first\nsecond")
+        assert block is not None
+        # 💭 should only appear once, on the first line.
+        assert block.markup.count("💭") == 1
+
+    def test_uses_dim_style(self):
+        block = _format_thinking_block("thought")
+        assert block is not None
+        # Rich Markdown exposes style via its constructor; confirm dim set.
+        assert block.style == "dim"
