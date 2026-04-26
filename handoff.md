@@ -21,6 +21,52 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ---
 
+## PR #87 Self-Review Triage (2026-04-26)
+
+45 review comments left on PR #87 as a notetaking mechanism (not for GitHub-based review — personal project). Triaged in phases.
+
+### Applied (Phase 1, uncommitted)
+
+6 trivial cleanups, CI green:
+
+- Removed no-op `from __future__ import annotations` from `agents/__init__.py` and `cli/__init__.py` (no annotations to affect)
+- Removed stale root-level `hub.log` entry from `.gitignore` (covered by `.fin/`)
+- `_key_arg_for_tool` in `streaming.py` → `match` block on `(tool_name, args)` tuples
+- Removed 8 redundant `dest=` kwargs in `cli/main.py` argparse; kept 3 meaningful ones (`files`, `list_sessions`, `command`) with inline comments
+- Two if/elif chains in `cli/client.py` `_stream_message` → `match meta.get("type")` + ternary for terminal state
+- Added "Env var naming convention" subsection to `AGENTS.md` documenting `FIN_<NAME>` (single `_`, bootstrap) vs `FIN_<SECTION>__<FIELD>` (double `__`, pydantic-settings nested delimiter)
+
+### Real smells surfaced during investigation (should fix, not yet filed as issues)
+
+- **Duplicated version constants** — `_CONTEXT_STORE_VERSION`, `_VERSION_PACK`, `wrap_payload`/`unwrap_payload` exist in both `backend.py:67-81` and `context_store.py:26-103`. Backend should call `ContextStore.wrap_payload`/`unwrap_payload` (already exposed as staticmethods).
+- **`conditional` approval mode is dead code** — `ApprovalPolicy.mode` accepts `"conditional"` and has a `condition` callable field, but `backend.py:379` only checks `mode != "never"`. The predicate is never invoked. Either implement dispatch or remove the mode. Ties into the "want a middle ground between never and always" question — the likely answer is session-scoped approval (client-side) + per-args predicates (implement conditional properly).
+- **Loose typing at approval widget boundary** — `deferred_calls: list[dict[str, Any]]` in `cli/interaction/approve.py` forces defensive `.get()` calls. Should be `list[DeferredToolCall]` (dataclass already exists in `agents/tools.py:52`). Widens to a repo-wide pattern: prefer `.attribute` on typed structs over `.get()` on converted dicts.
+- **Logging coverage near-zero** — `configure_logging()` sets up a proper `RotatingFileHandler` but before PR #87 nothing in our code called `logger.anything()`. Only `hub/executor.py:339` emits an intentional log (added for empty `tool_call_id` handling). Hub lifecycle events, credential checks, resume transitions should all log. CLI has no logging at all — decide whether `--verbose` should write to `$FIN_DATA_DIR/cli.log`.
+- **`execute()` in `hub/executor.py` is 90+ lines** with three interleaved concerns (run-vs-resume dispatch, event loop, complete-vs-pause). Wants extraction into `_start_or_resume` / `_consume_events` / `_save_and_pause` / `_finalize_artifact` with a small `_ExecutionContext` dataclass carrying shared state.
+
+### Larger architectural discussions (file as issues)
+
+- Hardcoded prompts vs loadable markdown (`llm/prompts.py`, `agents/registry.py`) — both `SHELL_INSTRUCTIONS` and `TEST_INSTRUCTIONS` are hardcoded strings
+- Holistic constants centralization — `paths.py` centralizes some but scattered constants (tool icons, max-preview sizes, approval styles) live throughout the CLI
+- Richer tool output rendering — current `_format_tool_result` truncates to 120 chars; consider markdown rendering, or optional small local LLM for summary
+- Streaming.py complexity — repeatedly flagged (#25-#30). Uses `exa` to research how other TUIs solve similar streaming-state problems before refactoring. The `_flush_thinking` / `something_printed` / `accumulated_text` state machine is opaque and heavily commented to compensate.
+- `fin prompt` vs `do` CLI semantics — question about whether `fin do` should take an agent positional vs named flag (resolved in current PR: `--agent` named flag)
+- Deferred-call typing pipeline end-to-end (connects to the `.get()` smell above)
+
+### Real bugs / concerns to audit
+
+- **Subprocess cleanup in `_run_shell`** (`agents/tools.py:292-311`) — uses `subprocess.run()` in `loop.run_in_executor`. Check that the subprocess is properly terminated on asyncio cancellation; the current `run_in_executor(None, ...)` thread can't be interrupted cleanly.
+- **Factory default `ToolRegistry` behaviour** (`hub/factory.py:54, 124`) — docstring says "when None, a default registry with built-in context tools is created." Verify this is actually what happens; the line-124 mutation of `agent._tool_registry` is suspect.
+- **`event.content` typing in executor** (`hub/executor.py:259-264`) — three-way `isinstance` dispatch suggests the upstream `StepEvent.content` type isn't tight enough. Should narrow `tool_result` event content to a specific type at the backend boundary.
+- **Helper consistency in executor** — `_handle_deferred_event` is extracted but the neighbouring `tool_call` / `tool_result` cases stay inline. Pick a convention: either all inline or all extracted. Likely tied to the 90-line `execute()` refactor.
+
+### Notes on workflow
+
+- 21 inline replies posted on PR #87 during initial triage — leaving them in place as context for future readbacks. Not posting new ones; handoff.md is the primary channel from here on.
+- Phases 1 changes are uncommitted. Commit before starting bug-audit work.
+
+---
+
 ## Next Session (2026-04-26)
 
 **Feature: `fin do` input panel + `--edit` flag + aggregation removal.** See design sketch below for full details.
