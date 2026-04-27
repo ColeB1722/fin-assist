@@ -108,6 +108,9 @@ This split is **project-specific**, not an industry standard — but we apply it
 | Multiplexers | tmux + zellij | Most common; ghostty pending |
 | Credentials | Separate from config | Allows config sharing without secrets |
 | Provider setup | `/connect` command | Familiar pattern from opencode |
+| Fuzzy matching | `rapidfuzz` | Unified across slash commands and `@file:` completion; C-backed, path-aware ranking via `fuzz.WRatio` |
+| File discovery | `os.walk` + `pathspec` | Gitignore-aware directory pruning (files still included so local configs like `config.toml` complete); pure Python, no subprocess |
+| Completion threading | `PromptSession(complete_in_thread=True)` | Keeps UI responsive even on cold scans — non-negotiable for `@file:` |
 
 ## Testing
 

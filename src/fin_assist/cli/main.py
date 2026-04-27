@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from fin_assist.cli.client import DiscoveredAgent, HubClient
-    from fin_assist.config.schema import ContextSettings
 
 from fin_assist.cli.display import (
     console,
@@ -66,54 +65,6 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
         "context_id": context_id,
     }
     path.write_text(json.dumps(session, indent=2))
-
-
-# ---------------------------------------------------------------------------
-# Context injection helpers
-# ---------------------------------------------------------------------------
-
-
-def _inject_context(
-    prompt: str,
-    *,
-    files: list[str] | None = None,
-    git_diff: bool = False,
-    context_settings: ContextSettings | None = None,
-) -> str:
-    """Prepend user-driven context to a prompt string.
-
-    Reads files via ``FileFinder`` and/or git diff via ``GitContext``,
-    then formats them above the user's prompt so the model sees them
-    before the request.
-    """
-    context_sections: list[str] = []
-
-    if files:
-        from fin_assist.context.files import FileFinder
-
-        finder = FileFinder(settings=context_settings)
-        for path in files:
-            item = finder.get_item(path)
-            if item.status == "available":
-                context_sections.append(f"[FILE: {path}]\n{item.content}")
-            else:
-                context_sections.append(f"[FILE: {path}] Error: {item.error_reason}")
-
-    if git_diff:
-        from fin_assist.context.git import GitContext
-
-        git_ctx = GitContext(settings=context_settings)
-        item = git_ctx.get_item("git_diff:diff")
-        if item.status == "available":
-            context_sections.append(f"[GIT DIFF]\n{item.content}")
-        else:
-            context_sections.append(f"[GIT DIFF] Error: {item.error_reason}")
-
-    if not context_sections:
-        return prompt
-
-    context_block = "\n\n".join(context_sections)
-    return f"Context:\n{context_block}\n\nUser request:\n{prompt}"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +191,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
 async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
-    from fin_assist.cli.interaction.prompt import FinPrompt
+    from fin_assist.cli.interaction.prompt import FinPrompt, resolve_at_references
     from fin_assist.cli.interaction.response import handle_post_response
     from fin_assist.cli.interaction.streaming import render_stream
 
@@ -260,7 +211,10 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             prompt = args.prompt
 
             if prompt is None:
-                fp = FinPrompt(agents=[a.name for a in agents])
+                fp = FinPrompt(
+                    agents=[a.name for a in agents],
+                    context_settings=config.context,
+                )
                 try:
                     prompt = (await fp.ask("> ")).strip()
                 except (KeyboardInterrupt, EOFError):
@@ -269,7 +223,10 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 if not prompt:
                     return 0
             elif args.edit:
-                fp = FinPrompt(agents=[a.name for a in agents])
+                fp = FinPrompt(
+                    agents=[a.name for a in agents],
+                    context_settings=config.context,
+                )
                 try:
                     prompt = (await fp.ask("> ", default=prompt)).strip()
                 except (KeyboardInterrupt, EOFError):
@@ -278,9 +235,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 if not prompt:
                     return 0
 
-            prompt = _inject_context(
-                prompt, files=args.files, git_diff=args.git_diff, context_settings=config.context
-            )
+            prompt = resolve_at_references(prompt, context_settings=config.context)
             result, deferred_calls = await render_stream(
                 client.stream_agent(args.agent, prompt),
                 show_thinking=args.show_thinking,
@@ -307,7 +262,6 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             response = await handle_post_response(result)
             return response.exit_code
     except Exception:
-        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
 
@@ -344,7 +298,10 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 )
                 return 1
 
-            fp = FinPrompt(agents=[a.name for a in agents])
+            fp = FinPrompt(
+                agents=[a.name for a in agents],
+                context_settings=config.context,
+            )
             message = args.message
             final_context_id = await run_chat_loop(
                 client.stream_agent,
@@ -356,7 +313,6 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 show_thinking=args.show_thinking,
             )
     except Exception:
-        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     if final_context_id and not args.resume:
@@ -373,11 +329,54 @@ async def _agents_command(args: argparse.Namespace, config, config_path: Path | 
         async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
     except Exception:
-        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     render_agents_list(agents)
     return 0
+
+
+def _list_command(args: argparse.Namespace, config) -> int:
+    """Handle `fin-assist list <resource>` — show platform registry contents."""
+    resource = args.resource
+
+    if resource == "tools":
+        from fin_assist.agents.tools import create_default_registry
+
+        registry = create_default_registry(context_settings=config.context)
+        tools = registry.list_tools()
+        if not tools:
+            render_info("No tools registered.")
+            return 0
+        for tool in tools:
+            approval = " (approval required)" if tool.approval_policy else ""
+            console.print(f"  [bold]{tool.name}[/bold]{approval}")
+            console.print(f"    {tool.description}")
+        return 0
+
+    if resource == "prompts":
+        from fin_assist.agents.registry import SYSTEM_PROMPTS
+
+        if not SYSTEM_PROMPTS:
+            render_info("No prompts registered.")
+            return 0
+        for name, prompt_text in SYSTEM_PROMPTS.items():
+            first_line = prompt_text.strip().split("\n", 1)[0]
+            console.print(f"  [bold]{name}[/bold]")
+            console.print(f"    {first_line[:80]}")
+        return 0
+
+    if resource == "output-types":
+        from fin_assist.agents.registry import OUTPUT_TYPES
+
+        if not OUTPUT_TYPES:
+            render_info("No output types registered.")
+            return 0
+        for name, type_obj in OUTPUT_TYPES.items():
+            console.print(f"  [bold]{name}[/bold]  →  {type_obj.__name__}")
+        return 0
+
+    render_error(f"Unknown resource '{resource}'. Choose from: tools, prompts, output-types")
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -417,18 +416,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show agent thinking/reasoning in the output.",
     )
-    do_parser.add_argument(
-        "--file",
-        dest="files",  # action="append" + singular flag → plural attribute
-        action="append",
-        default=[],
-        help="Inject file contents as context (may be specified multiple times).",
-    )
-    do_parser.add_argument(
-        "--git-diff",
-        action="store_true",
-        help="Inject git diff as context.",
-    )
 
     talk_parser = subparsers.add_parser(
         "talk",
@@ -452,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     talk_parser.add_argument(
         "--list",
-        dest="list_sessions",  # avoid shadowing builtin `list`
+        dest="list_sessions",
         action="store_true",
         help="List saved sessions for the agent.",
     )
@@ -465,6 +452,16 @@ def main(argv: list[str] | None = None) -> int:
         "--show-thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the chat output.",
+    )
+
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List platform capabilities (tools, prompts, output-types).",
+    )
+    list_parser.add_argument(
+        "resource",
+        choices=["tools", "prompts", "output-types"],
+        help="Which platform resource to list.",
     )
 
     subparsers.add_parser("start", help="Start the agent hub server in the background.")
@@ -525,6 +522,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_do_command(args, config, config_path))
         case "talk":
             return asyncio.run(_talk_command(args, config, config_path))
+        case "list":
+            return _list_command(args, config)
         case "start":
             try:
                 base_url = asyncio.run(ensure_server_running(config, config_path))

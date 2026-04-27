@@ -9,56 +9,62 @@ from prompt_toolkit.document import Document
 
 
 class TestSlashCompleter:
-    """SlashCompleter only yields completions when input starts with /."""
+    """SlashCompleter fuzzy-matches slash commands when input starts with /."""
 
-    def _make_completer(self):
-        from fin_assist.cli.interaction.prompt import SlashCompleter
+    def _make_completer(self, agents: list[str] | None = None):
+        from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, SlashCompleter
 
-        inner = MagicMock()
-        inner.get_completions = MagicMock(return_value=[MagicMock(text="/exit")])
-        return SlashCompleter(inner), inner
+        return SlashCompleter(SLASH_COMMANDS, agents or [])
 
-    def test_yields_completions_when_slash_prefix(self):
-        completer, inner = self._make_completer()
+    def test_yields_exit_for_exact_prefix(self):
+        completer = self._make_completer()
         doc = Document("/ex", cursor_position=3)
         results = list(completer.get_completions(doc, MagicMock()))
-        assert len(results) == 1
-        inner.get_completions.assert_called_once()
+        texts = [c.text for c in results]
+        # /exit should be ranked first; others may or may not appear under cutoff.
+        assert texts[0] == "/exit"
 
     def test_yields_nothing_for_plain_text(self):
-        completer, inner = self._make_completer()
+        completer = self._make_completer()
         doc = Document("hello", cursor_position=5)
-        results = list(completer.get_completions(doc, MagicMock()))
-        assert results == []
-        inner.get_completions.assert_not_called()
+        assert list(completer.get_completions(doc, MagicMock())) == []
 
     def test_yields_nothing_for_empty_input(self):
-        completer, inner = self._make_completer()
+        completer = self._make_completer()
         doc = Document("", cursor_position=0)
-        results = list(completer.get_completions(doc, MagicMock()))
-        assert results == []
-        inner.get_completions.assert_not_called()
+        assert list(completer.get_completions(doc, MagicMock())) == []
 
-    def test_yields_completions_for_bare_slash(self):
-        completer, inner = self._make_completer()
+    def test_yields_all_commands_for_bare_slash(self):
+        completer = self._make_completer()
         doc = Document("/", cursor_position=1)
-        results = list(completer.get_completions(doc, MagicMock()))
-        assert len(results) == 1
-        inner.get_completions.assert_called_once()
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert "/exit" in texts
+        assert "/help" in texts
+        assert "/sessions" in texts
 
     def test_yields_nothing_when_slash_not_at_start(self):
-        completer, inner = self._make_completer()
+        completer = self._make_completer()
         doc = Document("hello /ex", cursor_position=9)
-        results = list(completer.get_completions(doc, MagicMock()))
-        assert results == []
-        inner.get_completions.assert_not_called()
+        assert list(completer.get_completions(doc, MagicMock())) == []
 
     def test_handles_leading_whitespace_before_slash(self):
-        completer, inner = self._make_completer()
+        completer = self._make_completer()
         doc = Document("  /ex", cursor_position=5)
-        results = list(completer.get_completions(doc, MagicMock()))
-        assert len(results) == 1
-        inner.get_completions.assert_called_once()
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert "/exit" in texts
+
+    def test_fuzzy_matches_typos(self):
+        """rapidfuzz should still rank /help first for /hlp."""
+        completer = self._make_completer()
+        doc = Document("/hlp", cursor_position=4)
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert texts[0] == "/help"
+
+    def test_includes_agent_names(self):
+        completer = self._make_completer(agents=["shell", "coder"])
+        doc = Document("/sh", cursor_position=3)
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert "shell" in texts
 
 
 class TestSlashCommand:
@@ -177,3 +183,9 @@ class TestFinPromptAgents:
 
         fp = FinPrompt()
         assert fp.agents == []
+
+    def test_context_settings_stored(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        fp = FinPrompt(context_settings=MagicMock())
+        assert fp.context_settings is not None

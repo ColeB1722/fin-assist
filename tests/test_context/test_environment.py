@@ -91,18 +91,23 @@ class TestEnvironment:
                 result2 = env2.get_all()
                 assert result1 is not result2
 
-    def test_get_env_vars_defaults(self) -> None:
+    def test_default_env_vars_include_path_home_user_pwd(self) -> None:
         env = Environment()
-        result = env._get_env_vars()
-        assert "PATH" in result
-        assert "HOME" in result
-        assert "USER" in result
-        assert "PWD" in result
+        with patch.dict(
+            "os.environ",
+            {"HOME": "/home", "USER": "me", "PATH": "/usr/bin"},
+            clear=False,
+        ):
+            ids = {item.id for item in env.get_all()}
+        assert {"PATH", "HOME", "USER", "PWD"} <= ids
 
-    def test_get_env_vars_from_settings(self) -> None:
+    def test_settings_override_default_env_vars(self) -> None:
         from fin_assist.config.schema import ContextSettings
 
         settings = ContextSettings(include_env_vars=["CUSTOM_VAR"])
         env = Environment(settings=settings)
-        result = env._get_env_vars()
-        assert result == ["CUSTOM_VAR"]
+        with patch.dict("os.environ", {"CUSTOM_VAR": "hello"}, clear=False):
+            ids = {item.id for item in env.get_all()}
+        # PWD/HOME/USER are always emitted; only CUSTOM_VAR comes from the override.
+        assert "CUSTOM_VAR" in ids
+        assert "PATH" not in ids  # not in override list

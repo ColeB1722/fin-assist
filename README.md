@@ -20,7 +20,7 @@ graph LR
         TUI["TUI Client<br/>(planned)"]
     end
 
-    HUB["Agent Hub<br/>FastAPI · 127.0.0.1:4096<br/>A2A protocol"]
+        HUB["Agent Hub<br/>FastAPI · 127.0.0.1:4096<br/>A2A protocol"]
 
     LLM["LLM Providers<br/>Anthropic · OpenAI<br/>OpenRouter · Google"]
 
@@ -45,7 +45,7 @@ graph TD
     DISC["GET /agents · GET /health<br/>(hub-level discovery)"]
 
     subgraph HUB_PROC["Agent Hub (FastAPI, 127.0.0.1:4096)"]
-        HUB["Hub Router<br/>mount table:<br/>· /agents/default/<br/>· /agents/shell/<br/>· /agents/&lcub;name&rcub;/ (future)"]
+        HUB["Hub Router<br/>mount table:<br/>· /agents/test/<br/>· /agents/{name}/ (from config)"]
 
         subgraph SUBAPP["Per-Agent A2A Sub-App · one instance per enabled agent"]
             direction TB
@@ -105,10 +105,6 @@ graph TD
         REG["ProviderRegistry<br/>LLM providers · api_key injected"]
     end
 
-    subgraph PARKED["Parked (Steps 7–8)"]
-        CTXP["ContextProviders<br/>files · git · history · env<br/>built, not yet wired"]
-    end
-
     LLM["LLM Providers<br/>Anthropic · OpenAI · OpenRouter · Google"]
 
     EXEC --> BEH
@@ -120,12 +116,9 @@ graph TD
     PAI -.->|"raises on missing key"| MCE
     SPEC -->|"get_api_key(provider)"| CREDS
     SPEC --> CONFIG
-    EXEC -.->|"planned: context injection"| CTXP
 
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
     class EXEC,LLM external
-    classDef parked fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 3
-    class CTXP,PARKED parked
     classDef error fill:#fff3f3,stroke:#c66
     class MCE error
 ```
@@ -224,22 +217,34 @@ sequenceDiagram
 fin-assist serve                        Start agent hub
 fin-assist agents                       List available agents
 fin-assist do "prompt"                  One-shot query (default agent)
-fin-assist do shell "list large files"  One-shot query (shell agent)
+fin-assist do --agent test "prompt"     One-shot query (named agent)
+fin-assist do                           Open input panel (default agent)
+fin-assist do --edit "prompt"           Open input panel pre-filled with prompt
 fin-assist talk                         Multi-turn session (default agent)
-fin-assist talk shell                   Multi-turn session (shell agent)
+fin-assist talk --agent test            Multi-turn session (named agent)
+fin-assist list tools                   List registered tools
+fin-assist list prompts                 List registered system prompts
+fin-assist list output-types            List registered output types
 ```
+
+Context injection via `@`-completion in the input panel: `@file:path.py`, `@git:diff`, `@git:log`, `@history:query`.
 
 ## Status
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1–7 | Repo setup → Hub server | Done |
-| 8 | CLI client + REPL | Done |
-| 9 | Streaming + integration tests | In progress |
-| Config redesign | Config-driven agents, single `ConfigAgent` class | Done |
+| 1–8b | Repo setup → CLI REPL | Done |
+| 9 | Streaming + integration tests | Done |
+| Config redesign | Config-driven agents, `AgentSpec` pure config | Done |
 | a2a-sdk migration | fasta2a → a2a-sdk v1.0, FastAPI, streaming | Done |
+| Executor + Tools + HITL | Multi-step executor, tool calling, approval (PR #87) | Done |
+| Remove built-in agents | Pure infrastructure; all agents from config.toml | Done |
+| Input panel + `--edit` | Interactive `fin do`, `--edit` flag, `--agent` flag | Done |
+| `@`-completion | Inline context injection (`@file:`, `@git:`, `@history:`) | Done |
+| `fin list` | CLI capabilities listing (tools, prompts, output-types) | Done |
 | 11 | Multiplexer (tmux/zellij) | Planned |
 | 13 | TUI client (Textual) | Planned |
+| 15 | Skills + MCP Integration | Planned |
 | 16 | Additional agents (SDD, TDD) | Planned |
 | 17 | Multi-agent workflows | Planned |
 

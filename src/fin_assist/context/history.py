@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import re
 import subprocess
-from typing import TYPE_CHECKING
 
+from fin_assist.config.schema import ContextSettings
 from fin_assist.context.base import ContextItem, ContextProvider, ContextType
-
-if TYPE_CHECKING:
-    from fin_assist.config.schema import ContextSettings
 
 SENSITIVE_PATTERNS = [
     re.compile(r"export\s+\w*(?:API|TOKEN|KEY|SECRET|PASSWORD|PASS)\w*=", re.IGNORECASE),
@@ -23,7 +20,7 @@ def _is_command_sensitive(command: str) -> bool:
 
 class ShellHistory(ContextProvider):
     def __init__(self, settings: ContextSettings | None = None) -> None:
-        self._settings = settings
+        self._settings = settings or ContextSettings()
         self._fish_available: bool | None = None
         self._cache: list[ContextItem] | None = None
 
@@ -43,11 +40,6 @@ class ShellHistory(ContextProvider):
             except (subprocess.SubprocessError, OSError):
                 self._fish_available = False
         return self._fish_available
-
-    def _get_max_history_items(self) -> int:
-        if self._settings:
-            return self._settings.max_history_items
-        return 50
 
     def search(self, query: str) -> list[ContextItem]:
         if not self._is_fish_available():
@@ -96,7 +88,7 @@ class ShellHistory(ContextProvider):
             if result.returncode != 0:
                 return []
             lines = result.stdout.splitlines()
-            max_items = self._get_max_history_items()
+            max_items = self._settings.max_history_items
             items = []
             for idx, line in enumerate(lines[:max_items]):
                 line = line.strip()
