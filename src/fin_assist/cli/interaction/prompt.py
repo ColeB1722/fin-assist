@@ -225,6 +225,10 @@ class FinPrompt:
         self.history_path = history_path
         self._context_settings = context_settings
 
+    @property
+    def context_settings(self) -> ContextSettings | None:
+        return self._context_settings
+
     def _build_completer(self) -> Completer:
         words = [cmd.name for cmd in SLASH_COMMANDS] + self.agents
         word_completer = WordCompleter(words, ignore_case=True)

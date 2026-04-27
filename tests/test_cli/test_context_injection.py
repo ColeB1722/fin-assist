@@ -18,14 +18,14 @@ class TestAtCompleter:
         return AtCompleter(context_settings=None)
 
     def test_yields_context_types_for_bare_at(self):
+        from fin_assist.cli.interaction.prompt import _AT_CONTEXT_TYPES
+
         completer = self._make_completer()
         doc = Document("@", cursor_position=1)
         results = list(completer.get_completions(doc, MagicMock()))
         texts = [c.text for c in results]
-        assert "file:" in texts
-        assert "git:diff" in texts
-        assert "git:log" in texts
-        assert "history:" in texts
+        for name in _AT_CONTEXT_TYPES:
+            assert name in texts
 
     def test_yields_nothing_without_at(self):
         completer = self._make_completer()
