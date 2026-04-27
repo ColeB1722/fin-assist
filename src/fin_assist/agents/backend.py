@@ -406,14 +406,16 @@ class PydanticAIBackend:
             [base_output_type, DeferredToolRequests] if has_approval_tools else base_output_type
         )
 
-        kwargs: dict[str, Any] = {
-            "output_type": output_type,
-            "instructions": self._spec.system_prompt,
-            "capabilities": capabilities,
-        }
-        if pydantic_tools:
-            kwargs["tools"] = pydantic_tools
-        return Agent(**kwargs)
+        # pydantic-ai's ``Agent`` accepts ``tools=()`` (default) or a non-empty
+        # sequence.  It does **not** accept ``tools=None`` (raises TypeError).
+        # Passing ``pydantic_tools`` directly is safe: an empty list is
+        # equivalent to the default tuple.
+        return Agent(
+            output_type=output_type,
+            instructions=self._spec.system_prompt,
+            capabilities=capabilities,
+            tools=pydantic_tools,
+        )
 
     def _build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel
@@ -457,17 +459,19 @@ class PydanticAIBackend:
 
         results = DeferredToolResults()
         for decision in decisions:
-            if decision.approved:
-                if decision.override_args:
-                    results.approvals[decision.tool_call_id] = ToolApproved(
-                        override_args=decision.override_args
-                    )
-                else:
+            # Three-way dispatch driven by pydantic-ai's approval API:
+            #   - approved + override_args → ToolApproved(override_args=...)
+            #   - approved (plain)         → True
+            #   - denied                   → ToolDenied(message=...)
+            match decision:
+                case ApprovalDecision(approved=True, override_args=args) if args:
+                    results.approvals[decision.tool_call_id] = ToolApproved(override_args=args)
+                case ApprovalDecision(approved=True):
                     results.approvals[decision.tool_call_id] = True
-            else:
-                results.approvals[decision.tool_call_id] = ToolDenied(
-                    message=decision.denial_reason or "Denied by user"
-                )
+                case _:
+                    results.approvals[decision.tool_call_id] = ToolDenied(
+                        message=decision.denial_reason or "Denied by user",
+                    )
         return results
 
     def _get_registry(self) -> ProviderRegistry:

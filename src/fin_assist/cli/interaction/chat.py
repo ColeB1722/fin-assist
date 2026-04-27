@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rich.console import Console
 
@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
     from fin_assist.cli.client import StreamEvent
     from fin_assist.cli.interaction.prompt import SlashCommand
+
+# Pending-input dispatch mode for the first loop iteration:
+#   "send" — submit unedited (fin talk <msg> / fin do <msg>)
+#   "edit" — pre-fill the input panel so the user can revise (fin talk --edit)
+_PendingMode = Literal["send", "edit"]
 
 console = Console()
 
@@ -66,26 +71,30 @@ async def run_chat_loop(
     console.print("[dim]Type /exit to end the conversation[/dim]\n")
 
     fp = prompt or FinPrompt()
+
+    # Single pending-input slot: ``edit_message`` takes precedence over
+    # ``initial_message`` (matches the prior two-variable semantics).
+    pending: tuple[_PendingMode, str] | None
     if edit_message is not None:
-        pending_message = None
-        pending_edit = edit_message
+        pending = ("edit", edit_message)
+    elif initial_message is not None:
+        pending = ("send", initial_message)
     else:
-        pending_message = initial_message
-        pending_edit = None
+        pending = None
 
     while True:
-        if pending_edit is not None:
-            edit_default = pending_edit
-            pending_edit = None
-            try:
-                user_input = (await fp.ask("> ", default=edit_default)).strip()
-            except (KeyboardInterrupt, EOFError):
-                console.print("\n[dim]Exiting chat[/dim]")
-                break
-        elif pending_message is not None:
-            user_input = pending_message
-            pending_message = None
-            console.print(f"> {user_input}")
+        if pending is not None:
+            mode, text = pending
+            pending = None
+            if mode == "edit":
+                try:
+                    user_input = (await fp.ask("> ", default=text)).strip()
+                except (KeyboardInterrupt, EOFError):
+                    console.print("\n[dim]Exiting chat[/dim]")
+                    break
+            else:  # "send"
+                user_input = text
+                console.print(f"> {user_input}")
         else:
             try:
                 user_input = (await fp.ask("> ")).strip()
