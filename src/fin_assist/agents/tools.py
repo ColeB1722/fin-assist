@@ -205,7 +205,7 @@ def create_default_registry(
     registry.register(
         ToolDefinition(
             name="shell_history",
-            description="Show recent shell command history from the user's fish shell.",
+            description="Show recent shell command history.",
             callable=_make_shell_history(context_settings),
             parameters_schema={
                 "type": "object",
@@ -252,7 +252,7 @@ def _make_read_file(settings: ContextSettings | None):
         from fin_assist.context.files import FileFinder
 
         finder = FileFinder(settings=settings)
-        item = finder.get_item(path)
+        item = await asyncio.to_thread(finder.get_item, path)
         if item.status != "available":
             return f"Error reading file '{path}': {item.error_reason}"
         return item.content
@@ -265,7 +265,7 @@ def _make_git_diff(settings: ContextSettings | None):
         from fin_assist.context.git import GitContext
 
         ctx = GitContext(settings=settings)
-        item = ctx.get_item("git_diff:diff")
+        item = await asyncio.to_thread(ctx.get_item, "git_diff:diff")
         if item.status != "available":
             return f"Error getting git diff: {item.error_reason}"
         return item.content
@@ -278,7 +278,7 @@ def _make_git_log(settings: ContextSettings | None):
         from fin_assist.context.git import GitContext
 
         ctx = GitContext(settings=settings)
-        item = ctx.get_item("git_log:log")
+        item = await asyncio.to_thread(ctx.get_item, "git_log:log")
         if item.status != "available":
             return f"Error getting git log: {item.error_reason}"
         return item.content
@@ -291,7 +291,10 @@ def _make_shell_history(settings: ContextSettings | None):
         from fin_assist.context.history import ShellHistory
 
         history = ShellHistory(settings=settings)
-        items = history.search(query) if query else history.get_all()
+        if query:
+            items = await asyncio.to_thread(history.search, query)
+        else:
+            items = await asyncio.to_thread(history.get_all)
         if not items:
             return "No shell history available."
         return "\n".join(item.content for item in items)

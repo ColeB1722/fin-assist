@@ -144,9 +144,9 @@ async def run_chat_loop(
 
         ctx_id = result.context_id or ctx_id
 
-        if deferred_calls:
-            from fin_assist.cli.interaction.approve import run_approval_widget
+        from fin_assist.cli.interaction.approve import run_approval_widget
 
+        if deferred_calls:
             decisions = await run_approval_widget(deferred_calls)
             if decisions is not None:
                 try:

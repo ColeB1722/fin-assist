@@ -42,10 +42,6 @@ class TestProviderRegistryGetProviderKind:
         with pytest.raises(ValueError, match="Unknown provider"):
             registry.get_kind("unknown")
 
-    def test_unknown_provider_error_message(self, registry: ProviderRegistry) -> None:
-        with pytest.raises(ValueError, match="unknown"):
-            registry.get_kind("unknown")
-
 
 class TestProviderRegistryCreateModel:
     def test_anthropic_model(self, registry: ProviderRegistry) -> None:

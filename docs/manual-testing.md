@@ -229,7 +229,18 @@ Tests the deferred approval flow within the chat loop. When the default agent (o
 | I4 | Multi-turn after denial | Deny a tool call, then send another message | Chat loop continues normally; context preserved |
 | I5 | Approval + session save | Approve a tool call, then `/exit` | Session saved with the full conversation including the approved tool result |
 
-> **Note**: The default agent doesn't have `run_shell` in its tools by default. To test this, either (a) ask the model to use `run_shell` (it won't be available unless configured), or (b) temporarily add `run_shell` to the default agent's tools in config. Alternatively, test with the shell agent in talk mode — but shell only supports `do` mode. The simplest path: test I1-I3 with a custom agent config that has `run_shell` in both `do` and `talk` modes.
+> **Note**: The default agent doesn't have `run_shell` in its tools by default, and the `shell` agent only supports `do` mode. To test I1–I5, create a dedicated test agent in your TOML config:
+>
+> ```toml
+> [agents.test-approval]
+> description = "Agent for testing in-flight approval"
+> system_prompt = "You can run shell commands when asked."
+> output_type = "text"
+> serving_modes = ["do", "talk"]
+> tools = ["run_shell"]
+> ```
+>
+> Then use `fin talk test-approval` for I1–I5. This makes the tests reproducible without modifying the default or shell agent configs.
 
 ### 2d. Prompt Completions & History
 

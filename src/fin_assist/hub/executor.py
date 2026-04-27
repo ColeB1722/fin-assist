@@ -349,10 +349,11 @@ class Executor(AgentExecutor):
                 # Backends are required to emit ``content`` as ``str`` for
                 # ``tool_result`` events — see StepEvent docstring and
                 # PydanticAIBackend._extract_tool_result_text.
+                content = event.content if isinstance(event.content, str) else str(event.content)
                 await self._emit_artifact(
                     ctx.updater,
                     ctx.artifact_id,
-                    [Part(text=event.content, metadata=result_meta)],
+                    [Part(text=content, metadata=result_meta)],
                     ctx.created_artifacts,
                     last_chunk=False,
                 )

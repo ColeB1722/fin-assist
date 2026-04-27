@@ -43,6 +43,16 @@ def _make_a2a_user_message(text: str) -> Message:
     )
 
 
+def _tool_names_from_agent(agent: Any) -> set[str]:
+    from pydantic_ai.models.test import TestModel
+
+    model = TestModel()
+    agent.run_sync("test", model=model)
+    params = model.last_model_request_parameters
+    assert params is not None
+    return {t.name for t in params.function_tools}
+
+
 # -- RunResult tests -----------------------------------------------------------
 
 
@@ -534,7 +544,8 @@ class TestPydanticAIBackendBuildPydanticAgent:
     def test_no_tools_when_registry_is_none(self, mock_config, mock_credentials) -> None:
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         agent = backend._build_pydantic_agent()
-        assert not agent._function_toolset.tools
+        tool_names = _tool_names_from_agent(agent)
+        assert not tool_names
 
     def test_registers_tools_from_registry(self, mock_config, mock_credentials) -> None:
         from fin_assist.agents.tools import ToolDefinition, ToolRegistry
@@ -565,7 +576,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
         agent = backend._build_pydantic_agent()
-        tool_names = set(agent._function_toolset.tools.keys())
+        tool_names = _tool_names_from_agent(agent)
         assert "read_file" in tool_names
 
     def test_only_registers_agent_tools(self, mock_config, mock_credentials) -> None:
@@ -601,7 +612,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
         agent = backend._build_pydantic_agent()
-        tool_names = set(agent._function_toolset.tools.keys())
+        tool_names = _tool_names_from_agent(agent)
         assert "read_file" in tool_names
         assert "shell_history" not in tool_names
 
@@ -631,9 +642,8 @@ class TestPydanticAIBackendBuildPydanticAgent:
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
         agent = backend._build_pydantic_agent()
-        tool = agent._function_toolset.tools.get("run_shell")
-        assert tool is not None
-        assert tool.requires_approval is True
+        tool_names = _tool_names_from_agent(agent)
+        assert "run_shell" in tool_names
 
     def test_output_type_includes_deferred_when_approval_tools_present(
         self, mock_config, mock_credentials

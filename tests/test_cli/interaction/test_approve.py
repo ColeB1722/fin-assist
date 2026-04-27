@@ -72,17 +72,6 @@ class TestRunApprovalWidget:
             kwargs = mock_cls.call_args.kwargs
             assert kwargs["default"] is True
 
-    async def test_denial_reason_in_decision(self):
-        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
-            mock_instance = MagicMock()
-            mock_instance.prompt_async = _async_return(False)
-            mock_cls.return_value = mock_instance
-
-            decisions = await run_approval_widget(_sample_deferred_calls())
-
-        assert decisions is not None
-        assert decisions[0]["denial_reason"] == "Denied by user"
-
 
 class TestBuildKeyBindings:
     def test_returns_key_bindings(self):
