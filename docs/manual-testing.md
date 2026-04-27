@@ -37,7 +37,7 @@
 | **Types / data** | 100% | `StepEvent`, `StepHandle`, `AgentResult`, `AgentCardMeta`, `ApprovalPolicy`, `DeferredToolCall`, `ApprovalDecision`, `ToolDefinition`, `ToolRegistry`, `ServingMode`, `MissingCredentialsError` |
 | **Config** | 100% | `AgentConfig`, `Config`, TOML loading, env var overrides, default agents |
 | **Context providers** | 84-96% | `FileFinder`, `GitContext`, `ShellHistory`, `Environment` — all with mocked subprocesses |
-| **Agent spec** | 99% | `AgentSpec` properties, `requires_approval` derivation, `check_credentials`, `tools` from config, `supports_context` |
+| **Agent spec** | 99% | `AgentSpec` properties, `check_credentials`, `tools` from config, `supports_context` |
 | **Context store** | 100% | `ContextStore` load/save, version byte wrap/unwrap, persistence |
 | **Factory** | 100% | `AgentFactory.create_a2a_app`, agent card extensions |
 | **Credentials** | 96% | `CredentialStore` get/set, env var precedence, keyring fallback |

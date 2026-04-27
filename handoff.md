@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-26)**: 691 tests passing, CI green. PR #87 (`feature/tools-plus`) triage in progress — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, and Phase 3 `_run_shell` asyncio rewrite all landed. Next up: remaining Phase 3 bugs (factory default registry, executor `event.content` typing), then Phase 4 architectural discussions.
+**Current state (2026-04-26)**: 689 tests passing, CI green. PR #87 (`feature/tools-plus`) triage in progress — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, Phase 3 `_run_shell` asyncio rewrite, and Phase 3 factory-registry cleanup all landed. Next up: last Phase 3 bug (executor `event.content` typing), then Phase 4 architectural discussions.
 
 **Core platform status:**
 
@@ -53,11 +53,11 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 | # | Issue | Commit | Notes |
 |---|-------|--------|-------|
-| 1 | Subprocess cleanup in `_run_shell` (`agents/tools.py`) — `subprocess.run()` in `loop.run_in_executor` leaks child processes on asyncio cancellation | _pending commit_ | Rewrote using `asyncio.create_subprocess_shell` with `asyncio.wait_for` for timeout + `_terminate_and_wait` helper. On `CancelledError` we terminate the child and re-raise; on timeout or I/O error we terminate and return a user-visible message. Added tests for spawn failure, I/O error, timeout-terminates-child, and cancellation-terminates-child-and-propagates. |
+| 1 | Subprocess cleanup in `_run_shell` (`agents/tools.py`) — `subprocess.run()` in `loop.run_in_executor` leaks child processes on asyncio cancellation | `160c6fc` | Rewrote using `asyncio.create_subprocess_shell` with `asyncio.wait_for` for timeout + `_terminate_and_wait` helper. On `CancelledError` we terminate the child and re-raise; on timeout or I/O error we terminate and return a user-visible message. Added tests for spawn failure, I/O error, timeout-terminates-child, and cancellation-terminates-child-and-propagates. |
+| 2 | `factory.create_a2a_app` mutates `agent._tool_registry` post-construction (`hub/factory.py:127-128`) to make `AgentSpec.requires_approval` return correct value | _pending commit_ | `AgentSpec.requires_approval` was unused in `src/` (only two tests read it). Dropped the property, the `tool_registry` constructor param on `AgentSpec`, and the factory mutation. If static per-agent approval info is ever needed, the right home is `AgentCardMeta` where the factory can compute it correctly. Backend still receives the registry directly via `PydanticAIBackend(tool_registry=...)` — that path is untouched. |
 
 Remaining:
 
-- **Factory default `ToolRegistry` behaviour** (`hub/factory.py:54, 124`) — docstring claims auto-default; verify. Line 124 mutates private `agent._tool_registry` which is suspect.
 - **`event.content` typing in executor** (`hub/executor.py:259-264`) — three-way `isinstance` dispatch suggests `StepEvent.content` isn't narrow enough at the backend boundary.
 
 ### Phase 4 — Architectural discussions (file as GitHub issues, needs user time to discuss)

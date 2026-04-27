@@ -36,7 +36,6 @@ from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
-    from fin_assist.agents.tools import ToolRegistry
     from fin_assist.config.schema import AgentConfig, Config
     from fin_assist.credentials.store import CredentialStore
 
@@ -63,13 +62,11 @@ class AgentSpec:
         agent_config: AgentConfig,
         config: Config,
         credentials: CredentialStore,
-        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._name = name
         self._agent_config = agent_config
         self._config = config
         self._credentials = credentials
-        self._tool_registry = tool_registry
 
     @property
     def name(self) -> str:
@@ -126,16 +123,6 @@ class AgentSpec:
     @property
     def tools(self) -> list[str]:
         return self._agent_config.tools
-
-    @property
-    def requires_approval(self) -> bool:
-        """Whether this agent has any tools requiring human approval."""
-        if self._tool_registry is None:
-            return False
-        return any(
-            td.approval_policy is not None and td.approval_policy.mode != "never"
-            for td in self._tool_registry.get_for_agent(self._agent_config.tools)
-        )
 
     def supports_context(self, context_type: str) -> bool:
         return context_type in self._supported_context_types

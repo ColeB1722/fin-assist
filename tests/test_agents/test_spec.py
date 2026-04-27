@@ -189,44 +189,6 @@ class TestAgentSpecCardMetadata:
         agent = _make_shell_agent(mock_config, mock_credentials)
         assert agent.agent_card_metadata.serving_modes == ["do"]
 
-    def test_shell_requires_approval_is_false_without_approval_tools(
-        self, mock_config, mock_credentials
-    ) -> None:
-        agent = _make_shell_agent(mock_config, mock_credentials)
-        assert agent.requires_approval is False
-
-    def test_requires_approval_true_when_tool_has_approval_policy(
-        self, mock_config, mock_credentials
-    ) -> None:
-        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
-
-        registry = ToolRegistry()
-        registry.register(
-            ToolDefinition(
-                name="run_shell",
-                description="Run a shell command",
-                callable=lambda cmd: cmd,
-                parameters_schema={"type": "object", "properties": {"cmd": {"type": "string"}}},
-                approval_policy=ApprovalPolicy(mode="always"),
-            )
-        )
-        agent = AgentSpec(
-            name="shell",
-            agent_config=AgentConfig(
-                description="Shell agent",
-                system_prompt="shell",
-                output_type="command",
-                thinking="off",
-                serving_modes=["do"],
-                tags=["shell", "one-shot"],
-                tools=["run_shell"],
-            ),
-            config=mock_config,
-            credentials=mock_credentials,
-            tool_registry=registry,
-        )
-        assert agent.requires_approval is True
-
     def test_supported_context_types_from_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
