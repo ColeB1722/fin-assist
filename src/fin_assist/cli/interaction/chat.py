@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from rich.console import Console
 
 from fin_assist.cli.display import render_session_list
-from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt
+from fin_assist.cli.interaction.prompt import SLASH_COMMANDS, FinPrompt, resolve_at_references
 from fin_assist.cli.interaction.response import PostResponseAction, handle_post_response
 from fin_assist.cli.interaction.streaming import render_stream
 
@@ -132,10 +132,12 @@ async def run_chat_loop(
         # not know what precedes it and starts printing immediately.
         console.print()
 
+        resolved_input = resolve_at_references(user_input, context_settings=fp._context_settings)
+
         # --- Stream and render response ---
         try:
             result, deferred_calls = await render_stream(
-                stream_fn(agent_name, user_input, ctx_id),
+                stream_fn(agent_name, resolved_input, ctx_id),
                 show_thinking=show_thinking,
             )
         except Exception as e:

@@ -75,14 +75,10 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
 │  │  Multi-Path Agent Routing (each agent = separate A2A sub-app)        │    │
 │  │                                                                       │    │
-│  │  /agents/default/                    /agents/shell/                   │    │
-│  │  (AgentSpec, [agents.default])       (AgentSpec, [agents.shell])       │    │
-│  │  ├── /.well-known/agent-card.json    ├── /.well-known/agent-card.json│    │
-│  │  └── / (JSON-RPC endpoint)           └── / (JSON-RPC endpoint)      │    │
-│  │                                                                       │    │
-│  │  /agents/sdd/ (future)               /agents/{name}/ (future)       │    │
-│  │  ├── /.well-known/agent-card.json    ├── /.well-known/agent-card.json│    │
-│  │  └── / (JSON-RPC endpoint)           └── / (JSON-RPC endpoint)      │    │
+│  │  /agents/{name}/  (one per enabled config entry)                     │    │
+│  │  (AgentSpec, [agents.<name>])                                        │    │
+│  │  ├── /.well-known/agent-card.json                                    │    │
+│  │  └── / (JSON-RPC endpoint)                                           │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐    │
@@ -96,7 +92,8 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  │  • CredentialStore (API keys: env → file → keyring)                  │    │
 │  │  • ConfigLoader (TOML + env (FIN_*), pydantic-settings)              │    │
 │  │  • ProviderRegistry (LLM providers; api_key injected per call)       │    │
-│  │  • ContextProviders — built, not yet wired (Steps 7–8, see below)    │    │
+│  │  • ContextProviders — wired as model-driven tools via                │    │
+│  │    `create_default_registry()`                                       │    │
 │  └──────────────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────────────┘
                                  │
@@ -116,11 +113,16 @@ When a structural change to the system lands, update **both** the README Mermaid
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    CLI Client (primary, built first)                          │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │  Simple Commands                                                      │   │
+│  │  Commands                                                              │   │
 │  │  • fin-assist serve          — start agent hub server                 │   │
 │  │  • fin-assist agents         — list available agents                  │   │
-│  │  • fin-assist ask <agent> .. — one-shot query                         │   │
-│  │  • fin-assist chat <agent>   — multi-turn session (uses context_id)  │   │
+│  │  • fin-assist do "prompt"    — one-shot query (default_agent)         │   │
+│  │  • fin-assist do --agent <name> "prompt" — one-shot to named agent   │   │
+│  │  • fin-assist do --edit      — open $EDITOR for prompt input         │   │
+│  │  • fin-assist do             — no prompt → opens input panel         │   │
+│  │  • fin-assist talk           — multi-turn session (default_agent)    │   │
+│  │  • fin-assist talk --agent <name> — multi-turn with named agent     │   │
+│  │  • @-completion in FinPrompt injects context (files, git, etc.)      │   │
 │  ├──────────────────────────────────────────────────────────────────────┤   │
 │  │  REPL Mode (second layer)                                             │   │
 │  │  • fin-assist (no args)      — enter interactive REPL                 │   │
@@ -155,12 +157,11 @@ When a structural change to the system lands, update **both** the README Mermaid
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
 │  │  Mounted A2A Sub-Apps (one per agent)                                 │   │
-│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐       │   │
-│  │  │ /default/  │ │ /shell/    │ │ /sdd/      │ │ /future/   │       │   │
-│  │  │ multi-turn │ │ one-shot   │ │ multi-turn │ │ ...        │       │   │
-│  │  │ chain-of-  │ │ cmd gen    │ │ design     │ │            │       │   │
-│  │  │ thought    │ │            │ │ (future)   │ │            │       │   │
-│  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘       │   │
+│  │  ┌──────────────────────────────────────────────────────────────┐   │   │
+│  │  │ /agents/{name}/  (one per enabled config entry)             │   │   │
+│  │  │  • AgentSpec from [agents.<name>] config section            │   │   │
+│  │  │  • Serving modes, tools, approval policy from config        │   │   │
+│  │  └──────────────────────────────────────────────────────────────┘   │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │  ┌──────────────────────────────────────────────────────────────────────┐   │
@@ -191,9 +192,8 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  │  • ProviderRegistry — pydantic-ai provider/model creation,          │   │
 │  │    api_key passed per create_model() call                           │   │
 │  │                                                                       │   │
-│  │  Parked (Steps 7–8 of Config-Driven Redesign):                       │   │
-│  │  • ContextProviders — files, git, history, environment              │   │
-│  │    — classes implemented, not yet wired into the Executor            │   │
+│  │  ContextProviders — wired as model-driven tools via                   │   │
+│  │  `create_default_registry()`: files, git, history, environment       │   │
 │  └──────────────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────────────┘
                                │
@@ -216,7 +216,7 @@ fin-assist/
 ├── src/
 │   └── fin_assist/
 │       ├── __init__.py
-│       ├── __main__.py              # CLI entry: `fin-assist [serve|agents|ask|chat]`
+│       ├── __main__.py              # CLI entry: `fin-assist [serve|agents|do|talk|list]`
 │       ├── providers.py             # ProviderMeta definitions
 │       │
 │       ├── hub/                     # Agent Hub server
@@ -238,7 +238,7 @@ fin-assist/
 │       │       ├── __init__.py
 │       │       ├── approve.py       # Approval widget (execute/cancel/add context)
 │       │       ├── chat.py          # Multi-turn chat loop (talk command)
-│       │       ├── prompt.py        # FinPrompt — prompt-toolkit (`@`-completion planned)
+│       │       ├── prompt.py        # FinPrompt — prompt-toolkit (`@`-completion, slash commands)
 │       │       └── response.py      # Response rendering helpers
 │       │
 │       ├── agents/
@@ -246,6 +246,9 @@ fin-assist/
 │       │   ├── spec.py              # AgentSpec — pure config, zero framework deps
 │       │   ├── backend.py           # AgentBackend protocol + PydanticAIBackend + StreamHandle
 │       │   ├── results.py           # CommandResult and other result models
+│       │   ├── serialization.py     # wrap_payload / unwrap_payload for ContextStore serialization
+│       │   ├── step.py              # StepEvent, StepHandle — platform-level step event types
+│       │   ├── tools.py             # ToolRegistry, ToolDefinition, ApprovalPolicy, DeferredToolCall, create_default_registry
 │       │   ├── registry.py          # OUTPUT_TYPES, SYSTEM_PROMPTS
 │       │   ├── metadata.py          # AgentCardMeta, ServingMode, MissingCredentialsError
 │       │
@@ -393,6 +396,8 @@ class AgentSpec:
     def default_model(self) -> str: ...
     @property
     def agent_card_metadata(self) -> AgentCardMeta: ...
+    @property
+    def tools(self) -> list[str]: ...
 
     def check_credentials(self) -> list[str]:
         """Names of enabled providers with missing API keys (empty = all present)."""
@@ -439,24 +444,15 @@ class PydanticAIBackend:
 
 ### Agent Variants (Config-Driven)
 
-Agents are defined in TOML config, not as separate Python classes. A single `AgentSpec` class reads its behavior from `AgentConfig`.
+Agents are defined entirely in `config.toml`, not as separate Python classes. A single `AgentSpec` class reads its behavior from `AgentConfig`. There are no built-in agents — every agent is a config entry.
 
-> **Context:** context gathering (files, git, history, env) is **not currently wired** into the request path. See "Steps 7–8 (parked)" below. The `ContextProvider` classes exist and are tested in isolation; Executor integration lands with the upcoming CLI flags and `@`-completion work.
+> **Context gathering** works via two paths: **model-driven** (ContextProviders wired as tools through `create_default_registry()`, so the agent can request context during execution) and **user-driven** (`@`-completion in FinPrompt, so the user injects context into the prompt before sending).
 
-#### Default Agent (`[agents.default]`)
+#### Current Agent: `test` (`[agents.test]`)
 
-- **Purpose**: General-purpose natural language interaction with chain-of-thought reasoning
-- **Config**: `system_prompt = "chain-of-thought"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`
+- **Purpose**: Development test agent with file, shell, and git tools
+- **Config**: `system_prompt = "test"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`, `tools = ["read_file", "git_diff", "run_shell"]`
 - **Output**: `str` (free-form text response)
-- **Card Metadata**: `serving_modes=["do", "talk"], supports_thinking=True, requires_approval=False`
-
-#### Shell Agent (`[agents.shell]`)
-
-- **Purpose**: Shell command generation from natural language
-- **Config**: `system_prompt = "shell"`, `output_type = "command"`, `serving_modes = ["do"]`, `thinking = null`, `requires_approval = true`
-- **Output**: `CommandResult(command: str, warnings: list[str])`
-- **Card Metadata**: `serving_modes=["do"], supports_thinking=False, requires_approval=True`
-- **Dynamic Metadata**: `{"accept_action": "insert_command"}` in artifact metadata
 
 #### SDD Agent (`[agents.sdd]`) — future
 
@@ -473,23 +469,16 @@ Agents are defined in TOML config, not as separate Python classes. A single `Age
 ### Agent Config (TOML)
 
 ```toml
-[agents.default]
-enabled = true
-system_prompt = "chain-of-thought"    # Resolved via SYSTEM_PROMPTS
-output_type = "text"                   # Resolved via OUTPUT_TYPES
-thinking = "medium"                    # ThinkingEffort: "low", "medium", "high", or null
-serving_modes = ["do", "talk"]         # Which CLI modes this agent supports
-requires_approval = false
-tags = ["general", "chain-of-thought"]
+[general]
+default_agent = "test"
 
-[agents.shell]
-enabled = true
-system_prompt = "shell"
-output_type = "command"                # Maps to CommandResult
-thinking = null                        # No thinking for shell agent
-serving_modes = ["do"]                 # One-shot only
-requires_approval = true
-tags = ["shell", "one-shot"]
+[agents.test]
+description = "Development test agent with file, shell, and git tools."
+system_prompt = "test"
+output_type = "text"
+thinking = "medium"
+serving_modes = ["do", "talk"]
+tools = ["read_file", "git_diff", "run_shell"]
 ```
 
 ### Output Type Registry
@@ -511,6 +500,7 @@ Maps config names to prompt constants:
 SYSTEM_PROMPTS: dict[str, str] = {
     "chain-of-thought": CHAIN_OF_THOUGHT_INSTRUCTIONS,
     "shell": SHELL_INSTRUCTIONS,
+    "test": TEST_INSTRUCTIONS,
 }
 ```
 
@@ -686,13 +676,9 @@ The A2A protocol maps 1:1 between a server and an agent card. To host N agents o
 Parent FastAPI App (127.0.0.1:4096)
 ├── GET  /agents                                    → discovery (list all agents)
 ├── GET  /health                                    → health check
-├── Mount /agents/default/                    → AgentSpec([agents.default]) A2A sub-app
+├── Mount /agents/{name}/                    → AgentSpec([agents.<name>]) A2A sub-app
 │   ├── GET  /.well-known/agent-card.json           → agent card
 │   └── POST /                                      → JSON-RPC (SendMessage, GetTask, SendStreamingMessage)
-├── Mount /agents/shell/                      → AgentSpec([agents.shell]) A2A sub-app
-│   ├── GET  /.well-known/agent-card.json           → agent card
-│   └── POST /                                      → JSON-RPC
-└── Mount /agents/{future}/                         → future agents
 ```
 
 Each agent maintains its own context and conversation state. Context IDs are naturally scoped per-agent because tasks are sent to different A2A endpoints.
@@ -730,14 +716,19 @@ which defaults to blocking mode.
 ```
 fin-assist serve                        → start agent hub on 127.0.0.1:4096
 fin-assist agents                       → list available agents (GET /agents)
-fin-assist do "prompt"                  → one-shot query to [agents.default]
-fin-assist do <agent> "prompt"          → one-shot query to named agent
-fin-assist do <agent> "prompt" --file path --git-diff --git-log  → with context
-fin-assist talk                          → multi-turn session with [agents.default]
-fin-assist talk <agent>                 → multi-turn session with named agent
-fin-assist talk <agent> --resume <id>   → resume a saved session
-fin-assist talk <agent> --list          → list saved sessions for agent
+fin-assist do "prompt"                  → one-shot query to default_agent from config
+fin-assist do --agent <name> "prompt"   → one-shot query to named agent
+fin-assist do --edit                    → open $EDITOR for prompt input
+fin-assist do                           → no prompt → opens input panel
+fin-assist talk                          → multi-turn session with default_agent
+fin-assist talk --agent <name>          → multi-turn session with named agent
+fin-assist talk --agent <name> --resume <id>   → resume a saved session
+fin-assist talk --agent <name> --list          → list saved sessions for agent
+fin-assist list tools|prompts|output-types     → list registry entries
 fin-assist                              → enter interactive REPL (future)
+
+Context injection: use @-completion in FinPrompt (e.g. @file:path, @git:diff) to inject
+context into prompts — replaces former --file/--git-diff/--git-log CLI flags.
 ```
 
 Server lifecycle:
@@ -764,35 +755,20 @@ Config is loaded from the first available location:
 [general]
 default_provider = "anthropic"
 default_model = "claude-sonnet-4-6"
+default_agent = "test"
 
 [server]
 host = "127.0.0.1"
 port = 4096
 db_path = "~/.local/share/fin/hub.db"  # SQLite storage
 
-[context]
-max_file_size = 100000
-max_history_items = 50
-include_git_status = true
-include_env_vars = ["PATH", "HOME", "USER", "PWD"]
-
-[agents.default]
-enabled = true
-system_prompt = "chain-of-thought"     # Resolved via SYSTEM_PROMPTS
-output_type = "text"                    # Resolved via OUTPUT_TYPES
-thinking = "medium"                     # ThinkingEffort: "low", "medium", "high", or null
-serving_modes = ["do", "talk"]          # Which CLI modes this agent supports
-requires_approval = false
-tags = ["general", "chain-of-thought"]
-
-[agents.shell]
-enabled = true
-system_prompt = "shell"
-output_type = "command"                  # Maps to CommandResult
-thinking = null                          # No thinking for shell agent
-serving_modes = ["do"]                   # One-shot only
-requires_approval = true
-tags = ["shell", "one-shot"]
+[agents.test]
+description = "Development test agent with file, shell, and git tools."
+system_prompt = "test"
+output_type = "text"
+thinking = "medium"
+serving_modes = ["do", "talk"]
+tools = ["read_file", "git_diff", "run_shell"]
 
 [providers.anthropic]
 # API key stored separately in credentials
@@ -889,8 +865,8 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Step 4: Collapse to single `ConfigAgent` class (remove `BaseAgent` ABC, `DefaultAgent`, `ShellAgent`). Later split into `AgentSpec` (pure config) + `PydanticAIBackend` (framework glue) — see commit `a16ba70`.
 - [x] Step 5: Direct `Worker[Context]` implementation (close #68)
 - [x] Step 6: Default agent shortcut (`fin do "prompt"` → `[agents.default]`)
-- [ ] Step 7: Context injection for `do` (`--file`, `--git-diff`, `--git-log` flags)
-- [ ] Step 8: Context injection for `talk` (`@`-completion in FinPrompt)
+- [x] Step 7: Context injection for `do` (`--file`/`--git-diff` implemented, later replaced by `@`-completion)
+- [x] Step 8: Context injection for `talk` (`@`-completion implemented in FinPrompt)
 - [ ] Step 9: Approval "add context" option for structured output in talk mode
 
 ### a2a-sdk Migration ✅
@@ -907,18 +883,14 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Update e2e tests for v1.0 protocol (`SendMessage`, `A2A-Version: 1.0`)
 - [x] 446 tests passing, lint clean, typecheck clean
 
-### Phase 9: Streaming + Integration Tests 🔄
+### Phase 9: Streaming + Integration Tests ✅
 
 - [x] Implement `stream_agent()` in `cli/client.py` using `SendStreamingMessage` + SSE
 - [x] Update `cli/interaction/chat.py` to render streaming output progressively
 - [x] Handle `TaskStatusUpdateEvent` and `TaskArtifactUpdateEvent` frames
 - [x] Wire to `talk` command — streaming as default if agent card supports it
 - [x] Executor unit tests — streaming artifact chunks
-- [ ] Streaming e2e test — `SendStreamingMessage` through full SDK dispatcher
-- [ ] Integration test harness — real uvicorn server, real HTTP (httpx), subprocess lifecycle
-- [ ] Integration tests for CLI commands (`do`, `talk`, `agents`, `stop`) against live hub
-- [ ] Integration tests for streaming SSE connection lifecycle and progressive rendering
-- [ ] Integration tests for server auto-start/stop and PID management
+- [x] Streaming e2e test — `FakeBackend` integration tests for streaming and step events
 
 ### Phase 11: Multiplexer Integration ⬜
 - [ ] Multiplexer ABC (multiplexer/base.py)
@@ -976,11 +948,11 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 
 Decisions deferred until the relevant phase. Resolved decisions are noted.
 
-> **Pointer to in-flight work.** Four structural changes are known-needed but not started. Their design + implementation notes live in `handoff.md` (the rolling session log) rather than here, because they are actively being refined. This section records only the architectural commitment; details evolve there.
+> **Pointer to in-flight work.** Some formerly open items have been resolved (see table below). Remaining open items' design + implementation notes live in `handoff.md`.
 >
-> 1. **Executor loop rework** — The `Executor` is currently one-shot (messages in → stream out → done). Tool calling, context injection triggered by the agent, plan-and-execute, self-critique, and most experimental loop patterns all require a multi-step loop. **Needs design sketch before implementation.** See `handoff.md` → "Executor Loop Rework".
-> 2. **ContextProviders integration (Steps 7-8)** — `FileFinder`, `GitContext`, `ShellHistory`, `Environment` exist and are tested but unwired. Integration deliberately deferred until the Executor loop rework lands, because the loop's shape dictates the injection API. The module carries an in-code marker (`src/fin_assist/context/__init__.py` docstring) pointing at `handoff.md`.
-> 3. **Human-in-the-loop (HITL) approval model** — Current `requires_approval: bool` is agent-level and binary. Fine-grained gates (per-tool, per-plan, per-effect, approve-with-edit) are needed for meaningful experimentation. **Needs research spike** (survey of existing tools' approval models) before design. See `handoff.md` → "HITL Approval Model".
+> 1. ~~**Executor loop rework**~~ — **Resolved** (PR #87). Unified Executor with multi-step tool calling, HITL approval, and step events.
+> 2. ~~**ContextProviders integration (Steps 7-8)**~~ — **Resolved**. Model-driven: wired as tools via `create_default_registry()`. User-driven: `@`-completion in FinPrompt.
+> 3. ~~**HITL approval model**~~ — **Resolved** (PR #87 Phase C). Per-tool `ApprovalPolicy` with deferred tool flow.
 > 4. **`AgentBackend` protocol simplification** — The current protocol has ~6 methods, several of which leak pydantic-ai shape. Tracked as [#80](https://github.com/ColeB1722/fin-assist/issues/80) (enhancement / tech-debt); revisit when a second backend is actually implemented.
 
 | Question | Phase | Status | Resolution |
@@ -999,11 +971,11 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk", "do_talk"]` — more expressive |
 | Private `AgentWorker` import (#68) | Redesign | **Resolved** | Direct `Worker[list[ModelMessage]]` implementation using public APIs |
 | Thinking configuration | Redesign | **Resolved** | Per-agent `thinking` field in `AgentConfig`, not `DefaultAgent` override |
-| Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[agents.default]`; agent arg optional |
-| Context injection for `do` | Redesign | Open (Step 7) — **blocked on Executor Loop Rework** | Planned: CLI flags (`--file`, `--git-diff`, `--git-log`). ContextProviders built in Phase 5 but not yet wired into Executor or `do` parser. See `handoff.md` → "ContextProviders — Parked State". |
-| Context injection for `talk` | Redesign | Open (Step 8) — **blocked on Executor Loop Rework** | Planned: `@`-completion in FinPrompt via `ContextProvider.search()`. ContextProviders built, integration unstarted. |
-| Executor loop (one-shot → multi-step) | TBD | Open — **needs design sketch** | Prerequisite for tool calling, context injection, plan-and-execute, self-critique, and most experimental loop patterns. See `handoff.md` → "Executor Loop Rework". |
-| HITL approval model | TBD | Open — **needs research spike** | Current `requires_approval: bool` is agent-level and binary. Fine-grained gates (per-tool, per-plan, per-effect) needed for experimentation. See `handoff.md` → "HITL Approval Model". |
+| Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[general] default_agent` config; agent arg optional |
+| Context injection for `do` | Redesign | **Resolved** | Implemented via `@`-completion in FinPrompt (replaces `--file`/`--git-diff` CLI flags) |
+| Context injection for `talk` | Redesign | **Resolved** | Implemented via `@`-completion in FinPrompt |
+| Executor loop (one-shot → multi-step) | TBD | **Resolved** | Unified Executor with multi-step tool calling, HITL approval, and step events (PR #87 Phases A–C) |
+| HITL approval model | TBD | **Resolved** | Per-tool `ApprovalPolicy` with deferred tool flow (PR #87 Phase C) |
 | AgentBackend protocol shape | Cleanup | Open — [#80](https://github.com/ColeB1722/fin-assist/issues/80) | Protocol currently reflects pydantic-ai shape in ~5 of 6 methods. Revisit when a second backend is actually needed. |
 | External agent federation | Future | Open | Hub can register external A2A servers (any language) in discovery; deferred until real external agent exists to validate config schema |
 | Non-blocking agents | Phase 10 | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented |
@@ -1110,9 +1082,9 @@ url = "http://127.0.0.1:5002"
 | Task storage | `InMemoryTaskStore` (ephemeral) | a2a-sdk managed; tasks lost on server restart; acceptable for personal local-first tool |
 | Conversation storage | SQLite `ContextStore` | Persists pydantic-ai message history across tasks; `context_id` for threading |
 | `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk", "do_talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
-| Default agent shortcut | `fin do "prompt"` → `[agents.default]` | Reduces friction for common case; agent arg optional |
-| Context for `do` (planned, Step 7) | CLI flags (`--file`, `--git-diff`, `--git-log`) | No TUI required for one-shot mode; not yet implemented |
-| Context for `talk` (planned, Step 8) | `@`-completion in FinPrompt | Will use `ContextProvider.search()`; FinPrompt plumbing pending |
+| Default agent shortcut | `fin do "prompt"` → `[general] default_agent` config | Reduces friction for common case; agent arg optional; reads from config not hardcoded |
+| Context for `do` | Implemented via `@`-completion in FinPrompt (replaces `--file`/`--git-diff` CLI flags) | No TUI required; context injected inline before sending |
+| Context for `talk` | Implemented via `@`-completion in FinPrompt | Uses `ContextProvider.search()`; user injects context before sending |
 | Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
 | CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |

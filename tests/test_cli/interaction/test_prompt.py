@@ -177,3 +177,9 @@ class TestFinPromptAgents:
 
         fp = FinPrompt()
         assert fp.agents == []
+
+    def test_context_settings_stored(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        fp = FinPrompt(context_settings=MagicMock())
+        assert fp._context_settings is not None

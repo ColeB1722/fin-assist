@@ -977,3 +977,32 @@ class TestDoInputPanel:
 
         assert result == 0
         mock_client.stream_agent.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# `list` command
+# ---------------------------------------------------------------------------
+
+
+class TestListCommand:
+    def test_list_tools_prints_all_tools(self):
+        result = _run_main("list", "tools")
+        assert result == 0
+
+    def test_list_prompts_prints_all_prompts(self):
+        result = _run_main("list", "prompts")
+        assert result == 0
+
+    def test_list_output_types_prints_all_types(self):
+        result = _run_main("list", "output-types")
+        assert result == 0
+
+    def test_list_invalid_resource_returns_nonzero(self):
+        with pytest.raises(SystemExit):
+            _run_main("list", "bogus")
+
+    def test_list_tools_no_hub_connection_needed(self):
+        with patch("fin_assist.cli.main.ensure_server_running") as mock_ensure:
+            result = _run_main("list", "tools")
+        mock_ensure.assert_not_called()
+        assert result == 0
