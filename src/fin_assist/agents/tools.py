@@ -19,6 +19,7 @@ know about MCP — it's just another tool source.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -298,23 +299,70 @@ def _make_shell_history(settings: ContextSettings | None):
     return _shell_history
 
 
+_RUN_SHELL_TIMEOUT_SECONDS = 30
+
+
 async def _run_shell(command: str) -> str:
-    import asyncio
-    import subprocess
+    """Execute a shell command via asyncio-native subprocess.
 
-    def _blocking_run() -> str:
+    Uses ``asyncio.create_subprocess_shell`` (not ``subprocess.run`` in a
+    thread) so that cancelling the parent task terminates the child
+    process instead of leaking a running subprocess into the thread pool.
+
+    On ``CancelledError`` (e.g., A2A task cancel plumbed through to the
+    backend coroutine) we ``terminate()`` the child and re-raise so the
+    cancellation isn't swallowed.  On timeout we also terminate and
+    return a user-visible message.
+    """
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except Exception as e:  # noqa: BLE001 — surface any spawn failure as tool output
+        return f"Error executing command: {e}"
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=_RUN_SHELL_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        await _terminate_and_wait(proc)
+        return f"Command timed out after {_RUN_SHELL_TIMEOUT_SECONDS} seconds: {command}"
+    except asyncio.CancelledError:
+        await _terminate_and_wait(proc)
+        raise
+    except Exception as e:  # noqa: BLE001 — surface unexpected I/O errors as tool output
+        await _terminate_and_wait(proc)
+        return f"Error executing command: {e}"
+
+    stdout = stdout_bytes.decode(errors="replace")
+    stderr = stderr_bytes.decode(errors="replace")
+    output = stdout
+    if stderr:
+        output += f"\nSTDERR: {stderr}"
+    if proc.returncode != 0:
+        output += f"\nExit code: {proc.returncode}"
+    return output or "(no output)"
+
+
+async def _terminate_and_wait(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort terminate + reap of an asyncio subprocess."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=2)
+    except TimeoutError:
         try:
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
-            output = result.stdout
-            if result.stderr:
-                output += f"\nSTDERR: {result.stderr}"
-            if result.returncode != 0:
-                output += f"\nExit code: {result.returncode}"
-            return output or "(no output)"
-        except subprocess.TimeoutExpired:
-            return f"Command timed out after 30 seconds: {command}"
-        except Exception as e:
-            return f"Error executing command: {e}"
-
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _blocking_run)
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1)
+        except TimeoutError:
+            return

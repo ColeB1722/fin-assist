@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from subprocess import CompletedProcess
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -409,71 +408,136 @@ class TestShellHistoryCallable:
         assert result == "No shell history available."
 
 
+class _FakeProc:
+    """Minimal stand-in for ``asyncio.subprocess.Process`` used by _run_shell tests."""
+
+    def __init__(
+        self,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        returncode: int = 0,
+        communicate_delay: float = 0.0,
+        communicate_raises: BaseException | None = None,
+    ) -> None:
+        self._stdout = stdout
+        self._stderr = stderr
+        self.returncode: int | None = None
+        self._final_returncode = returncode
+        self._communicate_delay = communicate_delay
+        self._communicate_raises = communicate_raises
+        self.terminate_called = False
+        self.kill_called = False
+        self._terminated = __import__("asyncio").Event()
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        import asyncio
+
+        if self._communicate_raises is not None:
+            raise self._communicate_raises
+        if self._communicate_delay > 0:
+            # Wait until terminated or the delay elapses (simulating a long-running proc).
+            try:
+                await asyncio.wait_for(self._terminated.wait(), timeout=self._communicate_delay)
+            except TimeoutError:
+                pass
+        self.returncode = self._final_returncode
+        return self._stdout, self._stderr
+
+    def terminate(self) -> None:
+        self.terminate_called = True
+        self.returncode = -15
+        self._terminated.set()
+
+    def kill(self) -> None:
+        self.kill_called = True
+        self.returncode = -9
+        self._terminated.set()
+
+    async def wait(self) -> int:
+        await self._terminated.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+
+async def _get_run_shell_tool() -> ToolDefinition:
+    registry = create_default_registry()
+    tool = registry.get("run_shell")
+    assert tool is not None
+    return tool
+
+
 class TestRunShellCallable:
-    @pytest.mark.asyncio
     async def test_success(self) -> None:
-        cp = CompletedProcess(args="echo hi", returncode=0, stdout="hi\n", stderr="")
-        with patch("subprocess.run", return_value=cp):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+        proc = _FakeProc(stdout=b"hi\n")
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="echo hi")
         assert result == "hi\n"
 
-    @pytest.mark.asyncio
     async def test_includes_stderr(self) -> None:
-        cp = CompletedProcess(args="cmd", returncode=0, stdout="out", stderr="warn")
-        with patch("subprocess.run", return_value=cp):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+        proc = _FakeProc(stdout=b"out", stderr=b"warn")
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="cmd")
         assert "out" in result
         assert "STDERR: warn" in result
 
-    @pytest.mark.asyncio
     async def test_includes_exit_code_on_failure(self) -> None:
-        cp = CompletedProcess(args="cmd", returncode=1, stdout="", stderr="")
-        with patch("subprocess.run", return_value=cp):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+        proc = _FakeProc(returncode=1)
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="cmd")
         assert "Exit code: 1" in result
 
-    @pytest.mark.asyncio
     async def test_returns_no_output_marker_when_empty(self) -> None:
-        cp = CompletedProcess(args="true", returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=cp):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+        proc = _FakeProc()
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="true")
         assert "(no output)" in result
 
-    @pytest.mark.asyncio
-    async def test_timeout(self) -> None:
-        import subprocess
-
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="sleep 60", timeout=30),
+    async def test_timeout_terminates_child(self) -> None:
+        # communicate_delay longer than timeout -> _run_shell should terminate.
+        proc = _FakeProc(communicate_delay=5.0)
+        with (
+            patch("asyncio.create_subprocess_shell", return_value=proc),
+            patch("fin_assist.agents.tools._RUN_SHELL_TIMEOUT_SECONDS", 0.05),
         ):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="sleep 60")
         assert "timed out" in result
+        assert proc.terminate_called, "child should be terminated on timeout"
 
-    @pytest.mark.asyncio
-    async def test_generic_exception(self) -> None:
-        with patch("subprocess.run", side_effect=OSError("no fork")):
-            registry = create_default_registry()
-            tool = registry.get("run_shell")
-            assert tool is not None
+    async def test_spawn_failure_returns_error_message(self) -> None:
+        with patch("asyncio.create_subprocess_shell", side_effect=OSError("no fork")):
+            tool = await _get_run_shell_tool()
             result = await _invoke(tool, command="bad cmd")
         assert "Error executing command" in result
         assert "no fork" in result
+
+    async def test_communicate_error_returns_error_message_and_terminates(self) -> None:
+        proc = _FakeProc(communicate_raises=OSError("pipe broke"))
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
+            result = await _invoke(tool, command="cmd")
+        assert "Error executing command" in result
+        assert "pipe broke" in result
+        assert proc.terminate_called, "child should be terminated on I/O error"
+
+    async def test_cancellation_terminates_child_and_propagates(self) -> None:
+        import asyncio
+
+        proc = _FakeProc(communicate_delay=5.0)
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            tool = await _get_run_shell_tool()
+            task = asyncio.create_task(_invoke(tool, command="sleep 60"))
+            # Let the task reach `communicate()` before cancelling.
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert proc.terminate_called, "child should be terminated on cancellation"
 
 
 class TestCreateDefaultRegistryContextSettings:
