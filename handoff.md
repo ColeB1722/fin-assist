@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-26)**: 694 tests passing, CI green. PR #87 (`feature/tools-plus`) triage in progress — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, and all three Phase 3 bug audits landed. Next up: Phase 4 architectural discussions.
+**Current state (2026-04-26)**: 694 tests passing, CI green. PR #87 (`feature/tools-plus`) self-review triage complete — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, and all three Phase 3 bug audits landed. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
 
 **Core platform status:**
 
@@ -55,18 +55,20 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 |---|-------|--------|-------|
 | 1 | Subprocess cleanup in `_run_shell` (`agents/tools.py`) — `subprocess.run()` in `loop.run_in_executor` leaks child processes on asyncio cancellation | `160c6fc` | Rewrote using `asyncio.create_subprocess_shell` with `asyncio.wait_for` for timeout + `_terminate_and_wait` helper. On `CancelledError` we terminate the child and re-raise; on timeout or I/O error we terminate and return a user-visible message. Added tests for spawn failure, I/O error, timeout-terminates-child, and cancellation-terminates-child-and-propagates. |
 | 2 | `factory.create_a2a_app` mutates `agent._tool_registry` post-construction (`hub/factory.py:127-128`) to make `AgentSpec.requires_approval` return correct value | `3f18230` | `AgentSpec.requires_approval` was unused in `src/` (only two tests read it). Dropped the property, the `tool_registry` constructor param on `AgentSpec`, and the factory mutation. If static per-agent approval info is ever needed, the right home is `AgentCardMeta` where the factory can compute it correctly. Backend still receives the registry directly via `PydanticAIBackend(tool_registry=...)` — that path is untouched. |
-| 3 | Duck-typed `hasattr('content')` dispatch on `event.content` in executor `tool_result` handler (`hub/executor.py`) leaks pydantic-ai types (`ToolReturnPart`, `RetryPromptPart`) into framework-agnostic `Executor` | _pending commit_ | Normalised `StepEvent.content` to `str` for `tool_result` events. Added `_extract_tool_result_text()` in `PydanticAIBackend` — handles both `ToolReturnPart` (reads `.content`, stringifies if non-string) and `RetryPromptPart` (uses `.model_response()` for a human-readable retry description). Executor now just does `Part(text=event.content)`. Documented the `content` contract per `kind` on the `StepEvent` docstring. Added 5 new tests for the extraction helper + end-to-end verification. |
+| 3 | Duck-typed `hasattr('content')` dispatch on `event.content` in executor `tool_result` handler (`hub/executor.py`) leaks pydantic-ai types (`ToolReturnPart`, `RetryPromptPart`) into framework-agnostic `Executor` | `5ddeb72` | Normalised `StepEvent.content` to `str` for `tool_result` events. Added `_extract_tool_result_text()` in `PydanticAIBackend` — handles both `ToolReturnPart` (reads `.content`, stringifies if non-string) and `RetryPromptPart` (uses `.model_response()` for a human-readable retry description). Executor now just does `Part(text=event.content)`. Documented the `content` contract per `kind` on the `StepEvent` docstring. Added 5 new tests for the extraction helper + end-to-end verification. |
 
-### Phase 4 — Architectural discussions (file as GitHub issues, needs user time to discuss)
+### Phase 4 — Architectural discussions (filed as GitHub issues)
 
-Each deserves a dedicated design conversation:
+Each brief contains file/symbol pointers, current-behavior summary, and the specific design questions. Pick one and open a fresh session against it.
 
-- Hardcoded prompts vs loadable markdown — `llm/prompts.py::SHELL_INSTRUCTIONS`, `TEST_INSTRUCTIONS`
-- Holistic constants centralization — tool icons, max-preview sizes, approval styles scattered across CLI
-- Richer tool output rendering — `_format_tool_result` truncates at 120 chars; markdown rendering or local-LLM summary
-- Streaming.py complexity (#25–#30) — `_flush_thinking` / `something_printed` / `accumulated_text` state machine is opaque. User wants `exa` research into TUI streaming patterns before refactoring.
-- Struct `.attr` vs dict `.get()` convention — repo-wide pattern question
-- `fin do` vs `prompt` semantics (#39) — partially resolved (`--agent` named flag) but worth a dedicated issue
+| Issue | Topic |
+|---|---|
+| [#89](https://github.com/ColeB1722/fin-assist/issues/89) | Hardcoded system prompts vs loadable markdown files |
+| [#90](https://github.com/ColeB1722/fin-assist/issues/90) | Consolidate scattered CLI rendering constants |
+| [#91](https://github.com/ColeB1722/fin-assist/issues/91) | Richer rendering for tool_result output (beyond 120-char truncation) |
+| [#92](https://github.com/ColeB1722/fin-assist/issues/92) | Simplify `render_stream` state machine (needs `exa` research spike first) |
+| [#93](https://github.com/ColeB1722/fin-assist/issues/93) | Repo-wide convention: protobuf struct `.attr` vs `MessageToDict + .get()` |
+| [#94](https://github.com/ColeB1722/fin-assist/issues/94) | `fin do` vs `fin prompt` — clarify semantics |
 
 ### Workflow notes
 
@@ -76,11 +78,11 @@ Each deserves a dedicated design conversation:
 
 ## Next Session
 
-**Recommended order:**
+PR #87 triage is complete. Pick from:
 
-1. Phase 3 bug audits — three concrete items above. Each is scoped and independent.
-2. Phase 4 architectural discussions — user wants real design time. File as GitHub issues after discussion.
-3. Then pick up the deferred feature work (input panel, `@` completion, remove built-in agents) based on priority.
+1. **Phase 4 design discussions** — open issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). Each issue body is a session-ready brief. `#92` has a research spike as pre-work.
+2. **Deferred feature work** — design sketches below: `fin do` input panel + `--edit`, `@` context completion, remove built-in agents, client artifact-merge fix.
+3. **Other open issues** — see `gh issue list` for the broader backlog.
 
 ---
 
@@ -217,7 +219,8 @@ Each deserves a dedicated design conversation:
 | — | `FIN_DATA_DIR` unified path | ✅ Complete |
 | — | `fin do` input panel + `--edit` + `@`-completion | ⬜ Sketched above |
 | — | Remove built-in agents | ⬜ Sketched above |
-| — | Phase 3 bug audits + Phase 4 architecture discussions | ⬜ Next session |
+| — | PR #87 self-review triage (Phases 1–3) | ✅ Complete (2026-04-26) |
+| — | Phase 4 architecture discussions | 📐 Filed as issues #89–#94 |
 | 9b | Full SSE Streaming (was blocked on fasta2a) | ✅ Covered by a2a-sdk migration |
 | 10 | Non-blocking + interactive tasks | 📐 Sketched (superseded by deferred tools) |
 | 11 | Multiplexer Integration | ⬜ Not Started |
