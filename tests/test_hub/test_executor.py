@@ -723,11 +723,10 @@ class TestExecutorToolCallDispatch:
     async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
         from google.protobuf.json_format import MessageToDict
 
-        mock_content = MagicMock()
-        mock_content.content = "file contents here"
+        # Backends are required to emit tool_result.content as a plain str.
         tool_result_event = StepEvent(
             kind="tool_result",
-            content=mock_content,
+            content="file contents here",
             step=0,
             tool_name="read_file",
         )

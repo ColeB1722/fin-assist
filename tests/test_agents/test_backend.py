@@ -831,3 +831,61 @@ class TestPydanticAIBackendBuildModel:
             backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
             result = backend._build_model()
             assert result is mock_model
+
+
+class TestExtractToolResultText:
+    """`_extract_tool_result_text` normalises pydantic-ai result parts to ``str``.
+
+    The Executor treats ``tool_result`` events as having ``content: str``; the
+    backend must render framework-specific result parts before emitting.
+    """
+
+    def test_tool_return_part_with_string_content(self) -> None:
+        from pydantic_ai.messages import ToolReturnPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = ToolReturnPart(tool_name="read_file", content="file body")
+        assert _extract_tool_result_text(part) == "file body"
+
+    def test_tool_return_part_with_non_string_content_is_stringified(self) -> None:
+        from pydantic_ai.messages import ToolReturnPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = ToolReturnPart(tool_name="tool", content={"a": 1})
+        assert _extract_tool_result_text(part) == str({"a": 1})
+
+    def test_retry_prompt_part_uses_model_response(self) -> None:
+        from pydantic_ai.messages import RetryPromptPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = RetryPromptPart(content="please retry", tool_name="tool")
+        text = _extract_tool_result_text(part)
+        assert "please retry" in text
+        # model_response() appends a "Fix the errors and try again." sentence.
+        assert "try again" in text
+
+    def test_missing_content_attribute_returns_empty(self) -> None:
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        class _Bare:
+            pass
+
+        assert _extract_tool_result_text(_Bare()) == ""
+
+    def test_tool_event_emits_string_content(self) -> None:
+        """End-to-end check: ``_tool_event_to_step_event`` emits ``content: str``."""
+        from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+        from fin_assist.agents.backend import _tool_event_to_step_event
+
+        result_part = ToolReturnPart(tool_name="read_file", content="hello world")
+        event = FunctionToolResultEvent(result=result_part)
+        step_event = _tool_event_to_step_event(event, step=0)
+        assert step_event is not None
+        assert step_event.kind == "tool_result"
+        assert step_event.tool_name == "read_file"
+        assert step_event.content == "hello world"
+        assert isinstance(step_event.content, str)

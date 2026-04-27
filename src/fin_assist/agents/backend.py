@@ -239,15 +239,40 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
                 metadata={"args": event.part.args_as_dict()},
             )
         case FunctionToolResultEvent():
-            tool_name = event.result.tool_name
             return StepEvent(
                 kind="tool_result",
-                content=event.result,
+                content=_extract_tool_result_text(event.result),
                 step=step,
-                tool_name=tool_name,
+                tool_name=event.result.tool_name,
             )
         case _:
             return None
+
+
+def _extract_tool_result_text(result: Any) -> str:
+    """Render a pydantic-ai tool-result part as plain text.
+
+    ``FunctionToolResultEvent.result`` is a ``ToolReturnPart | RetryPromptPart``.
+    Both expose a ``.content`` attribute but the shape differs:
+
+    * ``ToolReturnPart.content`` is ``ToolReturnContent`` — usually a
+      string for our tools, occasionally multimodal.
+    * ``RetryPromptPart.content`` is ``list[ErrorDetails] | str``, and
+      ``RetryPromptPart`` has a ``.model_response()`` that builds a
+      user-facing description.
+
+    We normalise both to ``str`` here so ``StepEvent.content`` is a plain
+    string for ``tool_result`` events — keeping the executor
+    framework-agnostic (it just does ``Part(text=event.content)``).
+    """
+    from pydantic_ai.messages import RetryPromptPart
+
+    if isinstance(result, RetryPromptPart):
+        return result.model_response()
+    inner = getattr(result, "content", None)
+    if isinstance(inner, str):
+        return inner
+    return str(inner) if inner is not None else ""
 
 
 class PydanticAIBackend:

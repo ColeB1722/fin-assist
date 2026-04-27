@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-26)**: 689 tests passing, CI green. PR #87 (`feature/tools-plus`) triage in progress — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, Phase 3 `_run_shell` asyncio rewrite, and Phase 3 factory-registry cleanup all landed. Next up: last Phase 3 bug (executor `event.content` typing), then Phase 4 architectural discussions.
+**Current state (2026-04-26)**: 694 tests passing, CI green. PR #87 (`feature/tools-plus`) triage in progress — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, and all three Phase 3 bug audits landed. Next up: Phase 4 architectural discussions.
 
 **Core platform status:**
 
@@ -54,11 +54,8 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | # | Issue | Commit | Notes |
 |---|-------|--------|-------|
 | 1 | Subprocess cleanup in `_run_shell` (`agents/tools.py`) — `subprocess.run()` in `loop.run_in_executor` leaks child processes on asyncio cancellation | `160c6fc` | Rewrote using `asyncio.create_subprocess_shell` with `asyncio.wait_for` for timeout + `_terminate_and_wait` helper. On `CancelledError` we terminate the child and re-raise; on timeout or I/O error we terminate and return a user-visible message. Added tests for spawn failure, I/O error, timeout-terminates-child, and cancellation-terminates-child-and-propagates. |
-| 2 | `factory.create_a2a_app` mutates `agent._tool_registry` post-construction (`hub/factory.py:127-128`) to make `AgentSpec.requires_approval` return correct value | _pending commit_ | `AgentSpec.requires_approval` was unused in `src/` (only two tests read it). Dropped the property, the `tool_registry` constructor param on `AgentSpec`, and the factory mutation. If static per-agent approval info is ever needed, the right home is `AgentCardMeta` where the factory can compute it correctly. Backend still receives the registry directly via `PydanticAIBackend(tool_registry=...)` — that path is untouched. |
-
-Remaining:
-
-- **`event.content` typing in executor** (`hub/executor.py:259-264`) — three-way `isinstance` dispatch suggests `StepEvent.content` isn't narrow enough at the backend boundary.
+| 2 | `factory.create_a2a_app` mutates `agent._tool_registry` post-construction (`hub/factory.py:127-128`) to make `AgentSpec.requires_approval` return correct value | `3f18230` | `AgentSpec.requires_approval` was unused in `src/` (only two tests read it). Dropped the property, the `tool_registry` constructor param on `AgentSpec`, and the factory mutation. If static per-agent approval info is ever needed, the right home is `AgentCardMeta` where the factory can compute it correctly. Backend still receives the registry directly via `PydanticAIBackend(tool_registry=...)` — that path is untouched. |
+| 3 | Duck-typed `hasattr('content')` dispatch on `event.content` in executor `tool_result` handler (`hub/executor.py`) leaks pydantic-ai types (`ToolReturnPart`, `RetryPromptPart`) into framework-agnostic `Executor` | _pending commit_ | Normalised `StepEvent.content` to `str` for `tool_result` events. Added `_extract_tool_result_text()` in `PydanticAIBackend` — handles both `ToolReturnPart` (reads `.content`, stringifies if non-string) and `RetryPromptPart` (uses `.model_response()` for a human-readable retry description). Executor now just does `Part(text=event.content)`. Documented the `content` contract per `kind` on the `StepEvent` docstring. Added 5 new tests for the extraction helper + end-to-end verification. |
 
 ### Phase 4 — Architectural discussions (file as GitHub issues, needs user time to discuss)
 

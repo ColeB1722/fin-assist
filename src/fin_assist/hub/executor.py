@@ -346,16 +346,13 @@ class Executor(AgentExecutor):
                         "tool_name": event.tool_name or "",
                     }
                 )
-                if hasattr(event.content, "content"):
-                    result_text = str(event.content.content)
-                elif isinstance(event.content, str):
-                    result_text = event.content
-                else:
-                    result_text = str(event.content)
+                # Backends are required to emit ``content`` as ``str`` for
+                # ``tool_result`` events — see StepEvent docstring and
+                # PydanticAIBackend._extract_tool_result_text.
                 await self._emit_artifact(
                     ctx.updater,
                     ctx.artifact_id,
-                    [Part(text=result_text, metadata=result_meta)],
+                    [Part(text=event.content, metadata=result_meta)],
                     ctx.created_artifacts,
                     last_chunk=False,
                 )

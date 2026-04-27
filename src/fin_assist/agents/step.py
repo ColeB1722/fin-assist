@@ -22,9 +22,21 @@ if TYPE_CHECKING:
 class StepEvent:
     """A single event emitted during one step of the agent loop.
 
-    Any backend must emit these same event types.  The ``content`` field
-    carries framework-specific payloads but the Executor treats them
-    opaquely — it only dispatches on ``kind``.
+    Any backend must emit these same event types.  The Executor treats
+    ``content`` opaquely — it only dispatches on ``kind``.
+
+    ``content`` contract by ``kind``:
+
+    * ``text_delta`` / ``thinking_delta`` — ``str`` (delta text chunk).
+    * ``tool_call`` — backend-specific call part; Executor reads only
+      ``tool_name`` and ``metadata["args"]`` from the event, not
+      ``content``.
+    * ``tool_result`` — ``str`` (rendered tool output text).  Backends
+      must convert framework-specific return parts to a plain string
+      before emitting so the Executor stays framework-agnostic.
+    * ``step_start`` / ``step_end`` — ``None``.
+    * ``deferred`` — a ``DeferredToolCall`` (framework-agnostic
+      dataclass from ``agents.tools``).
     """
 
     kind: Literal[
