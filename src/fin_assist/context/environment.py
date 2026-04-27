@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import os
 import re
-from typing import TYPE_CHECKING
 
+from fin_assist.config.schema import ContextSettings
 from fin_assist.context.base import ContextItem, ContextProvider, ContextType
-
-if TYPE_CHECKING:
-    from fin_assist.config.schema import ContextSettings
 
 SENSITIVE_ENV_VAR_PATTERNS = [
     re.compile(r"API[_-]?KEY", re.IGNORECASE),
@@ -27,17 +24,12 @@ def _is_env_var_sensitive(name: str) -> bool:
 
 class Environment(ContextProvider):
     def __init__(self, settings: ContextSettings | None = None) -> None:
-        self._settings = settings
+        self._settings = settings or ContextSettings()
         self._cache: list[ContextItem] | None = None
 
     def _supported_types(self) -> set[ContextType]:
         types: set[ContextType] = {"env"}
         return types
-
-    def _get_env_vars(self) -> list[str]:
-        if self._settings:
-            return self._settings.include_env_vars
-        return ["PATH", "HOME", "USER", "PWD"]
 
     def search(self, query: str) -> list[ContextItem]:
         return []
@@ -57,7 +49,7 @@ class Environment(ContextProvider):
     def get_all(self) -> list[ContextItem]:
         if self._cache is not None:
             return self._cache
-        env_vars = self._get_env_vars()
+        env_vars = self._settings.include_env_vars
         items = []
         cwd = os.getcwd()
         items.append(

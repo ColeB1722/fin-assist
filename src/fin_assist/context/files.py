@@ -21,16 +21,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pathspec
 from rapidfuzz import fuzz, process
 
+from fin_assist.config.schema import ContextSettings
 from fin_assist.context.base import ContextItem, ContextProvider, ContextType
-
-if TYPE_CHECKING:
-    from fin_assist.config.schema import ContextSettings
-
 
 # Directories always pruned even when no .gitignore is present.  Kept small
 # on purpose: .gitignore is the source of truth; this is the floor for
@@ -75,7 +71,7 @@ class FileFinder(ContextProvider):
         settings: ContextSettings | None = None,
         root: Path | None = None,
     ) -> None:
-        self._settings = settings
+        self._settings = settings or ContextSettings()
         self._root = root or Path.cwd()
         self._paths_cache: list[str] | None = None
 
@@ -123,7 +119,7 @@ class FileFinder(ContextProvider):
                 status="not_found",
                 error_reason="file does not exist",
             )
-        max_size = self._get_max_file_size()
+        max_size = self._settings.max_file_size
         file_size = path.stat().st_size
         if file_size > max_size:
             return ContextItem(
@@ -172,11 +168,6 @@ class FileFinder(ContextProvider):
 
     # --------------------------------------------------------------- internal
 
-    def _get_max_file_size(self) -> int:
-        if self._settings:
-            return self._settings.max_file_size
-        return 100_000
-
     def _get_paths(self) -> list[str]:
         if self._paths_cache is None:
             self._paths_cache = self._scan_paths()
@@ -196,7 +187,7 @@ class FileFinder(ContextProvider):
         """
         root = self._root
         spec = self._load_gitignore_spec(root)
-        max_size = self._get_max_file_size()
+        max_size = self._settings.max_file_size
         results: list[str] = []
 
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
