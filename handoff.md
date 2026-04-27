@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-26)**: 694 tests passing, CI green. PR #87 (`feature/tools-plus`) self-review triage complete — Phase 1 quick wins, 5 real smells, `Executor.execute()` split, and all three Phase 3 bug audits landed. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
+**Current state (2026-04-26)**: 694 tests passing, CI green. PR #87 (`feature/tools-plus`) self-review triage complete — all 44 review threads resolved. Phase 1 quick wins, 5 real smells, `Executor.execute()` split, three Phase 3 bug audits, and small follow-ups (`cec3b08`) landed. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
 
 **Core platform status:**
 
@@ -72,7 +72,7 @@ Each brief contains file/symbol pointers, current-behavior summary, and the spec
 
 ### Workflow notes
 
-21 inline replies posted on PR #87 during initial triage — leaving them in place as history. Not posting new ones.
+Full review-thread triage complete: all 44 threads resolved (0 unresolved). Approach was reply-with-reference + resolve. Replies link to the commit that addressed the concern (Phase 1–3 landed work, or the `cec3b08` follow-up refactors) or to the Phase 4 issue that captured the design discussion (#89–#94). Threads that were pure investigation/explanation got resolved without a new reply since the earlier investigation reply already answered them.
 
 ---
 
