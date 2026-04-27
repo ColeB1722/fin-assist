@@ -30,10 +30,9 @@ Usage::
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal
 
 from fin_assist.agents.metadata import AgentCardMeta
-from fin_assist.context.base import ContextType
 from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
@@ -49,7 +48,12 @@ class AgentSpec:
     ``AgentConfig`` values, not by subclassing.
     """
 
-    _SUPPORTED_CONTEXT_TYPES: frozenset[str] = frozenset(get_args(ContextType))
+    _CONTEXT_TYPE_MAP: dict[str, str] = {
+        "read_file": "file",
+        "git_diff": "git_diff",
+        "git_log": "git_log",
+        "shell_history": "history",
+    }
 
     def __init__(
         self,
@@ -99,17 +103,29 @@ class AgentSpec:
         return self._config.general.default_model
 
     @property
+    def _supported_context_types(self) -> set[str]:
+        return {
+            self._CONTEXT_TYPE_MAP[t]
+            for t in self._agent_config.tools
+            if t in self._CONTEXT_TYPE_MAP
+        }
+
+    @property
     def agent_card_metadata(self) -> AgentCardMeta:
         cfg = self._agent_config
         return AgentCardMeta(
             serving_modes=cfg.serving_modes,
             supports_thinking=cfg.thinking is not None and cfg.thinking != "off",
             tags=cfg.tags,
-            requires_approval=cfg.requires_approval,
+            supported_context_types=sorted(self._supported_context_types),
         )
 
+    @property
+    def tools(self) -> list[str]:
+        return self._agent_config.tools
+
     def supports_context(self, context_type: str) -> bool:
-        return context_type in self._SUPPORTED_CONTEXT_TYPES
+        return context_type in self._supported_context_types
 
     def check_credentials(self) -> list[str]:
         """Return names of enabled providers that require an API key but have none configured.

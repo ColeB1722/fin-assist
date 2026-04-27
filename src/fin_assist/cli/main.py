@@ -1,4 +1,12 @@
-"""CLI command dispatch for fin-assist client commands."""
+"""CLI command dispatch for fin-assist client commands.
+
+Heavy imports (``uvicorn``, ``coolname``, ``fin_assist.hub.app``,
+``fin_assist.cli.interaction.*``, ``fin_assist.cli.client``) are
+deferred into the command functions that need them so ``fin --help``
+and similar lightweight invocations stay fast.  The ``pydantic_ai``
+dependency chain alone costs ~1s at import time; pulling it in only
+when a command actually talks to an agent hub keeps cold-start snappy.
+"""
 
 from __future__ import annotations
 
@@ -11,13 +19,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import uvicorn
-from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
-
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-from fin_assist.cli.client import DiscoveredAgent, HubClient
+    from fin_assist.cli.client import DiscoveredAgent, HubClient
+    from fin_assist.config.schema import ContextSettings
+
 from fin_assist.cli.display import (
     console,
     render_agents_list,
@@ -25,10 +32,6 @@ from fin_assist.cli.display import (
     render_info,
     render_session_list,
 )
-from fin_assist.cli.interaction.chat import run_chat_loop
-from fin_assist.cli.interaction.prompt import FinPrompt
-from fin_assist.cli.interaction.response import handle_post_response
-from fin_assist.cli.interaction.streaming import render_stream
 from fin_assist.cli.server import (
     ServerStartupError,
     check_status,
@@ -36,8 +39,6 @@ from fin_assist.cli.server import (
     stop_server,
 )
 from fin_assist.config.loader import load_config
-from fin_assist.hub.app import create_hub_app
-from fin_assist.hub.logging import configure_logging
 from fin_assist.paths import SESSIONS_DIR
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,54 @@ def _save_session(agent: str, session_id: str, context_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Context injection helpers
+# ---------------------------------------------------------------------------
+
+
+def _inject_context(
+    prompt: str,
+    *,
+    files: list[str] | None = None,
+    git_diff: bool = False,
+    context_settings: ContextSettings | None = None,
+) -> str:
+    """Prepend user-driven context to a prompt string.
+
+    Reads files via ``FileFinder`` and/or git diff via ``GitContext``,
+    then formats them above the user's prompt so the model sees them
+    before the request.
+    """
+    context_sections: list[str] = []
+
+    if files:
+        from fin_assist.context.files import FileFinder
+
+        finder = FileFinder(settings=context_settings)
+        for path in files:
+            item = finder.get_item(path)
+            if item.status == "available":
+                context_sections.append(f"[FILE: {path}]\n{item.content}")
+            else:
+                context_sections.append(f"[FILE: {path}] Error: {item.error_reason}")
+
+    if git_diff:
+        from fin_assist.context.git import GitContext
+
+        git_ctx = GitContext(settings=context_settings)
+        item = git_ctx.get_item("git_diff:diff")
+        if item.status == "available":
+            context_sections.append(f"[GIT DIFF]\n{item.content}")
+        else:
+            context_sections.append(f"[GIT DIFF] Error: {item.error_reason}")
+
+    if not context_sections:
+        return prompt
+
+    context_block = "\n\n".join(context_sections)
+    return f"Context:\n{context_block}\n\nUser request:\n{prompt}"
+
+
+# ---------------------------------------------------------------------------
 # Hub client context manager
 # ---------------------------------------------------------------------------
 
@@ -82,6 +131,8 @@ async def _hub_client(config, config_path: Path | None = None) -> AsyncIterator[
 
     Commands catch the re-raised exceptions and return 1.
     """
+    from fin_assist.cli.client import HubClient  # deferred: pulls a2a-sdk (~0.5s)
+
     try:
         base_url = await ensure_server_running(config, config_path=config_path)
     except ServerStartupError as e:
@@ -128,8 +179,12 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     import errno
     import socket
 
+    import uvicorn
+
     from fin_assist.agents.spec import AgentSpec
     from fin_assist.credentials.store import CredentialStore
+    from fin_assist.hub.app import create_hub_app
+    from fin_assist.hub.logging import configure_logging
     from fin_assist.hub.pidfile import acquire as acquire_pidfile
     from fin_assist.paths import PID_FILE
 
@@ -171,7 +226,12 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         for name, ac in config.agents.items()
         if ac.enabled
     ]
-    app = create_hub_app(agents=agents, db_path=db_path, base_url=f"http://{host}:{port}")
+    app = create_hub_app(
+        agents=agents,
+        db_path=db_path,
+        base_url=f"http://{host}:{port}",
+        context_settings=config.context,
+    )
     uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(uvicorn_config)
     asyncio.run(server.serve(sockets=[sock]))
@@ -180,6 +240,10 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
 async def _do_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist do <agent> <prompt>`."""
+    from fin_assist.cli.interaction.prompt import FinPrompt
+    from fin_assist.cli.interaction.response import handle_post_response
+    from fin_assist.cli.interaction.streaming import render_stream
+
     try:
         async with _hub_client(config, config_path) as client:
             discovered, agents = await _get_agent_or_error(client, args.agent)
@@ -193,24 +257,67 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 )
                 return 1
 
-            prompt = " ".join(args.prompt)
-            result = await render_stream(
+            prompt = args.prompt
+
+            if prompt is None:
+                fp = FinPrompt(agents=[a.name for a in agents])
+                try:
+                    prompt = (await fp.ask("> ")).strip()
+                except (KeyboardInterrupt, EOFError):
+                    render_info("Cancelled")
+                    return 0
+                if not prompt:
+                    return 0
+            elif args.edit:
+                fp = FinPrompt(agents=[a.name for a in agents])
+                try:
+                    prompt = (await fp.ask("> ", default=prompt)).strip()
+                except (KeyboardInterrupt, EOFError):
+                    render_info("Cancelled")
+                    return 0
+                if not prompt:
+                    return 0
+
+            prompt = _inject_context(
+                prompt, files=args.files, git_diff=args.git_diff, context_settings=config.context
+            )
+            result, deferred_calls = await render_stream(
                 client.stream_agent(args.agent, prompt),
                 show_thinking=args.show_thinking,
             )
 
-            response = await handle_post_response(
-                result,
-                discovered.card_meta,
-                mode="do",
-            )
+            if deferred_calls:
+                from fin_assist.cli.interaction.approve import run_approval_widget
+
+                decisions = await run_approval_widget(deferred_calls)
+                if decisions is not None:
+                    result, _ = await render_stream(
+                        client.stream_agent(
+                            args.agent,
+                            "",
+                            context_id=result.context_id,
+                            approval_decisions=decisions,
+                        ),
+                        show_thinking=args.show_thinking,
+                    )
+                else:
+                    render_info("Tool call cancelled")
+                    return 0
+
+            response = await handle_post_response(result)
             return response.exit_code
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
 
 async def _talk_command(args: argparse.Namespace, config, config_path: Path | None = None) -> int:
     """Handle `fin-assist talk <agent>`."""
+    from coolname import generate_slug  # pyright: ignore[reportPrivateImportUsage]
+
+    from fin_assist.cli.interaction.chat import run_chat_loop
+    from fin_assist.cli.interaction.prompt import FinPrompt
+
     if args.list_sessions:
         render_session_list(args.agent)
         return 0
@@ -238,17 +345,18 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 return 1
 
             fp = FinPrompt(agents=[a.name for a in agents])
-            initial_message = " ".join(args.message) if args.message else None
+            message = args.message
             final_context_id = await run_chat_loop(
                 client.stream_agent,
                 args.agent,
                 context_id,
                 fp,
-                initial_message=initial_message,
+                initial_message=message if not args.edit else None,
+                edit_message=message if args.edit else None,
                 show_thinking=args.show_thinking,
-                card_meta=discovered.card_meta,
             )
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     if final_context_id and not args.resume:
@@ -265,6 +373,7 @@ async def _agents_command(args: argparse.Namespace, config, config_path: Path | 
         async with _hub_client(config, config_path) as client:
             agents = await client.discover_agents()
     except Exception:
+        # ``_hub_client`` already rendered the error message before re-raising.
         return 1
 
     render_agents_list(agents)
@@ -293,14 +402,32 @@ def main(argv: list[str] | None = None) -> int:
         help="Run a one-shot query to an agent (no memory).",
     )
     do_parser.add_argument(
-        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+        "--agent",
+        default=None,
+        help="Name of the agent to use (default: from config or 'default').",
     )
-    do_parser.add_argument("prompt", nargs="+", help="The prompt to send.")
+    do_parser.add_argument("prompt", nargs="?", help="The prompt to send.")
+    do_parser.add_argument(
+        "--edit",
+        action="store_true",
+        help="Open input panel pre-filled with prompt for editing before sending.",
+    )
     do_parser.add_argument(
         "--show-thinking",
-        dest="show_thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the output.",
+    )
+    do_parser.add_argument(
+        "--file",
+        dest="files",  # action="append" + singular flag → plural attribute
+        action="append",
+        default=[],
+        help="Inject file contents as context (may be specified multiple times).",
+    )
+    do_parser.add_argument(
+        "--git-diff",
+        action="store_true",
+        help="Inject git diff as context.",
     )
 
     talk_parser = subparsers.add_parser(
@@ -308,28 +435,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Start a multi-turn chat session with an agent.",
     )
     talk_parser.add_argument(
-        "agent", nargs="?", default="default", help="Name of the agent to use (default: 'default')."
+        "--agent",
+        default=None,
+        help="Name of the agent to use (default: from config or 'default').",
     )
     talk_parser.add_argument(
         "message",
-        nargs="*",
+        nargs="?",
+        default=None,
         help="Optional initial message to send as the first turn.",
     )
     talk_parser.add_argument(
+        "--edit",
+        action="store_true",
+        help="Open input panel pre-filled with message for editing before sending.",
+    )
+    talk_parser.add_argument(
         "--list",
-        dest="list_sessions",
+        dest="list_sessions",  # avoid shadowing builtin `list`
         action="store_true",
         help="List saved sessions for the agent.",
     )
     talk_parser.add_argument(
         "--resume",
-        dest="resume",
         metavar="SESSION_ID",
         help="Resume a saved session.",
     )
     talk_parser.add_argument(
         "--show-thinking",
-        dest="show_thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the chat output.",
     )
@@ -362,6 +495,28 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.command in ("do", "talk") and args.agent is None:
+        agent = config.general.default_agent
+        if agent is None:
+            if not config.agents:
+                render_error(
+                    "No agents configured. "
+                    "Add an [agents.*] section to config.toml.\n"
+                    "Example:\n\n"
+                    "  [agents.default]\n"
+                    '  system_prompt = "chain-of-thought"\n'
+                    '  tools = ["read_file", "git_diff", "run_shell"]'
+                )
+            else:
+                names = ", ".join(config.agents)
+                render_error(
+                    "No default agent set. Specify --agent or set "
+                    "[general] default_agent in config.toml.\n"
+                    f"Available agents: {names}"
+                )
+            return 1
+        args.agent = agent
 
     match args.command:
         case "agents":

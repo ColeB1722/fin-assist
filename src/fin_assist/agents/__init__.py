@@ -1,29 +1,11 @@
-from __future__ import annotations
+"""Agent protocol, registry, and implementations.
 
-from fin_assist.agents.backend import AgentBackend, PydanticAIBackend, RunResult, StreamHandle
-from fin_assist.agents.metadata import (
-    AgentCardMeta,
-    AgentResult,
-    MissingCredentialsError,
-    ServingMode,
-)
-from fin_assist.agents.registry import OUTPUT_TYPES, SYSTEM_PROMPTS, OutputTypeName, PromptName
-from fin_assist.agents.results import CommandResult
-from fin_assist.agents.spec import AgentSpec
-
-__all__ = [
-    "AgentBackend",
-    "AgentCardMeta",
-    "AgentResult",
-    "AgentSpec",
-    "CommandResult",
-    "MissingCredentialsError",
-    "OUTPUT_TYPES",
-    "OutputTypeName",
-    "PydanticAIBackend",
-    "PromptName",
-    "RunResult",
-    "ServingMode",
-    "StreamHandle",
-    "SYSTEM_PROMPTS",
-]
+This package intentionally exposes no symbols at the top level.  Import
+directly from submodules (``fin_assist.agents.metadata``,
+``fin_assist.agents.spec``, ``fin_assist.agents.backend``, etc.) so that
+callers who only need lightweight metadata types do not transitively
+pay the cost of importing ``pydantic_ai`` / ``fastmcp`` / ``mcp`` /
+``beartype`` via ``backend``.  That chain takes ~1s at import time on a
+warm cache and is only needed when actually constructing/using a
+backend.
+"""

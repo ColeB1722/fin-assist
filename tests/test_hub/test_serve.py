@@ -10,13 +10,11 @@ from fin_assist.cli.main import main
 class TestServeCommand:
     def test_serve_builds_hub_app_and_runs_uvicorn(self) -> None:
         with (
-            patch("fin_assist.cli.main.create_hub_app") as mock_create,
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app") as mock_create,
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config"),
-            patch(
-                "fin_assist.cli.main.uvicorn.Server", return_value=MagicMock()
-            ) as mock_server_cls,
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server", return_value=MagicMock()) as mock_server_cls,
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -29,11 +27,11 @@ class TestServeCommand:
 
     def test_serve_binds_to_localhost(self) -> None:
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=MagicMock()),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=MagicMock()),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -44,11 +42,11 @@ class TestServeCommand:
 
     def test_serve_uses_configured_port(self) -> None:
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=MagicMock()),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=MagicMock()),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):

@@ -66,3 +66,6 @@ docs/diagrams/*.png
 
 # Logging
 hub.log
+
+# Local dev runtime state (FIN_DATA_DIR=./.fin)
+.fin/

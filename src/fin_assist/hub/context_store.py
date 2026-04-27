@@ -4,10 +4,12 @@ Stores per-context-id conversation history as opaque ``bytes`` in a
 local SQLite database.  Shared across all mounted agents on the hub, with
 ``context_id`` naturally scoping conversations per agent path.
 
-Serialization is the backend's responsibility — the store has no framework
-dependencies.  A2A task storage is handled by ``a2a-sdk``'s
-``InMemoryTaskStore``; this module owns the opaque blobs that persist
-across tasks within a conversation.
+Serialization (including versioning) is the backend's responsibility —
+this store treats bytes opaquely.  Backends wrap payloads with the
+envelope helpers in ``fin_assist.agents.serialization`` before saving
+and unwrap after loading.  A2A task storage is handled separately by
+``a2a-sdk``'s ``InMemoryTaskStore``; this module owns the opaque blobs
+that persist across tasks within a conversation.
 """
 
 from __future__ import annotations
@@ -46,7 +48,9 @@ class ContextStore:
     async def load(self, context_id: str) -> bytes | None:
         """Load serialized conversation history for the given context ID.
 
-        Returns ``None`` if no history exists for this context.
+        Returns ``None`` if no history exists for this context.  The caller
+        (typically an ``AgentBackend``) is responsible for unwrapping the
+        envelope via ``fin_assist.agents.serialization.unwrap_payload``.
         """
         conn = self._get_conn()
         row = conn.execute(

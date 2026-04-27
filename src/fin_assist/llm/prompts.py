@@ -40,6 +40,14 @@ You can help with:
 Show your reasoning when helpful, but keep responses focused and useful.\
 """
 
+TEST_INSTRUCTIONS = """\
+You are a test assistant for development and debugging. You have access to \
+file reading, shell execution, and git context tools. Use them to help \
+developers inspect and understand their codebase.
+
+Keep responses concise. When running shell commands, use fish shell syntax.\
+"""
+
 
 def format_context(context: Sequence[ContextItem] | None) -> str:
     if not context:

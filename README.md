@@ -1,6 +1,6 @@
 # fin-assist
 
-Expandable personal AI agent platform for terminal workflows. An **Agent Hub** hosts N specialized agents over the [A2A protocol](https://google.github.io/A2A/) — clients dynamically adapt their UI based on each agent's declared capabilities.
+Expandable personal AI agent platform for terminal workflows. An **Agent Hub** hosts N specialized agents over the [A2A protocol](https://google.github.io/A2A/) — clients dynamically adapt their UI based on each agent's declared capabilities. Shared agentic capabilities (tools, approval, context, tracing) are framework-agnostic platform abstractions; LLM frameworks plug in via backend implementations.
 
 ## Architecture
 
@@ -210,7 +210,8 @@ sequenceDiagram
 
 | Concept | Implementation |
 |---------|---------------|
-| **Config-driven agents** | Agent behavior (prompt, output type, thinking, approval) defined in TOML — new agents are config entries, not new classes |
+| **Config-driven agents** | Agent behavior (prompt, output type, thinking, approval, tools) defined in TOML — new agents are config entries, not new classes |
+| **Platform owns abstractions** | Tools, approval, context, step events, and tracing are framework-agnostic platform types; backends adapt them to their LLM framework |
 | **Protocol-native** | A2A via a2a-sdk v1.0; any A2A client can connect; enables future agent-to-agent workflows |
 | **Multi-path routing** | N agents → N A2A sub-apps at `/agents/{name}/`, each with its own agent card |
 | **Token-by-token streaming** | `SendStreamingMessage` SSE → `TaskUpdater.add_artifact(append=True)` → Rich `Live` rendering |

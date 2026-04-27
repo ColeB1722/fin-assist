@@ -40,15 +40,12 @@ def _run_main(*argv: str) -> int:
 
 def _make_discovered(
     name: str = "shell",
-    requires_approval: bool = False,
 ) -> DiscoveredAgent:
     return DiscoveredAgent(
         name=name,
         description="test agent",
         url=f"http://localhost/agents/{name}/",
-        card_meta=AgentCardMeta(
-            requires_approval=requires_approval,
-        ),
+        card_meta=AgentCardMeta(),
     )
 
 
@@ -89,11 +86,11 @@ class TestServeCommand:
     def test_serve_starts_uvicorn(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config"),
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -105,11 +102,11 @@ class TestServeCommand:
     def test_serve_allows_host_override(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -121,11 +118,11 @@ class TestServeCommand:
     def test_serve_allows_port_override(self):
         mock_server = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config") as mock_config_cls,
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config") as mock_config_cls,
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=MagicMock()),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -168,11 +165,11 @@ class TestServeCommand:
         mock_server = MagicMock()
         mock_sock = MagicMock()
         with (
-            patch("fin_assist.cli.main.create_hub_app", return_value=MagicMock()),
-            patch("fin_assist.cli.main.configure_logging"),
+            patch("fin_assist.hub.app.create_hub_app", return_value=MagicMock()),
+            patch("fin_assist.hub.logging.configure_logging"),
             patch("fin_assist.hub.pidfile.acquire"),
-            patch("fin_assist.cli.main.uvicorn.Config"),
-            patch("fin_assist.cli.main.uvicorn.Server", return_value=mock_server),
+            patch("uvicorn.Config"),
+            patch("uvicorn.Server", return_value=mock_server),
             patch("socket.socket", return_value=mock_sock),
             patch("fin_assist.cli.main.asyncio.run"),
         ):
@@ -200,7 +197,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -218,7 +215,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
         ):
             mock_client = AsyncMock()
             mock_client.close = AsyncMock()
@@ -238,7 +235,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error"),
         ):
             mock_client = AsyncMock()
@@ -262,7 +259,7 @@ class TestHubClient:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient") as mock_cls,
+            patch("fin_assist.cli.client.HubClient") as mock_cls,
             patch("fin_assist.cli.main.render_error", side_effect=rendered.append),
         ):
             mock_client = AsyncMock()
@@ -312,7 +309,7 @@ class TestAgentsCommand:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_agents_list"),
         ):
             result = _run_main("agents")
@@ -344,7 +341,7 @@ class TestAgentsCommand:
 
 class TestDoCommandNoApproval:
     def test_discovers_agent_before_running(self):
-        agent = _make_discovered("shell", requires_approval=False)
+        agent = _make_discovered("shell")
         mock_client = _mock_client(
             agents=[agent],
             run_result=AgentResult(success=True, output="ls -la"),
@@ -357,19 +354,19 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch(
-                "fin_assist.cli.main.render_stream",
+                "fin_assist.cli.interaction.streaming.render_stream",
                 new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="ls -la"),
+                return_value=(AgentResult(success=True, output="ls -la"), []),
             ),
             patch(
-                "fin_assist.cli.main.handle_post_response",
+                "fin_assist.cli.interaction.response.handle_post_response",
                 new_callable=AsyncMock,
                 return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
             ),
         ):
-            result = _run_main("do", "shell", "list files")
+            result = _run_main("do", "--agent", "shell", "list files")
 
         assert result == 0
         assert mock_client.discover_agents.call_count >= 1
@@ -385,10 +382,10 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
-            result = _run_main("do", "nonexistent", "do something")
+            result = _run_main("do", "--agent", "nonexistent", "do something")
 
         assert result == 1
         mock_client.stream_agent.assert_not_called()
@@ -405,12 +402,12 @@ class TestDoCommandNoApproval:
             ),
             patch("fin_assist.cli.main.render_error"),
         ):
-            result = _run_main("do", "shell", "list files")
+            result = _run_main("do", "--agent", "shell", "list files")
 
         assert result == 1
 
     def test_returns_1_on_agent_request_error(self):
-        agent = _make_discovered("shell", requires_approval=False)
+        agent = _make_discovered("shell")
         mock_client = _mock_client(agents=[agent], run_error=Exception("network error"))
 
         with (
@@ -420,86 +417,12 @@ class TestDoCommandNoApproval:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main.render_error"),
         ):
-            result = _run_main("do", "shell", "do something")
+            result = _run_main("do", "--agent", "shell", "do something")
 
         assert result == 1
-
-
-# ---------------------------------------------------------------------------
-# `do` command — approval path
-# ---------------------------------------------------------------------------
-
-
-class TestDoCommandApproval:
-    """Approval behaviour is now tested via handle_post_response (test_response.py).
-
-    These integration tests verify that _do_command delegates to
-    handle_post_response and respects its returned exit_code.
-    """
-
-    def test_approval_cancelled_returns_zero(self):
-        agent = _make_discovered("shell", requires_approval=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(success=True, output="rm -rf /tmp/x"),
-        )
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.render_stream",
-                new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="rm -rf /tmp/x"),
-            ),
-            patch(
-                "fin_assist.cli.main.handle_post_response",
-                new_callable=AsyncMock,
-                return_value=PostResponseResult(action=PostResponseAction.CANCELLED, exit_code=0),
-            ) as mock_handle,
-        ):
-            result = _run_main("do", "shell", "remove temp")
-
-        mock_handle.assert_called_once()
-        assert result == 0
-
-    def test_approval_executed_returns_exit_code(self):
-        agent = _make_discovered("shell", requires_approval=True)
-        mock_client = _mock_client(
-            agents=[agent],
-            run_result=AgentResult(success=True, output="echo hi"),
-        )
-
-        with (
-            _patch_asyncio_run(),
-            patch(
-                "fin_assist.cli.main.ensure_server_running",
-                new_callable=AsyncMock,
-                return_value="http://localhost:4096",
-            ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
-            patch(
-                "fin_assist.cli.main.render_stream",
-                new_callable=AsyncMock,
-                return_value=AgentResult(success=True, output="echo hi"),
-            ),
-            patch(
-                "fin_assist.cli.main.handle_post_response",
-                new_callable=AsyncMock,
-                return_value=PostResponseResult(action=PostResponseAction.EXECUTED, exit_code=0),
-            ),
-        ):
-            result = _run_main("do", "shell", "say hello")
-
-        assert result == 0
 
 
 # ---------------------------------------------------------------------------
@@ -516,7 +439,7 @@ class TestTalkListCommand:
             patch("fin_assist.cli.display.SESSIONS_DIR", tmp_path),
             patch("fin_assist.cli.main.ensure_server_running", mock_ensure),
         ):
-            result = _run_main("talk", "default", "--list")
+            result = _run_main("talk", "--agent", "default", "--list")
 
         assert result == 0
         mock_ensure.assert_not_called()
@@ -538,7 +461,7 @@ class TestTalkListCommand:
             patch("fin_assist.cli.display.console") as mock_console,
         ):
             mock_console.print.side_effect = lambda msg: captured.append(msg)
-            result = _run_main("talk", "default", "--list")
+            result = _run_main("talk", "--agent", "default", "--list")
 
         assert result == 0
         assert any("swift-harbor" in str(m) for m in captured)
@@ -565,7 +488,7 @@ class TestTalkListCommand:
             patch("fin_assist.cli.display.console") as mock_console,
         ):
             mock_console.print.side_effect = lambda msg: captured.append(msg)
-            result = _run_main("talk", "default", "--list")
+            result = _run_main("talk", "--agent", "default", "--list")
 
         assert result == 0
         slugs = [m for m in captured if "context:" in str(m)]
@@ -599,15 +522,15 @@ class TestSessionIdFormat:
                 new_callable=AsyncMock,
                 return_value="http://localhost:4096",
             ),
-            patch("fin_assist.cli.main.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
             patch("fin_assist.cli.main._save_session", side_effect=capture_save),
             patch(
-                "fin_assist.cli.main.run_chat_loop",
+                "fin_assist.cli.interaction.chat.run_chat_loop",
                 new_callable=AsyncMock,
                 return_value="ctx-uuid-123",
             ),
         ):
-            _run_main("talk", "default")
+            _run_main("talk", "--agent", "default")
 
         assert len(saved_ids) == 1
         session_id = saved_ids[0]
@@ -780,3 +703,277 @@ class TestMainArgParsing:
         with pytest.raises(SystemExit) as exc_info:
             main(["unknown-cmd"])
         assert exc_info.value.code != 0
+
+
+class TestDefaultAgentResolution:
+    def test_do_without_agent_and_no_default_returns_1(self):
+        from fin_assist.config.schema import Config
+
+        with (
+            patch("fin_assist.cli.main.load_config", return_value=(Config(), None)),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("do")
+        assert result == 1
+        msg = mock_error.call_args[0][0]
+        assert "No agents" in msg or "No default" in msg
+
+    def test_talk_without_agent_and_no_default_returns_1(self):
+        from fin_assist.config.schema import Config
+
+        with (
+            patch("fin_assist.cli.main.load_config", return_value=(Config(), None)),
+            patch("fin_assist.cli.main.render_error") as mock_error,
+        ):
+            result = _run_main("talk")
+        assert result == 1
+        msg = mock_error.call_args[0][0]
+        assert "No agents" in msg or "No default" in msg
+
+    def test_do_uses_default_agent_from_config(self):
+        agent = _make_discovered("my-agent")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="ok"),
+        )
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="hello")
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.interaction.streaming.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="ok"), []),
+            ),
+            patch(
+                "fin_assist.cli.interaction.response.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+            patch("fin_assist.cli.main.load_config") as mock_load,
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            from fin_assist.config.schema import Config, GeneralSettings
+
+            config = Config(general=GeneralSettings(default_agent="my-agent"))
+            mock_load.return_value = (config, None)
+            result = _run_main("do")
+
+        assert result == 0
+        mock_client.stream_agent.assert_called_once()
+        assert mock_client.stream_agent.call_args[0][0] == "my-agent"
+
+
+class TestDoInputPanel:
+    def test_no_prompt_opens_input_panel(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="response"),
+        )
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="list files")
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.interaction.streaming.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="response"), []),
+            ),
+            patch(
+                "fin_assist.cli.interaction.response.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            result = _run_main("do", "--agent", "shell")
+
+        assert result == 0
+        mock_fp.ask.assert_called_once_with("> ")
+
+    def test_no_prompt_cancelled_returns_0(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(agents=[agent])
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.main.render_info"),
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            result = _run_main("do", "--agent", "shell")
+
+        assert result == 0
+        mock_client.stream_agent.assert_not_called()
+
+    def test_no_prompt_empty_input_returns_0(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(agents=[agent])
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="   ")
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            result = _run_main("do", "--agent", "shell")
+
+        assert result == 0
+        mock_client.stream_agent.assert_not_called()
+
+    def test_edit_flag_opens_prefilled_input(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="response"),
+        )
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(return_value="edited prompt")
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.interaction.streaming.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="response"), []),
+            ),
+            patch(
+                "fin_assist.cli.interaction.response.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            result = _run_main("do", "--agent", "shell", "--edit", "original prompt")
+
+        assert result == 0
+        mock_fp.ask.assert_called_once_with("> ", default="original prompt")
+
+    def test_edit_cancelled_returns_0(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(agents=[agent])
+
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch("fin_assist.cli.main.render_info"),
+            patch("fin_assist.cli.interaction.prompt.FinPrompt", return_value=mock_fp),
+        ):
+            result = _run_main("do", "--agent", "shell", "--edit", "prompt")
+
+        assert result == 0
+        mock_client.stream_agent.assert_not_called()
+
+    def test_prompt_without_edit_sends_immediately(self):
+        agent = _make_discovered("shell")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="response"),
+        )
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.interaction.streaming.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="response"), []),
+            ),
+            patch(
+                "fin_assist.cli.interaction.response.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+        ):
+            result = _run_main("do", "--agent", "shell", "list files")
+
+        assert result == 0
+        mock_client.stream_agent.assert_called_once()
+
+    def test_prompt_with_default_agent_sends_immediately(self):
+        agent = _make_discovered("my-agent")
+        mock_client = _mock_client(
+            agents=[agent],
+            run_result=AgentResult(success=True, output="response"),
+        )
+
+        with (
+            _patch_asyncio_run(),
+            patch(
+                "fin_assist.cli.main.ensure_server_running",
+                new_callable=AsyncMock,
+                return_value="http://localhost:4096",
+            ),
+            patch("fin_assist.cli.client.HubClient", return_value=mock_client),
+            patch(
+                "fin_assist.cli.interaction.streaming.render_stream",
+                new_callable=AsyncMock,
+                return_value=(AgentResult(success=True, output="response"), []),
+            ),
+            patch(
+                "fin_assist.cli.interaction.response.handle_post_response",
+                new_callable=AsyncMock,
+                return_value=PostResponseResult(action=PostResponseAction.CONTINUE),
+            ),
+            patch("fin_assist.cli.main.load_config") as mock_load,
+        ):
+            from fin_assist.config.schema import Config, GeneralSettings
+
+            config = Config(general=GeneralSettings(default_agent="my-agent"))
+            mock_load.return_value = (config, None)
+            result = _run_main("do", "list files")
+
+        assert result == 0
+        mock_client.stream_agent.assert_called_once()

@@ -66,5 +66,10 @@ class AgentCardMeta(BaseModel):
     tags: list[str] = Field(default_factory=list)
     """Categorisation tags (e.g. ['shell', 'one-shot'])."""
 
-    requires_approval: bool = False
-    """If True, CLI shows approval widget before executing the suggested action."""
+    supported_context_types: list[str] = Field(default_factory=list)
+    """Context types this agent supports (e.g. ['file', 'git_diff']).
+
+    Derived from the agent's tool list — each tool maps to a context type
+    via ``AgentSpec._CONTEXT_TYPE_MAP``.  Clients use this to decide which
+    CLI flags (``--file``, ``--git-diff``, etc.) are valid for this agent.
+    """

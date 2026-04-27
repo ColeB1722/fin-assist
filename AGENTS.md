@@ -64,6 +64,38 @@ docs/                 - Architecture docs
 fish/                 - Fish shell plugin (future)
 ```
 
+## Local Development Paths
+
+This project is intended to run locally for personal use. Dev ergonomics: runtime state (logs, database, PID file, sessions, history, credentials) should stay colocated with the repo while developing, not scattered under `~/.local/share/fin/`.
+
+**Current state:** All runtime paths derive from `FIN_DATA_DIR` (default `~/.local/share/fin`). Set `FIN_DATA_DIR=./.fin` to keep state local to the repo.
+
+| Path | Default location | Env override |
+|------|------------------|--------------|
+| Hub log | `$FIN_DATA_DIR/hub.log` | `FIN_DATA_DIR` (or `FIN_SERVER__LOG_PATH`) |
+| Hub DB | `$FIN_DATA_DIR/hub.db` | `FIN_DATA_DIR` (or `FIN_SERVER__DB_PATH`) |
+| PID file | `$FIN_DATA_DIR/hub.pid` | `FIN_DATA_DIR` |
+| Sessions | `$FIN_DATA_DIR/sessions/` | `FIN_DATA_DIR` |
+| REPL history | `$FIN_DATA_DIR/history` | `FIN_DATA_DIR` |
+| Credentials | `$FIN_DATA_DIR/credentials.json` | `FIN_DATA_DIR` |
+
+**Dev override** (in `devenv.nix`): `FIN_DATA_DIR = "./.fin"` — all runtime state stays in `.fin/` (git-ignored).
+
+**When adding a new runtime path:** plumb it through `src/fin_assist/paths.py`, honor `FIN_DATA_DIR`, and update the table above.
+
+### Env var naming convention
+
+This split is **project-specific**, not an industry standard — but we apply it consistently so the reading mechanism is obvious from the name:
+
+| Pattern | Read by | Example | When to use |
+|---------|---------|---------|-------------|
+| `FIN_<NAME>` (single `_`) | `os.environ.get()` directly | `FIN_DATA_DIR` | Bootstrap vars needed before pydantic loads (paths, feature flags) |
+| `FIN_<SECTION>__<FIELD>` (double `__`) | pydantic-settings | `FIN_GENERAL__DEFAULT_MODEL`, `FIN_SERVER__PORT` | Anything in `config/schema.py` — `env_nested_delimiter="__"` maps `SECTION__FIELD` → `config.section.field` |
+
+**Context:** Double-underscore as a nested-section delimiter is a pydantic-settings convention (also used by ASP.NET Core and others) — it's not in POSIX or any RFC. We adopted it for config and kept flat bootstrap vars on single underscore to signal "this is read before pydantic is initialized."
+
+**When adding a new env var:** if it feeds into pydantic config, add it to `config/schema.py` and it becomes `FIN_<SECTION>__<FIELD>` automatically. If it must be read at import time (like `paths.py`), use `FIN_<NAME>` via `os.environ.get()` and document it in the Local Development Paths table.
+
 ## Key Decisions
 
 | Decision | Choice | Rationale |
@@ -82,6 +114,17 @@ fish/                 - Fish shell plugin (future)
 - Use `pytest` with `pytest-asyncio` for async tests
 - Use `pytest-textual-snapshot` for TUI tests
 - Run `just test-cov` for coverage report
+
+## Logging
+
+- **Hub**: `src/fin_assist/hub/logging.py` configures a rotating file handler writing to `$FIN_DATA_DIR/hub.log`. All `logging.getLogger(__name__)` calls anywhere in the hub inherit this handler — no per-module setup needed.
+- **Levels**:
+  - `INFO` for lifecycle events (task start/end, auth required, pause for approval, resume, agent mount)
+  - `WARNING` for recoverable anomalies (missing credentials, malformed payloads)
+  - `DEBUG` for per-event internals (history load, event dispatch details)
+  - `logger.exception(...)` for caught-and-re-raised exceptions so stack traces land in hub.log
+- **CLI**: no logging configured — user-facing messages go via `render_info` / `render_error` in `cli/display.py`. A `--verbose` → `$FIN_DATA_DIR/cli.log` story is planned but not implemented.
+- **When adding logs**: prefer structured key=value fields (`task_id=%s`, `missing=%s`) over prose so future log aggregation is easier. Don't log anything that could contain user secrets (API keys, file contents beyond path).
 
 ## Session Handoffs (handoff.md)
 

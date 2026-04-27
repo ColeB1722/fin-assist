@@ -27,10 +27,12 @@ from a2a.types import (
     Task,
     TaskState,
 )
-from google.protobuf.json_format import MessageToDict
-from pydantic import BaseModel
+from google.protobuf.struct_pb2 import Struct
+from pydantic import BaseModel, Field
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.tools import DeferredToolCall
+from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -42,6 +44,7 @@ _TERMINAL_STATES: frozenset[int] = frozenset(
         TaskState.TASK_STATE_CANCELED,
         TaskState.TASK_STATE_REJECTED,
         TaskState.TASK_STATE_AUTH_REQUIRED,
+        TaskState.TASK_STATE_INPUT_REQUIRED,
     }
 )
 
@@ -58,28 +61,68 @@ class DiscoveredAgent(BaseModel):
 class StreamEvent(BaseModel):
     """A single event from a streaming agent response."""
 
-    kind: Literal["text_delta", "thinking_delta", "completed", "failed", "auth_required"]
+    kind: Literal[
+        "text_delta",
+        "thinking_delta",
+        "tool_call",
+        "tool_result",
+        "completed",
+        "failed",
+        "auth_required",
+        "input_required",
+    ]
     text: str = ""
     result: AgentResult | None = None
+    deferred_calls: list[DeferredToolCall] = Field(default_factory=list)
+    tool_name: str = ""
+    tool_args: dict[str, Any] = Field(default_factory=dict)
 
-
-def _struct_to_dict(struct) -> dict[str, Any]:
-    """Convert a protobuf Struct to a plain Python dict."""
-    if not struct or not struct.fields:
-        return {}
-    return MessageToDict(struct, preserving_proto_field_name=True)
+    model_config = {"arbitrary_types_allowed": True}
 
 
 def _part_struct_data(part) -> dict[str, Any] | None:
     """Return the struct dict from a Part's data field, or None."""
     if part.HasField("data") and part.data.HasField("struct_value"):
-        return _struct_to_dict(part.data.struct_value)
+        return struct_to_dict(part.data.struct_value)
     return None
 
 
 def _is_thinking(part) -> bool:
     """Return whether a Part's metadata marks it as a thinking block."""
-    return _struct_to_dict(part.metadata).get("type") == "thinking"
+    return struct_to_dict(part.metadata).get("type") == "thinking"
+
+
+def _is_deferred(part) -> bool:
+    """Return whether a Part's metadata marks it as a deferred tool call."""
+    return struct_to_dict(part.metadata).get("type") == "deferred"
+
+
+def _is_tool_call(part) -> bool:
+    """Return whether a Part's metadata marks it as a tool invocation."""
+    return struct_to_dict(part.metadata).get("type") == "tool_call"
+
+
+def _is_tool_result(part) -> bool:
+    """Return whether a Part's metadata marks it as a tool result."""
+    return struct_to_dict(part.metadata).get("type") == "tool_result"
+
+
+def _extract_deferred_calls(task) -> list[DeferredToolCall]:
+    """Extract deferred tool calls from a task's artifacts."""
+    calls: list[DeferredToolCall] = []
+    for artifact in reversed(task.artifacts):
+        for part in artifact.parts:
+            meta = struct_to_dict(part.metadata)
+            if meta.get("type") == "deferred":
+                calls.append(
+                    DeferredToolCall(
+                        tool_name=meta.get("tool_name", ""),
+                        tool_call_id=meta.get("tool_call_id", ""),
+                        args=meta.get("args", {}),
+                        reason=meta.get("reason") or None,
+                    )
+                )
+    return calls
 
 
 class _Extraction(NamedTuple):
@@ -168,7 +211,7 @@ class HubClient:
 
         for artifact in reversed(task.artifacts):
             for part in artifact.parts:
-                if _is_thinking(part):
+                if _is_thinking(part) or _is_tool_call(part) or _is_tool_result(part):
                     continue
                 data = _part_struct_data(part)
                 if data is not None:
@@ -281,18 +324,32 @@ class HubClient:
         agent_name: str,
         prompt: str,
         context_id: str | None = None,
+        approval_decisions: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Stream an agent response, yielding progressive text deltas.
 
         Yields ``StreamEvent`` objects — ``text_delta`` for normal text chunks,
         ``thinking_delta`` for thinking chunks, then a final ``completed``,
-        ``failed``, or ``auth_required`` event.
+        ``failed``, ``auth_required``, or ``input_required`` event.
+
+        When ``approval_decisions`` is provided, the message includes an
+        ``approval_result`` Part so the Executor can resume a deferred task.
         """
         client = await self._get_a2a(agent_name)
+        parts: list[Part] = [Part(text=prompt)]
+        if approval_decisions:
+            meta = Struct()
+            meta.update(
+                {
+                    "type": "approval_result",
+                    "decisions": approval_decisions,
+                }
+            )
+            parts.append(Part(text="", metadata=meta))
         msg = Message(
             role=Role.ROLE_USER,
             message_id=str(uuid.uuid4()),
-            parts=[Part(text=prompt)],
+            parts=parts,
         )
         if context_id:
             msg.context_id = context_id
@@ -301,18 +358,36 @@ class HubClient:
 
         task: Task | None = None
         accumulated_thinking: list[str] = []
+        collected_artifacts: list[Any] = []
 
         async for response in client.send_message(request):
             is_terminal, resp_task, artifact = self._process_response(response)
             if artifact is not None:
+                collected_artifacts.append(artifact)
                 for part in artifact.parts:
-                    if not part.text:
+                    if not part.text and not part.HasField("data") and not part.metadata:
                         continue
-                    if _is_thinking(part):
-                        accumulated_thinking.append(part.text)
-                        yield StreamEvent(kind="thinking_delta", text=part.text)
-                    else:
-                        yield StreamEvent(kind="text_delta", text=part.text)
+                    meta = struct_to_dict(part.metadata)
+                    match meta.get("type"):
+                        case "thinking":
+                            accumulated_thinking.append(part.text)
+                            yield StreamEvent(kind="thinking_delta", text=part.text)
+                        case "deferred":
+                            continue
+                        case "tool_call":
+                            yield StreamEvent(
+                                kind="tool_call",
+                                tool_name=meta.get("tool_name", ""),
+                                tool_args=meta.get("args", {}),
+                            )
+                        case "tool_result":
+                            yield StreamEvent(
+                                kind="tool_result",
+                                text=part.text,
+                                tool_name=meta.get("tool_name", ""),
+                            )
+                        case _:
+                            yield StreamEvent(kind="text_delta", text=part.text)
             if resp_task is not None:
                 task = resp_task
             if response.HasField("status_update") and task is not None:
@@ -321,15 +396,27 @@ class HubClient:
                 break
 
         if task is not None:
+            if collected_artifacts and not task.artifacts:
+                for artifact in collected_artifacts:
+                    task.artifacts.append(artifact)
+
+            state = task.status.state
             result = self._extract_result(task)
             if accumulated_thinking and not result.thinking:
                 result.thinking = accumulated_thinking
-            if result.auth_required:
+            if state == TaskState.TASK_STATE_INPUT_REQUIRED:
+                yield StreamEvent(
+                    kind="input_required",
+                    result=result,
+                    deferred_calls=_extract_deferred_calls(task),
+                )
+            elif result.auth_required:
                 yield StreamEvent(kind="auth_required", result=result)
-            elif result.success:
-                yield StreamEvent(kind="completed", result=result)
             else:
-                yield StreamEvent(kind="failed", result=result)
+                yield StreamEvent(
+                    kind="completed" if result.success else "failed",
+                    result=result,
+                )
         else:
             yield StreamEvent(
                 kind="failed",

@@ -6,6 +6,8 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 
 ### Core Vision
 
+**Pluggable Agentic Experimentation Platform** — fin-assist exposes shared agentic capabilities (tools, approval gates, context providers, observability) as framework-agnostic platform abstractions. Different LLM frameworks or providers plug in via backend implementations. The platform owns the abstractions; backends adapt them. This mirrors how the project uses open protocols (A2A for transport, OTel for observability) — the platform defines the shape, backends fill in the framework-specific details.
+
 **Agent Hub** — A "turnstile" of specialized agents exposed via A2A protocol (a2a-sdk v1.0). Each agent is independently discoverable, has its own agent card, and can be swapped in/out of the server. The hub handles routing, conversation persistence, and agent lifecycle.
 
 **Dynamic UI via Agent Metadata** — Clients adapt their interface based on agent capabilities. Static metadata (multi-turn, thinking support, model selection) is declared in the A2A agent card via `AgentExtension`. Dynamic metadata (accept actions, rendering hints) is returned per-response in task artifacts. Clients don't need to know about specific agents — they read metadata and adapt.
@@ -16,9 +18,9 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 
 ## Design Principles
 
-1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
+1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval, tools) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
 2. **Protocol-native** — Built on A2A via a2a-sdk v1.0 for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
-3. **pydantic-ai foundation** — Unified interface for all LLM providers with structured output validation.
+3. **Platform owns abstractions, backends adapt them** — Shared agentic capabilities (tools, approval, context, step events, tracing) are framework-agnostic platform types in `agents/`. LLM frameworks plug in via backend implementations that adapt platform concepts to their APIs. The platform never imports from backends.
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
 5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
 6. **Metadata-driven clients** — Clients read agent capabilities from agent cards and adapt dynamically. No client-side agent-specific code.

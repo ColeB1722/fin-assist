@@ -19,11 +19,14 @@ from a2a.types import (
 from google.protobuf.struct_pb2 import Struct, Value
 
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import (
     DiscoveredAgent,
     HubClient,
     StreamEvent,
     _Extraction,
+    _extract_deferred_calls,
+    _is_deferred,
     _is_thinking,
     _part_struct_data,
 )
@@ -36,7 +39,7 @@ def _make_struct(d: dict) -> Struct:
 
 
 def _make_task(
-    state: int = TaskState.TASK_STATE_COMPLETED,
+    state: TaskState = TaskState.TASK_STATE_COMPLETED,
     artifacts: list[Artifact] | None = None,
     history: list[Message] | None = None,
     context_id: str = "ctx-1",
@@ -404,7 +407,6 @@ class TestDiscoverAgents:
                     "url": "http://localhost/agents/shell/",
                     "card_meta": {
                         "serving_modes": ["do"],
-                        "requires_approval": True,
                         "supports_thinking": False,
                         "supports_model_selection": True,
                         "tags": ["shell"],
@@ -428,7 +430,6 @@ class TestDiscoverAgents:
         assert len(agents) == 1
         assert agents[0].name == "shell"
         assert agents[0].card_meta.serving_modes == ["do"]
-        assert agents[0].card_meta.requires_approval is True
 
     async def test_returns_empty_when_no_agents(self):
         mock_response = MagicMock()
@@ -469,7 +470,6 @@ class TestDiscoverAgents:
         agents = await client.discover_agents()
 
         assert agents[0].card_meta.serving_modes == ["do", "talk"]
-        assert agents[0].card_meta.requires_approval is False
 
 
 class TestRunAgent:
@@ -651,6 +651,40 @@ class TestStreamEventThinkingDelta:
         assert event.result is None
 
 
+class TestStreamEventToolCall:
+    def test_tool_call_fields(self):
+        event = StreamEvent(
+            kind="tool_call",
+            tool_name="run_shell",
+            tool_args={"command": "ls -F"},
+        )
+        assert event.kind == "tool_call"
+        assert event.tool_name == "run_shell"
+        assert event.tool_args == {"command": "ls -F"}
+
+    def test_tool_call_defaults(self):
+        event = StreamEvent(kind="tool_call")
+        assert event.tool_name == ""
+        assert event.tool_args == {}
+
+
+class TestStreamEventToolResult:
+    def test_tool_result_fields(self):
+        event = StreamEvent(
+            kind="tool_result",
+            text="AGENTS.md  README.md",
+            tool_name="run_shell",
+        )
+        assert event.kind == "tool_result"
+        assert event.text == "AGENTS.md  README.md"
+        assert event.tool_name == "run_shell"
+
+    def test_tool_result_defaults(self):
+        event = StreamEvent(kind="tool_result")
+        assert event.text == ""
+        assert event.tool_name == ""
+
+
 class TestExtractFromArtifactsSkipsThinking:
     def test_skips_thinking_parts_in_artifacts(self):
         task = _make_task(
@@ -682,6 +716,48 @@ class TestExtractFromArtifactsSkipsThinking:
         result = HubClient._extract_result(task)
         assert result.output == ""
         assert result.thinking == ["just thinking"]
+
+    def test_skips_tool_call_parts_in_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "",
+                            metadata={
+                                "type": "tool_call",
+                                "tool_name": "run_shell",
+                                "args": {"command": "ls"},
+                            },
+                        ),
+                        _make_text_part("Here is the answer."),
+                    ],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "Here is the answer."
+
+    def test_skips_tool_result_parts_in_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "AGENTS.md  README.md",
+                            metadata={"type": "tool_result", "tool_name": "run_shell"},
+                        ),
+                        _make_text_part("The answer."),
+                    ],
+                )
+            ]
+        )
+        result = HubClient._extract_result(task)
+        assert result.output == "The answer."
 
 
 class TestExtractThinkingFromArtifacts:
@@ -718,3 +794,129 @@ class TestExtractThinkingFromArtifacts:
         thinking = HubClient._extract_thinking(task)
         assert "artifact thought" in thinking
         assert "history thought" in thinking
+
+
+class TestIsDeferred:
+    def test_returns_true_for_deferred_metadata(self):
+        part = _make_text_part("args...", metadata={"type": "deferred"})
+
+        assert _is_deferred(part) is True
+
+    def test_returns_false_for_no_metadata(self):
+        part = _make_text_part("hello")
+
+        assert _is_deferred(part) is False
+
+    def test_returns_false_for_thinking_metadata(self):
+        part = _make_text_part("hmm...", metadata={"type": "thinking"})
+
+        assert _is_deferred(part) is False
+
+    def test_returns_false_for_empty_metadata(self):
+        part = _make_text_part("hello", metadata={})
+
+        assert _is_deferred(part) is False
+
+
+class TestExtractDeferredCalls:
+    def test_extracts_deferred_calls_from_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part("some text"),
+                        _make_text_part(
+                            "args...",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_1",
+                                "args": {"command": "ls"},
+                                "reason": "requires approval",
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert len(calls) == 1
+        assert calls[0].tool_name == "run_shell"
+        assert calls[0].tool_call_id == "call_1"
+        assert calls[0].args == {"command": "ls"}
+        assert calls[0].reason == "requires approval"
+
+    def test_returns_empty_when_no_deferred_artifacts(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[_make_text_part("just text")],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert calls == []
+
+    def test_returns_empty_when_no_artifacts(self):
+        task = _make_task(artifacts=[])
+        calls = _extract_deferred_calls(task)
+        assert calls == []
+
+    def test_extracts_multiple_deferred_calls(self):
+        task = _make_task(
+            artifacts=[
+                Artifact(
+                    artifact_id="a1",
+                    name="result",
+                    parts=[
+                        _make_text_part(
+                            "args1",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_1",
+                                "args": {},
+                                "reason": "",
+                            },
+                        ),
+                        _make_text_part(
+                            "args2",
+                            metadata={
+                                "type": "deferred",
+                                "tool_name": "run_shell",
+                                "tool_call_id": "call_2",
+                                "args": {},
+                                "reason": "",
+                            },
+                        ),
+                    ],
+                )
+            ]
+        )
+        calls = _extract_deferred_calls(task)
+        assert len(calls) == 2
+
+
+class TestStreamEventInputRequired:
+    def test_input_required_kind(self):
+        event = StreamEvent(
+            kind="input_required",
+            result=AgentResult(success=False, output="waiting"),
+            deferred_calls=[DeferredToolCall(tool_name="run_shell", tool_call_id="c1", args={})],
+        )
+        assert event.kind == "input_required"
+        assert len(event.deferred_calls) == 1
+
+    def test_input_required_carries_result(self):
+        result = AgentResult(success=False, output="waiting for approval", context_id="ctx-1")
+        event = StreamEvent(kind="input_required", result=result, deferred_calls=[])
+        assert event.result is not None
+        assert event.result.context_id == "ctx-1"
+
+    def test_input_required_deferred_calls_default_empty(self):
+        event = StreamEvent(kind="input_required")
+        assert event.deferred_calls == []

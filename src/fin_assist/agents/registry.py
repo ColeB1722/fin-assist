@@ -18,16 +18,21 @@ OUTPUT_TYPES: dict[str, type] = {
     "command": CommandResult,
 }
 
-PromptName = Literal["chain-of-thought", "shell"]
+PromptName = Literal["chain-of-thought", "shell", "test"]
 
 SYSTEM_PROMPTS: dict[str, str] = {}
 
 
 def _init_prompts() -> None:
-    from fin_assist.llm.prompts import CHAIN_OF_THOUGHT_INSTRUCTIONS, SHELL_INSTRUCTIONS
+    from fin_assist.llm.prompts import (
+        CHAIN_OF_THOUGHT_INSTRUCTIONS,
+        SHELL_INSTRUCTIONS,
+        TEST_INSTRUCTIONS,
+    )
 
     SYSTEM_PROMPTS["chain-of-thought"] = CHAIN_OF_THOUGHT_INSTRUCTIONS
     SYSTEM_PROMPTS["shell"] = SHELL_INSTRUCTIONS
+    SYSTEM_PROMPTS["test"] = TEST_INSTRUCTIONS
 
 
 _init_prompts()

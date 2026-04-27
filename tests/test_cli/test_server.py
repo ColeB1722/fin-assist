@@ -476,6 +476,61 @@ class TestEnsureServerRunning:
 
         assert result == "http://localhost:8080"
 
+    async def test_wraps_spawn_oserror_as_startup_error(self, tmp_path):
+        """Regression: a raw OSError from _spawn_serve (e.g. missing log
+        directory) previously escaped unhandled, producing a traceback for
+        ``fin start`` and a silent ``return 1`` for ``fin do``.  It must be
+        wrapped as ``ServerStartupError`` so ``_hub_client`` can render it.
+        """
+        pid_file = tmp_path / "hub.pid"
+
+        with (
+            patch("fin_assist.cli.server._check_health", return_value=False),
+            patch("fin_assist.cli.server._read_pid", return_value=None),
+            patch(
+                "fin_assist.cli.server._spawn_serve",
+                side_effect=FileNotFoundError(2, "No such file or directory"),
+            ),
+        ):
+            config = MagicMock()
+            config.server.host = "127.0.0.1"
+            config.server.port = 4096
+
+            with pytest.raises(ServerStartupError, match="Failed to spawn"):
+                await ensure_server_running(config, pid_file=pid_file)
+
+
+# ---------------------------------------------------------------------------
+# _spawn_serve
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnServe:
+    def test_creates_log_parent_directory_if_missing(self, tmp_path):
+        """Regression: ``_spawn_serve`` used to raise ``FileNotFoundError``
+        when ``log_path``'s parent directory didn't exist (fresh checkout or
+        after ``rm -rf $FIN_DATA_DIR``).  It must create the directory first.
+        """
+        from fin_assist.cli.server import _spawn_serve
+
+        # A nested log path whose parents don't exist yet.
+        log_path = tmp_path / "nested" / "dirs" / "hub.log"
+        assert not log_path.parent.exists()
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+        config.server.db_path = str(tmp_path / "hub.db")
+        config.server.log_path = str(log_path)
+
+        pid_file = tmp_path / "hub.pid"
+
+        mock_proc = MagicMock()
+        with patch("fin_assist.cli.server.subprocess.Popen", return_value=mock_proc):
+            _spawn_serve(config, pid_file=pid_file)
+
+        assert log_path.parent.is_dir()
+
 
 # ---------------------------------------------------------------------------
 # check_status

@@ -17,6 +17,7 @@ as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -35,12 +36,16 @@ from fastapi import FastAPI
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.backend import PydanticAIBackend
+from fin_assist.agents.tools import ToolRegistry, create_default_registry
 from fin_assist.hub.executor import Executor
 
 if TYPE_CHECKING:
     from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
+    from fin_assist.config.schema import ContextSettings
     from fin_assist.hub.context_store import ContextStore
+
+logger = logging.getLogger(__name__)
 
 
 class AgentFactory:
@@ -48,10 +53,18 @@ class AgentFactory:
 
     Args:
         context_store: Shared ``ContextStore`` instance for conversation history.
+        tool_registry: Optional ``ToolRegistry`` for tool definitions.  When
+            ``None``, a default registry with built-in context tools is created.
     """
 
-    def __init__(self, context_store: ContextStore) -> None:
+    def __init__(
+        self,
+        context_store: ContextStore,
+        tool_registry: ToolRegistry | None = None,
+        context_settings: ContextSettings | None = None,
+    ) -> None:
         self._context_store = context_store
+        self._tool_registry = tool_registry or create_default_registry(context_settings)
 
     def create_a2a_app(
         self,
@@ -111,7 +124,7 @@ class AgentFactory:
             ],
         )
 
-        backend = backend or PydanticAIBackend(agent_spec=agent)
+        backend = backend or PydanticAIBackend(agent_spec=agent, tool_registry=self._tool_registry)
         executor = Executor(
             backend=backend,
             context_store=self._context_store,
@@ -132,4 +145,10 @@ class AgentFactory:
         app.routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
 
         app.state.agent_card = agent_card
+        logger.info(
+            "agent mounted name=%s tools=%s serving_modes=%s",
+            agent.name,
+            list(agent.tools),
+            list(meta.serving_modes),
+        )
         return app

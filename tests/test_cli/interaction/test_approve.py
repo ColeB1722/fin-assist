@@ -1,4 +1,4 @@
-"""Tests for cli/interaction/approve.py — approval widget and command execution."""
+"""Tests for cli/interaction/approve.py — approval widget for deferred tool calls."""
 
 from __future__ import annotations
 
@@ -6,91 +6,74 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.interaction.approve import (
-    ApprovalAction,
     _build_key_bindings,
-    execute_command,
-    run_approve_widget,
+    run_approval_widget,
 )
 
 
-class TestApprovalAction:
-    def test_values_are_strings(self):
-        assert ApprovalAction.EXECUTE == "execute"
-        assert ApprovalAction.CANCEL == "cancel"
+def _sample_deferred_calls() -> list[DeferredToolCall]:
+    return [
+        DeferredToolCall(
+            tool_name="run_shell",
+            tool_call_id="call_1",
+            args={"command": "rm -rf /tmp/x"},
+            reason="Shell command execution requires approval",
+        )
+    ]
 
-    def test_is_str_enum(self):
-        from enum import StrEnum
 
-        assert issubclass(ApprovalAction, StrEnum)
-
-
-class TestRunApproveWidget:
-    """Tests for the choice()-based approval widget."""
-
-    async def test_execute_returns_execute_action(self):
+class TestRunApprovalWidget:
+    async def test_approve_returns_decisions(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
             mock_instance = MagicMock()
-            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
+            mock_instance.prompt_async = _async_return(True)
             mock_cls.return_value = mock_instance
 
-            action = await run_approve_widget("ls -la")
+            decisions = await run_approval_widget(_sample_deferred_calls())
 
-        assert action == ApprovalAction.EXECUTE
+        assert decisions is not None
+        assert len(decisions) == 1
+        assert decisions[0]["tool_call_id"] == "call_1"
+        assert decisions[0]["approved"] is True
 
-    async def test_cancel_returns_cancel_action(self):
+    async def test_deny_returns_decisions_with_reason(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
             mock_instance = MagicMock()
-            mock_instance.prompt_async = _async_return(ApprovalAction.CANCEL)
+            mock_instance.prompt_async = _async_return(False)
             mock_cls.return_value = mock_instance
 
-            action = await run_approve_widget("ls -la")
+            decisions = await run_approval_widget(_sample_deferred_calls())
 
-        assert action == ApprovalAction.CANCEL
+        assert decisions is not None
+        assert len(decisions) == 1
+        assert decisions[0]["approved"] is False
+        assert decisions[0]["denial_reason"] == "Denied by user"
 
-    async def test_ctrl_c_returns_cancel(self):
+    async def test_ctrl_c_returns_none(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
             mock_instance = MagicMock()
             mock_instance.prompt_async = _async_raise(KeyboardInterrupt)
             mock_cls.return_value = mock_instance
 
-            action = await run_approve_widget("ls")
+            decisions = await run_approval_widget(_sample_deferred_calls())
 
-        assert action == ApprovalAction.CANCEL
+        assert decisions is None
 
-    async def test_choice_input_created_with_both_options(self):
+    async def test_default_is_approve(self):
         with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
             mock_instance = MagicMock()
-            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
+            mock_instance.prompt_async = _async_return(True)
             mock_cls.return_value = mock_instance
 
-            await run_approve_widget("ls")
+            await run_approval_widget(_sample_deferred_calls())
 
             kwargs = mock_cls.call_args.kwargs
-            values = [v for v, _label in kwargs["options"]]
-            assert ApprovalAction.EXECUTE in values
-            assert ApprovalAction.CANCEL in values
-
-    async def test_default_is_execute(self):
-        with patch("fin_assist.cli.interaction.approve.ChoiceInput") as mock_cls:
-            mock_instance = MagicMock()
-            mock_instance.prompt_async = _async_return(ApprovalAction.EXECUTE)
-            mock_cls.return_value = mock_instance
-
-            await run_approve_widget("ls")
-
-            kwargs = mock_cls.call_args.kwargs
-            assert kwargs["default"] == ApprovalAction.EXECUTE
-
-    async def test_no_prompt_parameter(self):
-        """run_approve_widget no longer accepts a prompt parameter."""
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
-            await run_approve_widget("ls", prompt=MagicMock())  # type: ignore[call-arg]
+            assert kwargs["default"] is True
 
 
 class TestBuildKeyBindings:
-    """Tests for the extra key bindings (Escape, Ctrl+D)."""
-
     def test_returns_key_bindings(self):
         from prompt_toolkit.key_binding import KeyBindings
 
@@ -108,45 +91,7 @@ class TestBuildKeyBindings:
         assert ("c-d",) in keys
 
 
-class TestExecuteCommand:
-    def test_returns_exit_code_zero_on_success(self):
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch("fin_assist.cli.interaction.approve.subprocess.run", return_value=mock_result):
-            code = execute_command("ls -la")
-
-        assert code == 0
-
-    def test_returns_nonzero_exit_code_on_failure(self):
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-
-        with patch("fin_assist.cli.interaction.approve.subprocess.run", return_value=mock_result):
-            code = execute_command("false")
-
-        assert code == 1
-
-    def test_runs_command_with_shell_true(self):
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-
-        with patch(
-            "fin_assist.cli.interaction.approve.subprocess.run", return_value=mock_result
-        ) as mock_run:
-            execute_command("echo hello")
-
-        mock_run.assert_called_once_with("echo hello", shell=True)
-
-
-# ---------------------------------------------------------------------------
-# Test helpers
-# ---------------------------------------------------------------------------
-
-
 def _async_return(value):
-    """Create an async callable that returns a value."""
-
     async def _inner():
         return value
 
@@ -154,8 +99,6 @@ def _async_return(value):
 
 
 def _async_raise(exc_type):
-    """Create an async callable that raises an exception."""
-
     async def _inner():
         raise exc_type()
 

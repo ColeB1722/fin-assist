@@ -1,53 +1,81 @@
 # Manual Testing Checklist
 
-**When to run**: Before merging a change that touches CLI commands, server lifecycle, approval widget, chat loop, agent configuration, or the Executor/streaming path. Run the full suite before a big refactor to establish a baseline.
+**When to run**: Before merging a change that touches CLI commands, server lifecycle, approval flow, chat loop, agent configuration, tool execution, or the Executor/streaming path. Run the full suite before a big refactor to establish a baseline.
 
-**Purpose**: Verify CLI integration end-to-end in ways automated tests can't — specifically subprocess lifecycle, CLI arg parsing, env var propagation, and TTY interaction. Designed so an AI agent can run the non-interactive tests autonomously, leaving only TTY-dependent tests for the human.
+**Purpose**: Verify CLI integration end-to-end in ways automated tests can't — specifically subprocess lifecycle, CLI arg parsing, env var propagation, tool execution with real subprocesses, and TTY interaction. Designed so an AI agent can run the non-interactive tests autonomously, leaving only TTY-dependent tests for the human.
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
 >
-> **Architecture note**: `shell` and `default` are TOML config entries (`[agents.shell]`, `[agents.default]`) consumed by a single `AgentSpec` class. No per-agent Python subclasses. CLI and UX are unchanged from the user's perspective; what differs is how agents are defined.
+> **Architecture note**: `shell` and `default` are TOML config entries (`[agents.shell]`, `[agents.default]`) consumed by a single `AgentSpec` class. No per-agent Python subclasses. The `shell` agent uses `output_type = "text"` with a `run_shell` tool that has `ApprovalPolicy(mode="always")`. The model decides when to call `run_shell`; the platform gates it with in-flight approval (deferred tool flow), not a post-response client-side widget.
 >
 > **Currently-implemented slash commands** in the REPL: `/exit`, `/help`, `/sessions`. Anything else will print `Unknown command: <x>`.
 
-## Integration test coverage (2026-04-23)
+---
 
-`tests/integration/test_client_hub.py` exercises the HubClient → ASGI hub → FakeBackend path in-process (no subprocesses, no LLM, no network). This covers the **protocol layer** — A2A JSON-RPC, task state machine, artifact assembly, event streaming — but not the **process layer** (subprocess management, PID files, env vars) or the **CLI layer** (arg parsing, error messages, Rich rendering).
+## Test Coverage Summary (2026-04-25)
 
-### What integration tests cover (no manual testing needed for these scenarios)
+**635 tests passing, 91% line coverage overall.**
 
-These are now redundant with automated tests for routine refactors:
+### Coverage by module
 
-| Manual test | Integration test | What's covered |
-|-------------|-----------------|----------------|
-| A1, A2 (agent discovery) | `TestAgentDiscovery` | `discover_agents()` returns both agents with correct card_meta, serving_modes, requires_approval |
-| A4 (do default one-shot) | `TestOneShotDispatch` | `run_agent("default", ...)` returns successful result through full A2A round-trip |
-| A13 (unknown agent) | `TestUnknownAgent` | Requesting a non-existent agent raises an error |
-| E3 (default supports do) | `TestOneShotDispatch` | Same as A4 |
-| F1 (missing API key) | `TestAuthRequired` | `FakeBackend(missing_providers=...)` → executor sets AUTH_REQUIRED → client extracts auth_required=True |
-| F3 (credential recovery) | `TestAuthRequired` | Swapping to a backend without missing_providers → successful result |
+| Module | Stmts | Miss | Cover | Key gaps |
+|--------|-------|------|-------|----------|
+| `agents/tools.py` | 90 | 0 | **100%** | — |
+| `agents/backend.py` | 258 | 61 | **76%** | Deferred tool path, tool event mapping, `_build_model` multi-provider, `_request_parts_from_a2a` URL/binary paths |
+| `cli/interaction/chat.py` | 76 | 10 | **87%** | Deferred approval resume exception paths, `AUTH_REQUIRED` break |
+| `cli/server.py` | 181 | 32 | **82%** | `_spawn_serve`, `_find_server_pid` /proc scanning, SIGKILL escalation, `_kill_and_cleanup` |
+| `cli/main.py` | 234 | 31 | **87%** | `_do_command` deferred approval flow, `_talk_command` session resume, `_inject_context` error paths |
+| `hub/executor.py` | 120 | 4 | **97%** | `tool_result` content extraction fallback paths, error path during iteration |
+| `cli/interaction/streaming.py` | 43 | 4 | **91%** | `show_thinking=True` rendering path, `input_required` event handling |
+| `cli/client.py` | 225 | 4 | **98%** | `_part_struct_data` with struct_value, `_apply_status_update` with message |
+| `llm/model_registry.py` | 33 | 2 | **94%** | `create_model()` custom provider fallback path |
 
-### What integration tests cover (no manual equivalent — new coverage)
+### What automated tests cover well
 
-| Scenario | Integration test | What it verifies |
-|----------|-----------------|------------------|
-| Streaming round-trip | `TestStreamingRoundTrip` | `stream_agent()` yields text_delta → completed events |
-| Streaming with thinking | `TestStreamingRoundTrip` | Thinking deltas appear in stream, accumulated into result |
-| Streaming auth-required | `TestStreamingRoundTrip` | `stream_agent()` yields auth_required terminal event |
-| Multi-turn context | `TestMultiTurnConversation` | `send_message()` with `context_id` preserves conversation |
-| Agent card extensions | `TestAgentCardExtensions` | `fin_assist:meta` extension carries serving_modes, requires_approval |
-| Health endpoint | `TestHealthEndpoint` | `GET /health` returns `{"status": "ok"}` |
+| Layer | Coverage | What's tested |
+|-------|----------|---------------|
+| **Types / data** | 100% | `StepEvent`, `StepHandle`, `AgentResult`, `AgentCardMeta`, `ApprovalPolicy`, `DeferredToolCall`, `ApprovalDecision`, `ToolDefinition`, `ToolRegistry`, `ServingMode`, `MissingCredentialsError` |
+| **Config** | 100% | `AgentConfig`, `Config`, TOML loading, env var overrides, default agents |
+| **Context providers** | 84-96% | `FileFinder`, `GitContext`, `ShellHistory`, `Environment` — all with mocked subprocesses |
+| **Agent spec** | 99% | `AgentSpec` properties, `check_credentials`, `tools` from config, `supports_context` |
+| **Context store** | 100% | `ContextStore` load/save, version byte wrap/unwrap, persistence |
+| **Factory** | 100% | `AgentFactory.create_a2a_app`, agent card extensions |
+| **Credentials** | 96% | `CredentialStore` get/set, env var precedence, keyring fallback |
+| **CLI display** | 95% | All `render_*` functions, `render_agent_output` dispatcher |
+| **CLI prompt** | 100% | `FinPrompt`, `SlashCompleter`, slash command registry |
+| **CLI response** | 100% | `handle_post_response` auth/error/continue branches |
 
-### What integration tests don't cover (still needs manual testing)
+### What automated tests DON'T cover (needs manual or integration testing)
 
-| Layer | What's not covered | Manual tests affected |
-|-------|-------------------|-----------------------|
-| Subprocess lifecycle | `fin start`/`stop`/`status`, PID files, signal handling, socket binding | A7–A15 |
-| CLI arg parsing | Default agent shortcut, unknown agent error message format | A5, A13 |
-| CLI validation | Serving-mode rejection in `_talk_command` | E2 |
-| Env var propagation | `CredentialStore` → `AgentSpec.check_credentials()` → real env vars | F1, F3 |
-| Rich rendering | Panel titles, Markdown formatting, colors | A1, A4 (visual) |
-| TTY interaction | Approval widget, REPL, prompt completions | All Part 2 |
+| Gap | Why not covered | Risk | Manual tests |
+|-----|-----------------|------|-------------|
+| **Deferred approval end-to-end** — backend emits `deferred` → executor pauses → client shows widget → user approves → resume | Spans 8 files with pydantic-ai DeferredToolRequests; no integration test with real LLM | **High** — the entire HITL flow is untested beyond unit mocks and FakeBackend integration | B1-B7, I1-I5 |
+| **Full streaming lifecycle** — `stream_agent()` with real A2A protocol, artifact assembly, terminal state dispatch | `stream_agent()` is never called in tests; only internal helpers are unit-tested | **Medium** — covered by integration tests with FakeBackend, but not with real streaming | C1, C16 |
+| **Server subprocess lifecycle** — `fin start`/`stop`/`status`, PID files, signal handling, orphan detection | Requires real process spawning and signaling | **Medium** — well-tested in unit with mocks, but /proc scanning and SIGKILL escalation are real OS interactions | A7-A15 |
+| **Multi-provider / FallbackModel** — `_build_model` with multiple providers, failover | Requires multiple API keys configured | **Low** — single-provider path is well-tested | — |
+| **`ApprovalPolicy.condition` callable** | `conditional` mode is defined but never invoked anywhere — dead code | **Low** — no runtime path exercises it | — |
+
+### Integration test coverage
+
+`tests/integration/test_client_hub.py` (21 tests) exercises HubClient → ASGI hub → FakeBackend in-process (no subprocesses, no LLM, no network).
+
+| What integration tests cover | Test class |
+|------------------------------|------------|
+| Agent discovery (both agents, card_meta) | `TestAgentDiscovery` |
+| One-shot dispatch (default + shell) | `TestOneShotDispatch` |
+| Unknown agent error | `TestUnknownAgent` |
+| Auth-required flow + recovery | `TestAuthRequired` |
+| Streaming round-trip (text + thinking + auth) | `TestStreamingRoundTrip` |
+| Multi-turn context preservation | `TestMultiTurnConversation` |
+| Health endpoint | `TestHealthEndpoint` |
+| Agent card extensions (serving_modes) | `TestAgentCardExtensions` |
+| Deferred approval flow (input_required, approve, deny) | `TestDeferredApprovalFlow` |
+
+**Not covered by integration tests** (would require real LLM or more complex FakeBackend):
+- Deferred approval with real pydantic-ai DeferredToolRequests
+- Tool execution during a run with real tool callables
+- Structured output (CommandResult or other non-str output)
+- Error propagation from backend to client mid-stream
 
 ---
 
@@ -81,7 +109,7 @@ Integration tests can't cover subprocess management. Run all of these.
 | # | Test | Command | Expected | Status |
 |---|------|---------|----------|--------|
 | ~~A1~~ | List agents (auto-start) | `fin agents` (hub stopped) | Auto-starts server; prints `default` and `shell` agent cards with capability chips | Protocol covered by `TestAgentDiscovery`; run manually only to test subprocess auto-start |
-| ~~A2~~ | List agents (reuse) | `fin agents` (hub up) | Same output, no restart — `ensure_server_running` short-circuits on healthy hub | Same as A1 |
+| ~~A2~~ | List agents (reuse) | `fin agents` (hub up) | Same output, no restart | Same as A1 |
 
 > **Debug**: Auto-start failures → run `fin start` manually to see logs. Card rendering → `cli/display.py`.
 
@@ -115,6 +143,18 @@ Integration tests can't cover subprocess management. Run all of these.
 > F2 (talk mode, missing key) enters the REPL — tested interactively in Part 2b.
 > Debug: Auth panel not appearing → check `MissingCredentialsError` propagation and `render_auth_required` in `display.py`.
 
+### 1f. Context Injection (CLI flags) — unit covered, E2E not
+
+`--file` and `--git-diff` flags are implemented. `--git-log` is not wired. Unit tests cover `_inject_context` with mocked providers; E2E requires a running LLM.
+
+| # | Test | Command | Expected | Status |
+|---|------|---------|----------|--------|
+| G1 | File context | `fin do default "describe this file" --file pyproject.toml` | Response references file contents | **Not covered E2E** — requires LLM + real filesystem |
+| G2 | Git diff context | `fin do default "review these changes" --git-diff` | Response references `git diff` | **Not covered E2E** — requires LLM + git repo |
+| G5 | Missing file | `fin do default "describe" --file nonexistent.txt` | Command still runs; file content shows as error message | **Not covered E2E** |
+
+> `--git-log` is not yet wired as a CLI flag (low priority — model can call the `git_log` tool instead).
+
 ---
 
 ## Part 2 — Interactive Tests (Requires TTY)
@@ -123,23 +163,27 @@ These require keyboard input — arrow keys, text entry, or REPL interaction. Hu
 
 > **Prerequisite**: All of Part 1 must pass before starting Part 2.
 
-### 2a. Approval Widget (`fin do shell`)
+### 2a. In-Flight Approval Widget (`fin do shell`)
 
-`shell` agent has `requires_approval=true`. Widget is `ChoiceInput` — arrow-key navigation between Execute/Cancel, Enter confirms. No text input.
+The `shell` agent has `tools=["run_shell"]` where `run_shell` has `ApprovalPolicy(mode="always")`. When the model calls `run_shell`, the backend emits a `deferred` StepEvent, the executor sets the task to `INPUT_REQUIRED`, the client receives an `input_required` StreamEvent, and `render_stream` returns with `deferred_calls`. The approval widget (`approve.py`) presents each deferred tool call for Approve/Deny.
+
+This replaces the old post-response approval model. Approval is now **in-flight** — the model cannot produce output from a tool that wasn't approved.
+
+> **Critical**: This flow spans 8 files and has NO integration test coverage. It is the highest-risk interactive test.
 
 | # | Test | Action | Expected |
 |---|------|--------|----------|
-| A3 | Do shell | `fin do shell list files` | "Generated Command" panel, then approval widget (Execute/Cancel) |
-| E1 | Shell supports do | `fin do shell list files` | Same command as A3 — verifies serving mode allows `do` for `shell` (command reaches approval, not rejected by mode check) |
-| B1 | Execute (default) | `fin do shell "echo hi"`, press Enter immediately | Execute is the default selection; command runs, exit 0 |
-| B2 | Execute (navigate) | Arrow-key to Execute (already there), press Enter | Same as B1 |
-| B3 | Cancel | Arrow-down to Cancel, press Enter | `[yellow]Cancelled.[/yellow]`, no execution, exit 0 |
-| B4 | Ctrl+C | During prompt | Cancels (same as B3), exits cleanly |
-| B5 | Ctrl+D | During prompt | Cancels (same as B3), exits cleanly |
-| B6 | Escape | During prompt | Cancels (same as B3), exits cleanly |
+| A3 | Do shell | `fin do shell "list files in the current directory"` | Model calls `run_shell`, approval widget appears showing tool name (`run_shell`), args (the command), and reason ("Shell command execution requires approval") |
+| E1 | Shell supports do | `fin do shell "echo hello"` | Same as A3 — verifies serving mode allows `do` for `shell` (command reaches approval, not rejected by mode check) |
+| B1 | Approve (default) | `fin do shell "echo hi"`, press Enter immediately | Approve is the default selection; command runs server-side, output displayed, exit 0 |
+| B2 | Approve (navigate) | Arrow-key to Approve (already there), press Enter | Same as B1 |
+| B3 | Deny | Arrow-down to Deny, press Enter | `[dim]Tool call cancelled[/dim]`, no command execution, exit 0 |
+| B4 | Ctrl+C | During approval prompt | Cancels (same as B3), exits cleanly |
+| B5 | Ctrl+D | During approval prompt | Cancels (same as B3), exits cleanly |
+| B6 | Escape | During approval prompt | Cancels (same as B3), exits cleanly |
 | B7 | No text input surface | Observe | Selection-only; no text field, no completions |
 
-> **Debug**: Widget issues → `cli/interaction/approve.py` or `handle_post_response` approval wiring.
+> **Debug**: Widget issues → `cli/interaction/approve.py`. Deferred flow → `hub/executor.py:_handle_deferred_event` + `_extract_approval_results`. Client → `cli/client.py:stream_agent` + `_extract_deferred_calls`. Backend → `agents/backend.py:_PydanticAIStepHandle` deferred detection + `build_deferred_results`.
 
 ### 2b. REPL (`fin talk <agent>`)
 
@@ -169,9 +213,36 @@ Tests the full chat loop with FinPrompt, streaming, session persistence, and res
 | C16 | `--show-thinking` | `fin talk default --show-thinking`, chat once | Thinking blocks (if the model emits them) appear in the output |
 | F2 | Talk mode, missing key | Unset `ANTHROPIC_API_KEY`, then `fin talk default`, send one message | Yellow "Authentication required" panel; then `[dim]Fix credentials and try again.[/dim]`; chat loop exits |
 
-> **Debug**: REPL issues → `cli/interaction/chat.py`, `FinPrompt`. Streaming issues → `_PydanticAIStreamHandle` in `agents/backend.py`. Session issues → session persistence code.
+> **Debug**: REPL issues → `cli/interaction/chat.py`, `FinPrompt`. Streaming issues → `_PydanticAIStepHandle` in `agents/backend.py`. Session issues → session persistence code.
 
-### 2c. Prompt Completions & History
+### 2c. In-Flight Approval in Talk Mode
+
+Tests the deferred approval flow within the chat loop. When the default agent (or any agent with approval-gated tools) calls a tool requiring approval mid-conversation, the chat loop should show the approval widget, then resume streaming after the decision.
+
+> **Prerequisite**: B1 and C1 must pass first.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| I1 | Approval in talk (approve) | `fin talk default`, ask it to run a shell command (e.g. "run ls using the run_shell tool") | Model calls `run_shell` → approval widget appears → approve → command runs server-side → output displayed → chat continues |
+| I2 | Approval in talk (deny) | Same as I1, but deny | `[dim]Tool call cancelled[/dim]` → chat continues (can send more messages) |
+| I3 | Approval in talk (cancel) | Same as I1, but Ctrl+C | `[dim]Tool call cancelled[/dim]` → chat continues |
+| I4 | Multi-turn after denial | Deny a tool call, then send another message | Chat loop continues normally; context preserved |
+| I5 | Approval + session save | Approve a tool call, then `/exit` | Session saved with the full conversation including the approved tool result |
+
+> **Note**: The default agent doesn't have `run_shell` in its tools by default, and the `shell` agent only supports `do` mode. To test I1–I5, create a dedicated test agent in your TOML config:
+>
+> ```toml
+> [agents.test-approval]
+> description = "Agent for testing in-flight approval"
+> system_prompt = "You can run shell commands when asked."
+> output_type = "text"
+> serving_modes = ["do", "talk"]
+> tools = ["run_shell"]
+> ```
+>
+> Then use `fin talk test-approval` for I1–I5. This makes the tests reproducible without modifying the default or shell agent configs.
+
+### 2d. Prompt Completions & History
 
 Tests FinPrompt features: fuzzy slash completion and persistent history. Run after C1/C2 confirm the basic REPL works.
 
@@ -193,23 +264,9 @@ Tests FinPrompt features: fuzzy slash completion and persistent history. Run aft
 
 ## Not Yet Implemented
 
-### Chunk G — Context Injection for `do`
-
-*Planned for Step 7 of the config-driven redesign; do not run until the flags exist.*
-
-> **Status**: Underlying `ContextProvider` classes are built and unit-tested in `src/fin_assist/context/`, but the `do` parser has no `--file`, `--git-diff`, or `--git-log` flags. See `handoff.md`.
-
-| # | Test | Command | Expected |
-|---|------|---------|----------|
-| G1 | File context | `fin do shell "describe this file" --file pyproject.toml` | Response references file contents |
-| G2 | Git diff context | `fin do default "review these changes" --git-diff` | Response references `git diff` |
-| G3 | Git log context | `fin do default "summarize recent work" --git-log` | Response references recent commits |
-| G4 | Multiple flags | `fin do default "full context" --git-diff --git-log` | Both diff and log included |
-| G5 | Missing file | `fin do default "describe" --file nonexistent.txt` | Warning about missing file; command still runs |
-
 ### Chunk H — `@`-Completion in Talk
 
-*Planned for Step 8.*
+*Planned for Step 8 of the config-driven redesign.*
 
 > **Status**: No `@`-trigger logic exists in `cli/interaction/prompt.py`. See `handoff.md`.
 
@@ -222,32 +279,54 @@ Tests FinPrompt features: fuzzy slash completion and persistent history. Run aft
 
 ---
 
+## Test Gap Register
+
+Known gaps in automated test coverage that should be addressed before or alongside manual testing. Ordered by risk.
+
+| Gap | Source lines | Risk | Mitigation |
+|-----|-------------|------|------------|
+| `_PydanticAIStepHandle` deferred path | `agents/backend.py:186-203` | **High** — the `DeferredToolRequests` detection and `deferred` StepEvent emission is untested with real pydantic-ai | Add unit test that constructs a mock `AgentRun` with `DeferredToolRequests` output. Add integration test with `FakeBackend` that emits deferred events. |
+| `chat.py` deferred approval resume | `cli/interaction/chat.py:117-137` | **High** — the `run_approval_widget` → `render_stream(approval_decisions=...)` path is untested | Add unit test with mocked `stream_fn` and `run_approval_widget`. |
+| `_do_command` deferred approval resume | `cli/main.py:253-266` | **High** — same as chat.py but for the `do` command path | Add unit test with mocked `client.stream_agent` and `run_approval_widget`. |
+| `stream_agent` with `approval_decisions` | `cli/client.py:330-338` | **Medium** — the `approval_result` Part construction is untested | Add unit test verifying Part metadata construction. |
+| Executor `tool_call`/`tool_result` dispatch | `hub/executor.py:229-266` | **Low** — unit tests verify artifact content, metadata, and append semantics; `tool_result` content fallback paths untested | Covered by `TestExecutorToolCallDispatch` and `TestExecutorArtifactAppendSemantics` |
+| `ApprovalPolicy.condition` callable | `agents/tools.py:38` | **Low** — dead code; `conditional` mode is defined but never used | Either implement a test or remove the dead code path. Filed as potential cleanup. |
+
+---
+
 ## Running Order
 
-```
-just test  ←  covers A1/A2/A4/A13/E3/F1/F3 protocol layer
-              + streaming, multi-turn, card extensions (new coverage)
+```text
+just test  ←  635 tests, 91% coverage
+               Covers: types, config, context (mocked), agent spec, context store,
+                       factory, credentials, display, prompt, response,
+                       integration: discovery, dispatch, auth, streaming, multi-turn
+
+just test-cov  ←  per-file coverage report (identifies gaps above)
 
 Part 1 (Manual) — agent runs only the uncovered tests
-┌──────────────────────────────────────────────┐
-│ 1a. Server Lifecycle (A7-A15) — all manual   │
-│ A5  (default agent shortcut — CLI arg parse) │
-│ E2  (shell rejects talk — CLI validation)    │
-│ F1/F3 (optional — env var propagation only)  │
-└──────────────────┬───────────────────────────┘
-                   │ all pass
-                   ▼
+┌──────────────────────────────────────────────────────────┐
+│ 1a. Server Lifecycle (A7-A15) — all manual               │
+│ A5  (default agent shortcut — CLI arg parse)             │
+│ E2  (shell rejects talk — CLI validation)                │
+│ G1, G2, G5 (context injection — requires LLM)           │
+│ F1/F3 (optional — env var propagation only)              │
+└────────────────────────┬─────────────────────────────────┘
+                         │ all pass
+                         ▼
 Part 2 (Interactive) — human at TTY
-┌──────────────────────────────────────────────┐
-│ 2a. Approval Widget (A3, E1, B1-B7)          │
-│                                              │
-│ 2b. REPL (A6, E4, C1-C16, F2)               │
-│     │                                        │
-│     └── 2c. Prompt Completions (D1-D8)       │
-│         (after C1/C2 confirm REPL works)     │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 2a. In-Flight Approval (A3, E1, B1-B7)  ← HIGHEST RISK │
+│                                                          │
+│ 2b. REPL (A6, E4, C1-C16, F2)                           │
+│     │                                                    │
+│     ├── 2c. Approval in Talk (I1-I5)  ← needs 2a + 2b  │
+│     │                                                    │
+│     └── 2d. Prompt Completions (D1-D8)                   │
+│         (after C1/C2 confirm REPL works)                 │
+└──────────────────────────────────────────────────────────┘
 
-Chunks G and H are NOT YET IMPLEMENTED — skip.
+Chunk H (@-completion) is NOT YET IMPLEMENTED — skip.
 ```
 
 ---
@@ -256,13 +335,13 @@ Chunks G and H are NOT YET IMPLEMENTED — skip.
 
 Before a big refactor, run the minimum set most likely to catch regressions:
 
-**Automated** (`just test`): Covers A1, A2, A4, A13, E3, F1, F3 protocol layer + streaming + multi-turn + card extensions
+**Automated** (`just test`): 635 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + artifact append semantics
 
 **Manual (agent runs)**: A7–A15 (server lifecycle), A5 (default shortcut), E2 (shell rejects talk)
 
 **Interactive (human runs)**:
-- Approval: B1, B3, B4, B6 (Enter-default, Cancel, and two cancel-binding variants)
-- REPL: C1, C5, C10, C11, C13 (streaming, multi-turn, resume, resume-missing, initial-message)
+- Approval: B1, B3, B4 (Approve-default, Deny, Ctrl+C) — **highest priority**
+- REPL: C1, C5, C10, C13 (streaming, multi-turn, resume, initial-message)
 - Credentials: F2 (auth-required in talk mode)
 
 ---
@@ -286,4 +365,8 @@ Before a big refactor, run the minimum set most likely to catch regressions:
 - `fin do "prompt"` / `fin talk` (no agent arg) → `[agents.default]`.
 - `shell.serving_modes = ["do"]` — no talk mode.
 - `default.serving_modes = ["do", "talk"]`.
+- `shell` agent uses `output_type = "text"` with `tools = ["run_shell"]`. The model decides when to call `run_shell`; the platform gates it with `ApprovalPolicy(mode="always")`.
+- `default` agent uses `output_type = "text"` with `tools = ["read_file", "git_diff", "git_log", "shell_history"]`. All tools have `approval_policy=None` (no approval needed).
 - `fin serve` runs the hub in the foreground (distinct from `fin start` which daemonizes). Useful for development; see A15.
+- The approval model changed in Phase C: `requires_approval: bool` is gone. Approval is now `ApprovalPolicy` on `ToolDefinition`, enforced in-flight by the backend (deferred tools), verified by the Executor. The old post-response `handle_post_response` approval branch is removed.
+- `--file` and `--git-diff` CLI flags are implemented on `do`. `--git-log` is not wired (low priority — model can call the `git_log` tool).

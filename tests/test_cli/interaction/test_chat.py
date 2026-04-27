@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from fin_assist.agents.metadata import AgentCardMeta, AgentResult
+from fin_assist.agents.metadata import AgentResult
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import StreamEvent
 from fin_assist.cli.interaction.chat import run_chat_loop
 
@@ -248,6 +249,48 @@ class TestRunChatLoop:
 
         stream_fn.assert_called_once_with("default", "hello", None)
 
+    async def test_edit_message_opens_prefilled_input(self):
+        result = _make_result()
+        stream_fn = _make_stream_fn(result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["edited message", "/exit"])
+
+        await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original message")
+
+        mock_fp.ask.assert_any_call("> ", default="original message")
+        stream_fn.assert_called_once_with("default", "edited message", None)
+
+    async def test_edit_message_keyboard_interrupt_exits(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=KeyboardInterrupt)
+
+        ctx = await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original")
+
+        stream_fn.assert_not_called()
+
+    async def test_edit_message_empty_input_skips(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["   ", "/exit"])
+
+        ctx = await run_chat_loop(stream_fn, "default", prompt=mock_fp, edit_message="original")
+
+        stream_fn.assert_not_called()
+
+    async def test_edit_message_takes_precedence_over_initial_message(self):
+        result = _make_result()
+        stream_fn = _make_stream_fn(result)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["edited", "/exit"])
+
+        await run_chat_loop(
+            stream_fn, "default", prompt=mock_fp, initial_message="direct", edit_message="edit-me"
+        )
+
+        mock_fp.ask.assert_any_call("> ", default="edit-me")
+        stream_fn.assert_called_once_with("default", "edited", None)
+
 
 class TestChatLoopThinking:
     async def test_thinking_not_shown_by_default(self):
@@ -326,37 +369,127 @@ class TestChatLoopThinking:
         assert "Thinking" not in output
 
 
-class TestChatLoopCardMeta:
-    async def test_requires_approval_shows_widget_in_talk(self):
-        result = AgentResult(success=True, output="rm -rf /tmp", context_id="ctx-1")
-        stream_fn = _make_stream_fn(result)
+class TestChatLoopDeferredApproval:
+    async def test_approve_and_resume(self):
+        result = _make_result()
+        deferred_calls = [
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            )
+        ]
+
+        async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
+            if approval_decisions is None:
+                yield StreamEvent(kind="text_delta", text="generated command")
+                yield StreamEvent(
+                    kind="input_required", result=result, deferred_calls=deferred_calls
+                )
+            else:
+                yield StreamEvent(kind="text_delta", text="command output")
+                yield StreamEvent(kind="completed", result=result)
+
+        stream_fn = MagicMock(side_effect=_stream_gen)
         mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["delete temp", "/exit"])
-        card_meta = AgentCardMeta(requires_approval=True)
+        mock_fp.ask = AsyncMock(side_effect=["run ls", "/exit"])
 
-        from fin_assist.cli.interaction.approve import ApprovalAction
+        from fin_assist.agents.tools import ApprovalDecision
 
+        decisions = [ApprovalDecision(tool_call_id="call_1", approved=True)]
+        with patch(
+            "fin_assist.cli.interaction.approve.run_approval_widget",
+            new_callable=AsyncMock,
+            return_value=decisions,
+        ):
+            ctx = await run_chat_loop(stream_fn, "shell", prompt=mock_fp)
+
+        assert stream_fn.call_count == 2
+        second_call = stream_fn.call_args_list[1]
+        assert second_call.kwargs.get("approval_decisions") == decisions
+
+    async def test_deny_continues_chat(self):
+        result = _make_result()
+        deferred_calls = [
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /"},
+                reason="requires approval",
+            )
+        ]
+
+        async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
+            if approval_decisions is None:
+                yield StreamEvent(kind="text_delta", text="generated command")
+                yield StreamEvent(
+                    kind="input_required", result=result, deferred_calls=deferred_calls
+                )
+            else:
+                yield StreamEvent(kind="text_delta", text="denied output")
+                yield StreamEvent(kind="completed", result=result)
+
+        stream_fn = MagicMock(side_effect=_stream_gen)
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["delete everything", "/exit"])
+
+        from fin_assist.agents.tools import ApprovalDecision
+
+        decisions = [
+            ApprovalDecision(tool_call_id="call_1", approved=False, denial_reason="Too dangerous")
+        ]
+        from io import StringIO
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
         with (
+            patch("fin_assist.cli.interaction.chat.console", test_console),
             patch(
-                "fin_assist.cli.interaction.response.run_approve_widget",
+                "fin_assist.cli.interaction.approve.run_approval_widget",
                 new_callable=AsyncMock,
-                return_value=ApprovalAction.CANCEL,
-            ) as mock_widget,
+                return_value=decisions,
+            ),
         ):
-            await run_chat_loop(stream_fn, "shell", prompt=mock_fp, card_meta=card_meta)
+            ctx = await run_chat_loop(stream_fn, "shell", prompt=mock_fp)
 
-        mock_widget.assert_called_once()
+        assert stream_fn.call_count == 2
 
-    async def test_no_approval_widget_when_not_required(self):
-        result = AgentResult(success=True, output="hello", context_id="ctx-1")
-        stream_fn = _make_stream_fn(result)
+    async def test_cancel_deferred_skips_resume(self):
+        result = _make_result()
+        deferred_calls = [
+            DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            )
+        ]
+
+        async def _stream_gen(agent_name, prompt, context_id=None, approval_decisions=None):
+            yield StreamEvent(kind="text_delta", text="generated command")
+            yield StreamEvent(kind="input_required", result=result, deferred_calls=deferred_calls)
+
+        stream_fn = MagicMock(side_effect=_stream_gen)
         mock_fp = MagicMock()
-        mock_fp.ask = AsyncMock(side_effect=["hi", "/exit"])
-        card_meta = AgentCardMeta(requires_approval=False)
+        mock_fp.ask = AsyncMock(side_effect=["run ls", "/exit"])
 
+        from io import StringIO
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
         with (
-            patch("fin_assist.cli.interaction.response.run_approve_widget") as mock_widget,
+            patch("fin_assist.cli.interaction.chat.console", test_console),
+            patch(
+                "fin_assist.cli.interaction.approve.run_approval_widget",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
-            await run_chat_loop(stream_fn, "default", prompt=mock_fp, card_meta=card_meta)
+            ctx = await run_chat_loop(stream_fn, "shell", prompt=mock_fp)
 
-        mock_widget.assert_not_called()
+        assert stream_fn.call_count == 1
+        output = buf.getvalue()
+        assert "cancelled" in output.lower()

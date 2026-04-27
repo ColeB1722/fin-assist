@@ -37,7 +37,6 @@ def _make_shell_agent(mock_config, mock_credentials) -> AgentSpec:
             output_type="command",
             thinking="off",
             serving_modes=["do"],
-            requires_approval=True,
             tags=["shell", "one-shot"],
         ),
         config=mock_config,
@@ -83,7 +82,6 @@ class TestCreateA2AApp:
         meta_ext = next(e for e in card.capabilities.extensions if e.uri == "fin_assist:meta")
         params = dict(meta_ext.params)
         assert params.get("serving_modes") == ["do"]
-        assert params.get("requires_approval") is True
 
     def test_extension_encodes_serving_modes_for_default(
         self, mock_config, mock_credentials

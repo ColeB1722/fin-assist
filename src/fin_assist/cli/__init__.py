@@ -1,7 +1,9 @@
-"""CLI client package."""
+"""CLI client package.
 
-from fin_assist.agents.metadata import AgentResult
-from fin_assist.cli.client import DiscoveredAgent, HubClient
-from fin_assist.cli.server import ensure_server_running
-
-__all__ = ["AgentResult", "DiscoveredAgent", "HubClient", "ensure_server_running"]
+This package intentionally exposes no symbols at the top level.  Import
+directly from submodules (``fin_assist.cli.client``,
+``fin_assist.cli.server``, etc.) so that ``from fin_assist.cli import …``
+cannot transitively trigger the ``fin_assist.agents.backend`` →
+``pydantic_ai`` import chain (~1s) when the caller only needs a
+lightweight type.
+"""

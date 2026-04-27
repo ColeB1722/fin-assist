@@ -8,15 +8,20 @@ from ``docs/manual-testing.md`` that can be tested without a TTY.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
 from a2a.client.errors import AgentCardResolutionError
+from a2a.types import Part
 
 from fin_assist.agents.spec import AgentSpec
+from fin_assist.agents.step import StepEvent
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.cli.client import HubClient
-from tests.integration.conftest import FakeBackend, _make_hub_client
+from tests.integration.conftest import FakeBackend, FakeStepHandle, _make_hub_client
 
 
 # -----------------------------------------------------------------------
@@ -47,9 +52,7 @@ class TestAgentDiscovery:
         agents = await hub_client.discover_agents()
         by_name = {a.name: a for a in agents}
         assert by_name["shell"].card_meta.serving_modes == ["do"]
-        assert by_name["shell"].card_meta.requires_approval is True
         assert by_name["default"].card_meta.serving_modes == ["do", "talk"]
-        assert by_name["default"].card_meta.requires_approval is False
 
 
 # -----------------------------------------------------------------------
@@ -146,6 +149,17 @@ class TestStreamingRoundTrip:
         assert events[-1].result is not None
         assert events[-1].result.success is True
 
+    async def test_stream_populates_result_output_from_artifacts(
+        self, hub_client: HubClient
+    ) -> None:
+        events = []
+        async for event in hub_client.stream_agent("default", "hello"):
+            events.append(event)
+
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].result.output != ""
+
     async def test_stream_with_thinking(self, fake_agents: list[AgentSpec]) -> None:
         def factory(spec: AgentSpec) -> FakeBackend:
             return FakeBackend(response="answer", thinking=["hmm", "let me think"])
@@ -238,11 +252,129 @@ class TestAgentCardExtensions:
         params = meta.get("params", {})
         assert params.get("serving_modes") == ["do", "talk"]
 
-    async def test_shell_card_requires_approval(self, raw_client: httpx.AsyncClient) -> None:
-        resp = await raw_client.get("/agents/shell/.well-known/agent-card.json")
-        data = resp.json()
-        extensions = data["capabilities"]["extensions"]
-        meta = next((e for e in extensions if e["uri"] == "fin_assist:meta"), None)
-        assert meta is not None, "Expected 'fin_assist:meta' extension not found"
-        params = meta.get("params", {})
-        assert params.get("requires_approval") is True
+
+# -----------------------------------------------------------------------
+# Deferred approval flow  (covers the full 8-file HITL path)
+# -----------------------------------------------------------------------
+
+
+class _DeferredBackend(FakeBackend):
+    """Backend that emits a deferred StepEvent on first call, then completes on resume."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._call_count = 0
+
+    def run_steps(
+        self,
+        *,
+        messages: list[Any],
+        model: Any = None,
+        deferred_tool_results: Any = None,
+    ) -> FakeStepHandle:
+        from fin_assist.agents.backend import RunResult
+
+        self._call_count += 1
+
+        if deferred_tool_results is None and self._call_count == 1:
+            text_event = StepEvent(kind="text_delta", content="Generating command...", step=0)
+            deferred_event = StepEvent(
+                kind="deferred",
+                content=DeferredToolCall(
+                    tool_name="run_shell",
+                    tool_call_id="call_1",
+                    args={"command": "echo hello"},
+                    reason="Shell command execution requires approval",
+                ),
+                step=0,
+                tool_name="run_shell",
+            )
+            return FakeStepHandle(
+                events=[text_event, deferred_event],
+                run_result=RunResult(
+                    output=MagicMock(),
+                    serialized_history=b'[{"deferred": true}]',
+                    new_message_parts=[],
+                ),
+            )
+
+        return super().run_steps(
+            messages=messages, model=model, deferred_tool_results=deferred_tool_results
+        )
+
+    def deserialize_history(self, data: bytes) -> list[Any]:
+        if data:
+            return [MagicMock()]
+        return []
+
+    def build_deferred_results(self, decisions: list[Any]) -> Any:
+        return MagicMock()
+
+
+class TestDeferredApprovalFlow:
+    """Exercise the full deferred approval path: defer → input_required → resume → completed."""
+
+    @pytest.fixture
+    async def deferred_client(self, fake_agents: list[AgentSpec]) -> AsyncIterator[HubClient]:
+        def factory(spec: AgentSpec) -> _DeferredBackend:
+            return _DeferredBackend(response="command executed successfully")
+
+        client = _make_hub_client(fake_agents, backend_factory=factory)
+        yield client
+        await client.close()
+
+    async def test_stream_yields_input_required(self, deferred_client: HubClient) -> None:
+        events = []
+        async for event in deferred_client.stream_agent("shell", "run echo hello"):
+            events.append(event)
+
+        terminal_events = [
+            e
+            for e in events
+            if e.kind in ("input_required", "auth_required", "completed", "failed")
+        ]
+        assert len(terminal_events) >= 1
+        assert terminal_events[-1].kind == "input_required"
+
+    async def test_approve_and_resume_completes(self, deferred_client: HubClient) -> None:
+        events = []
+        async for event in deferred_client.stream_agent("shell", "run echo hello"):
+            events.append(event)
+
+        input_required_events = [e for e in events if e.kind == "input_required"]
+        assert len(input_required_events) == 1
+        context_id = input_required_events[0].result.context_id
+
+        resume_events = []
+        decisions = [{"tool_call_id": "call_1", "approved": True}]
+        async for event in deferred_client.stream_agent(
+            "shell",
+            "",
+            context_id=context_id,
+            approval_decisions=decisions,
+        ):
+            resume_events.append(event)
+
+        assert resume_events[-1].kind == "completed"
+        assert resume_events[-1].result.success is True
+
+    async def test_deny_and_resume_completes(self, deferred_client: HubClient) -> None:
+        events = []
+        async for event in deferred_client.stream_agent("shell", "run echo hello"):
+            events.append(event)
+
+        input_required_events = [e for e in events if e.kind == "input_required"]
+        assert len(input_required_events) == 1
+        context_id = input_required_events[0].result.context_id
+
+        resume_events = []
+        decisions = [{"tool_call_id": "call_1", "approved": False, "denial_reason": "User denied"}]
+        async for event in deferred_client.stream_agent(
+            "shell",
+            "",
+            context_id=context_id,
+            approval_decisions=decisions,
+        ):
+            resume_events.append(event)
+
+        assert resume_events[-1].kind == "completed"

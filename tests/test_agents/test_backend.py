@@ -17,10 +17,9 @@ from fin_assist.agents.backend import (
     AgentBackend,
     PydanticAIBackend,
     RunResult,
-    StreamDelta,
-    StreamHandle,
 )
 from fin_assist.agents.metadata import MissingCredentialsError
+from fin_assist.agents.step import StepEvent, StepHandle
 from fin_assist.config.schema import AgentConfig
 
 
@@ -42,6 +41,16 @@ def _make_a2a_user_message(text: str) -> Message:
         role=Role.ROLE_USER,
         parts=[Part(text=text)],
     )
+
+
+def _tool_names_from_agent(agent: Any) -> set[str]:
+    from pydantic_ai.models.test import TestModel
+
+    model = TestModel()
+    agent.run_sync("test", model=model)
+    params = model.last_model_request_parameters
+    assert params is not None
+    return {t.name for t in params.function_tools}
 
 
 # -- RunResult tests -----------------------------------------------------------
@@ -69,76 +78,6 @@ class TestRunResult:
     def test_new_message_parts_default_empty(self) -> None:
         result = RunResult(output="hi", serialized_history=b"[]")
         assert result.new_message_parts == []
-
-
-# -- StreamDelta tests ---------------------------------------------------------
-
-
-class TestStreamDelta:
-    def test_text_delta(self) -> None:
-        delta = StreamDelta(kind="text", content="hello")
-        assert delta.kind == "text"
-        assert delta.content == "hello"
-
-    def test_thinking_delta(self) -> None:
-        delta = StreamDelta(kind="thinking", content="reasoning...")
-        assert delta.kind == "thinking"
-        assert delta.content == "reasoning..."
-
-
-# -- StreamHandle protocol tests -----------------------------------------------
-
-
-class _FakeStreamHandle:
-    def __init__(self, deltas: list[StreamDelta], run_result: RunResult) -> None:
-        self._deltas = deltas
-        self._run_result = run_result
-        self._iterated = False
-
-    async def __aiter__(self) -> AsyncIterator[StreamDelta]:
-        self._iterated = True
-        for delta in self._deltas:
-            yield delta
-
-    async def result(self) -> RunResult:
-        return self._run_result
-
-
-class TestStreamHandle:
-    @pytest.mark.asyncio
-    async def test_yields_text_deltas(self) -> None:
-        handle = _FakeStreamHandle(
-            deltas=[
-                StreamDelta(kind="text", content="hel"),
-                StreamDelta(kind="text", content="lo"),
-            ],
-            run_result=RunResult(output="hello", serialized_history=b"[]"),
-        )
-        collected = [d async for d in handle]
-        assert [d.content for d in collected] == ["hel", "lo"]
-        assert all(d.kind == "text" for d in collected)
-
-    @pytest.mark.asyncio
-    async def test_yields_thinking_and_text_deltas(self) -> None:
-        handle = _FakeStreamHandle(
-            deltas=[
-                StreamDelta(kind="thinking", content="let me think"),
-                StreamDelta(kind="text", content="hello"),
-            ],
-            run_result=RunResult(output="hello", serialized_history=b"[]"),
-        )
-        collected = [d async for d in handle]
-        assert [(d.kind, d.content) for d in collected] == [
-            ("thinking", "let me think"),
-            ("text", "hello"),
-        ]
-
-    @pytest.mark.asyncio
-    async def test_returns_result(self) -> None:
-        expected = RunResult(output="hello", serialized_history=b"[]")
-        handle = _FakeStreamHandle(deltas=[], run_result=expected)
-        result = await handle.result()
-        assert result is expected
 
 
 # -- AgentBackend protocol structural check ------------------------------------
@@ -263,7 +202,7 @@ class TestPydanticAIBackendConvertResponseParts:
         assert result == []
 
 
-# -- PydanticAIBackend.run_stream ---------------------------------------------
+# -- PydanticAIBackend.run_steps ---------------------------------------------
 
 
 class _FakeAgentRun:
@@ -317,9 +256,9 @@ def _make_agent_run_cm(nodes: list[Any], final_result: Any) -> Any:
     return cm
 
 
-class TestPydanticAIBackendRunStream:
+class TestPydanticAIBackendRunSteps:
     @pytest.mark.asyncio
-    async def test_yields_text_deltas_from_events(self, mock_config, mock_credentials) -> None:
+    async def test_yields_step_events_from_text_events(self, mock_config, mock_credentials) -> None:
         from pydantic_ai.messages import (
             PartDeltaEvent,
             PartStartEvent,
@@ -353,18 +292,55 @@ class TestPydanticAIBackendRunStream:
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
             patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
-            handle = backend.run_stream(messages=[])
+            handle = backend.run_steps(messages=[])
+            assert isinstance(handle, StepHandle)
+            step_events = [e async for e in handle]
 
-            assert isinstance(handle, StreamHandle)
-            deltas = [d async for d in handle]
-
-        assert [(d.kind, d.content) for d in deltas] == [
-            ("text", "hel"),
-            ("text", "lo"),
+        kinds_and_contents = [
+            (e.kind, e.content) for e in step_events if e.kind in ("text_delta", "thinking_delta")
+        ]
+        assert kinds_and_contents == [
+            ("text_delta", "hel"),
+            ("text_delta", "lo"),
         ]
 
     @pytest.mark.asyncio
-    async def test_yields_thinking_deltas_from_events(self, mock_config, mock_credentials) -> None:
+    async def test_emits_step_start_and_step_end(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.messages import PartStartEvent, TextPart
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.providers = {}
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        events = [PartStartEvent(index=0, part=TextPart(content="hi"))]
+        node = _make_model_request_node(events)
+
+        final_result = MagicMock()
+        final_result.output = "hi"
+        final_result.all_messages = MagicMock(return_value=[])
+        final_result.new_messages = MagicMock(return_value=[])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[node], final_result=final_result)
+
+        pydantic_agent = MagicMock()
+        pydantic_agent.output_type = str
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        with (
+            patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
+        ):
+            handle = backend.run_steps(messages=[])
+            step_events = [e async for e in handle]
+
+        boundary_kinds = [e.kind for e in step_events if e.kind in ("step_start", "step_end")]
+        assert boundary_kinds == ["step_start", "step_end"]
+
+    @pytest.mark.asyncio
+    async def test_yields_thinking_and_text_step_events(
+        self, mock_config, mock_credentials
+    ) -> None:
         from pydantic_ai.messages import (
             PartDeltaEvent,
             PartStartEvent,
@@ -402,14 +378,17 @@ class TestPydanticAIBackendRunStream:
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
             patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
-            handle = backend.run_stream(messages=[])
-            deltas = [d async for d in handle]
+            handle = backend.run_steps(messages=[])
+            step_events = [e async for e in handle]
 
-        assert [(d.kind, d.content) for d in deltas] == [
-            ("thinking", "let"),
-            ("thinking", " me think"),
-            ("text", "hi"),
-            ("text", " there"),
+        delta_events = [
+            (e.kind, e.content) for e in step_events if e.kind in ("text_delta", "thinking_delta")
+        ]
+        assert delta_events == [
+            ("thinking_delta", "let"),
+            ("thinking_delta", " me think"),
+            ("text_delta", "hi"),
+            ("text_delta", " there"),
         ]
 
     @pytest.mark.asyncio
@@ -442,8 +421,8 @@ class TestPydanticAIBackendRunStream:
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
             patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
-            handle = backend.run_stream(messages=original_messages)
-            _ = [d async for d in handle]
+            handle = backend.run_steps(messages=original_messages)
+            _ = [e async for e in handle]
             result = await handle.result()
 
         assert isinstance(result, RunResult)
@@ -460,7 +439,7 @@ class TestPydanticAIBackendRunStream:
 
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         with pytest.raises(MissingCredentialsError):
-            backend.run_stream(messages=[])
+            backend.run_steps(messages=[])
 
     @pytest.mark.asyncio
     async def test_result_raises_before_iteration(self, mock_config, mock_credentials) -> None:
@@ -477,9 +456,78 @@ class TestPydanticAIBackendRunStream:
             patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
             patch.object(backend, "_build_model", return_value=MagicMock()),
         ):
-            handle = backend.run_stream(messages=[])
+            handle = backend.run_steps(messages=[])
             with pytest.raises(RuntimeError, match="Must iterate"):
                 await handle.result()
+
+    @pytest.mark.asyncio
+    async def test_deferred_tool_requests_emits_deferred_events(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.providers = {}
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always", reason="Shell needs approval"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+
+        mock_call_part = MagicMock()
+        mock_call_part.tool_name = "run_shell"
+        mock_call_part.tool_call_id = "call_1"
+        mock_call_part.args_as_dict.return_value = {"command": "ls"}
+
+        deferred_output = MagicMock(spec=DeferredToolRequests)
+        deferred_output.approvals = [mock_call_part]
+
+        final_result = MagicMock()
+        final_result.output = deferred_output
+        final_result.all_messages = MagicMock(return_value=[])
+
+        agent_run_cm = _make_agent_run_cm(nodes=[], final_result=final_result)
+
+        pydantic_agent = MagicMock()
+        pydantic_agent.output_type = [str, DeferredToolRequests]
+        pydantic_agent.iter = MagicMock(return_value=agent_run_cm)
+
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        with (
+            patch.object(backend, "_build_pydantic_agent", return_value=pydantic_agent),
+            patch.object(backend, "_build_model", return_value=MagicMock()),
+        ):
+            handle = backend.run_steps(messages=[])
+            step_events = [e async for e in handle]
+            result = await handle.result()
+
+        deferred_events = [e for e in step_events if e.kind == "deferred"]
+        assert len(deferred_events) == 1
+        assert deferred_events[0].tool_name == "run_shell"
+        assert deferred_events[0].content.tool_name == "run_shell"
+        assert deferred_events[0].content.tool_call_id == "call_1"
+        assert deferred_events[0].content.args == {"command": "ls"}
+        assert deferred_events[0].content.reason == "Shell needs approval"
 
 
 # -- PydanticAIBackend._build_pydantic_agent -----------------------------------
@@ -492,6 +540,278 @@ class TestPydanticAIBackendBuildPydanticAgent:
 
         agent = backend._build_pydantic_agent()
         assert isinstance(agent, PydanticAgent)
+
+    def test_no_tools_when_registry_is_none(self, mock_config, mock_credentials) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert not tool_names
+
+    def test_registers_tools_from_registry(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            )
+        )
+        spec = AgentSpec(
+            name="default",
+            agent_config=AgentConfig(
+                description="Default agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                tools=["read_file"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert "read_file" in tool_names
+
+    def test_only_registers_agent_tools(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="shell_history",
+                description="Shell history",
+                callable=lambda: "history",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="minimal",
+            agent_config=AgentConfig(
+                description="Minimal agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                tools=["read_file"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert "read_file" in tool_names
+        assert "shell_history" not in tool_names
+
+    def test_approval_tool_gets_requires_approval_flag(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert "run_shell" in tool_names
+
+    def test_output_type_includes_deferred_when_approval_tools_present(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always"),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        assert isinstance(agent.output_type, list)
+        assert DeferredToolRequests in agent.output_type
+
+    def test_output_type_is_base_when_no_approval_tools(
+        self, mock_config, mock_credentials
+    ) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        agent = backend._build_pydantic_agent()
+        assert agent.output_type is str
+
+
+# -- PydanticAIBackend.build_deferred_results -----------------------------------
+
+
+class TestPydanticAIBackendBuildDeferredResults:
+    def test_approved_decision_maps_to_true(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [ApprovalDecision(tool_call_id="call_1", approved=True)]
+        result = backend.build_deferred_results(decisions)
+        assert result.approvals["call_1"] is True
+
+    def test_denied_decision_maps_to_tool_denied(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.tools import ToolDenied
+
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(tool_call_id="call_2", approved=False, denial_reason="User denied")
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert isinstance(result.approvals["call_2"], ToolDenied)
+
+    def test_approved_with_override_args(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai.tools import ToolApproved
+
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(
+                tool_call_id="call_3",
+                approved=True,
+                override_args={"command": "ls -la"},
+            )
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert isinstance(result.approvals["call_3"], ToolApproved)
+
+    def test_multiple_decisions(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalDecision
+
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        decisions = [
+            ApprovalDecision(tool_call_id="call_1", approved=True),
+            ApprovalDecision(tool_call_id="call_2", approved=False, denial_reason="Nope"),
+        ]
+        result = backend.build_deferred_results(decisions)
+        assert len(result.approvals) == 2
+        assert result.approvals["call_1"] is True
+        assert result.approvals["call_2"] is not True
+
+
+# -- PydanticAIBackend._get_approval_reason -----------------------------------
+
+
+class TestPydanticAIBackendGetApprovalReason:
+    def test_returns_reason_from_tool_policy(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="run_shell",
+                description="Run shell",
+                callable=lambda cmd: cmd,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(
+                    mode="always", reason="Shell commands need approval"
+                ),
+            )
+        )
+        spec = AgentSpec(
+            name="shell",
+            agent_config=AgentConfig(
+                description="Shell agent",
+                system_prompt="shell",
+                output_type="command",
+                tools=["run_shell"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("run_shell") == "Shell commands need approval"
+
+    def test_returns_none_when_no_registry(self, mock_config, mock_credentials) -> None:
+        backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+        assert backend._get_approval_reason("run_shell") is None
+
+    def test_returns_none_when_tool_not_found(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(tools=[]),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("nonexistent") is None
+
+    def test_returns_none_when_tool_has_no_approval_policy(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read file",
+                callable=lambda: "",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(tools=["read_file"]),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("read_file") is None
 
 
 # -- PydanticAIBackend._build_model -------------------------------------------
@@ -521,3 +841,61 @@ class TestPydanticAIBackendBuildModel:
             backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
             result = backend._build_model()
             assert result is mock_model
+
+
+class TestExtractToolResultText:
+    """`_extract_tool_result_text` normalises pydantic-ai result parts to ``str``.
+
+    The Executor treats ``tool_result`` events as having ``content: str``; the
+    backend must render framework-specific result parts before emitting.
+    """
+
+    def test_tool_return_part_with_string_content(self) -> None:
+        from pydantic_ai.messages import ToolReturnPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = ToolReturnPart(tool_name="read_file", content="file body")
+        assert _extract_tool_result_text(part) == "file body"
+
+    def test_tool_return_part_with_non_string_content_is_stringified(self) -> None:
+        from pydantic_ai.messages import ToolReturnPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = ToolReturnPart(tool_name="tool", content={"a": 1})
+        assert _extract_tool_result_text(part) == str({"a": 1})
+
+    def test_retry_prompt_part_uses_model_response(self) -> None:
+        from pydantic_ai.messages import RetryPromptPart
+
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        part = RetryPromptPart(content="please retry", tool_name="tool")
+        text = _extract_tool_result_text(part)
+        assert "please retry" in text
+        # model_response() appends a "Fix the errors and try again." sentence.
+        assert "try again" in text
+
+    def test_missing_content_attribute_returns_empty(self) -> None:
+        from fin_assist.agents.backend import _extract_tool_result_text
+
+        class _Bare:
+            pass
+
+        assert _extract_tool_result_text(_Bare()) == ""
+
+    def test_tool_event_emits_string_content(self) -> None:
+        """End-to-end check: ``_tool_event_to_step_event`` emits ``content: str``."""
+        from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+        from fin_assist.agents.backend import _tool_event_to_step_event
+
+        result_part = ToolReturnPart(tool_name="read_file", content="hello world")
+        event = FunctionToolResultEvent(result=result_part)
+        step_event = _tool_event_to_step_event(event, step=0)
+        assert step_event is not None
+        assert step_event.kind == "tool_result"
+        assert step_event.tool_name == "read_file"
+        assert step_event.content == "hello world"
+        assert isinstance(step_event.content, str)
