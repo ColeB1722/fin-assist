@@ -139,7 +139,7 @@ class TestFuzzySearch:
     def test_fuzzy_match_tolerates_gaps(self, tree: Path) -> None:
         """rapidfuzz should match ``cfg`` against ``config.toml``-ish names."""
         finder = FileFinder(root=tree)
-        paths = finder.search_paths("config")
+        paths = finder.search_paths("cfg")
         assert "config.toml" in paths
 
     def test_no_false_positives_for_unrelated_query(self, tree: Path) -> None:

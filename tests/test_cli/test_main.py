@@ -986,16 +986,32 @@ class TestDoInputPanel:
 
 class TestListCommand:
     def test_list_tools_prints_all_tools(self):
-        result = _run_main("list", "tools")
+        captured: list[str] = []
+        with patch("fin_assist.cli.main.console") as mock_console:
+            mock_console.print.side_effect = lambda msg="": captured.append(str(msg))
+            result = _run_main("list", "tools")
         assert result == 0
+        # At least one known built-in tool should be rendered.
+        assert any("read_file" in line for line in captured)
 
     def test_list_prompts_prints_all_prompts(self):
-        result = _run_main("list", "prompts")
+        captured: list[str] = []
+        with patch("fin_assist.cli.main.console") as mock_console:
+            mock_console.print.side_effect = lambda msg="": captured.append(str(msg))
+            result = _run_main("list", "prompts")
         assert result == 0
+        # Registered prompts include at least "shell" (see agents/registry.py).
+        assert any("shell" in line for line in captured)
 
     def test_list_output_types_prints_all_types(self):
-        result = _run_main("list", "output-types")
+        captured: list[str] = []
+        with patch("fin_assist.cli.main.console") as mock_console:
+            mock_console.print.side_effect = lambda msg="": captured.append(str(msg))
+            result = _run_main("list", "output-types")
         assert result == 0
+        # Registered output types include "text" and "command".
+        assert any("text" in line for line in captured)
+        assert any("command" in line for line in captured)
 
     def test_list_invalid_resource_returns_nonzero(self):
         with pytest.raises(SystemExit):
