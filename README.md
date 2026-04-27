@@ -219,7 +219,7 @@ fin-assist agents                       List available agents
 fin-assist do "prompt"                  One-shot query (default agent)
 fin-assist do --agent test "prompt"     One-shot query (named agent)
 fin-assist do                           Open input panel (default agent)
-fin-assist do --edit "prompt"           Edit prompt before sending
+fin-assist do --edit "prompt"           Open input panel pre-filled with prompt
 fin-assist talk                         Multi-turn session (default agent)
 fin-assist talk --agent test            Multi-turn session (named agent)
 fin-assist list tools                   List registered tools

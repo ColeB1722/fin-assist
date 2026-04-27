@@ -44,12 +44,8 @@ class TestAtCompleter:
 
     def test_yields_file_completions_after_file_prefix(self):
         completer = self._make_completer()
-        items = [
-            ContextItem(id="src/main.py", type="file", content="code", status="available"),
-            ContextItem(id="src/util.py", type="file", content="code", status="available"),
-        ]
         with patch("fin_assist.context.files.FileFinder") as mock_cls:
-            mock_cls.return_value.search.return_value = items
+            mock_cls.return_value.search_paths.return_value = ["src/main.py", "src/util.py"]
             doc = Document("@file:src/", cursor_position=10)
             results = list(completer.get_completions(doc, MagicMock()))
 
@@ -57,20 +53,16 @@ class TestAtCompleter:
         assert "src/main.py" in texts
         assert "src/util.py" in texts
 
-    def test_excludes_unavailable_files_from_completion(self):
+    def test_all_paths_shown_in_completion(self):
         completer = self._make_completer()
-        items = [
-            ContextItem(id="ok.py", type="file", content="code", status="available"),
-            ContextItem(id="bad.py", type="file", content="", status="not_found"),
-        ]
         with patch("fin_assist.context.files.FileFinder") as mock_cls:
-            mock_cls.return_value.search.return_value = items
+            mock_cls.return_value.search_paths.return_value = ["ok.py", "bad.py"]
             doc = Document("@file:", cursor_position=6)
             results = list(completer.get_completions(doc, MagicMock()))
 
         texts = [c.text for c in results]
         assert "ok.py" in texts
-        assert "bad.py" not in texts
+        assert "bad.py" in texts
 
 
 class TestResolveAtReferences:

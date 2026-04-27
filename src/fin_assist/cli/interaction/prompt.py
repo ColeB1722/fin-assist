@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion, FuzzyCompleter, WordCompleter
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from rapidfuzz import fuzz, process
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from prompt_toolkit.document import Document
 
     from fin_assist.config.schema import ContextSettings
+    from fin_assist.context.files import FileFinder
 
 from fin_assist.paths import HISTORY_PATH
 
@@ -43,22 +45,48 @@ SLASH_COMMANDS: list[SlashCommand] = [
 ]
 
 
-class SlashCompleter(Completer):
-    """Completer that only activates when the input starts with ``/``.
+_SLASH_MIN_SCORE = 40
+_SLASH_MAX_RESULTS = 20
 
-    Delegates to *inner* (typically a ``FuzzyCompleter``) for the actual
-    completion candidates — but yields nothing when the user is typing
-    ordinary chat text.
+
+class SlashCompleter(Completer):
+    """Fuzzy completer for slash commands and optional agent names.
+
+    Activates only when the current line (after leading whitespace)
+    starts with ``/``.  Uses rapidfuzz for ranking so ``/ex`` → ``/exit``,
+    ``/hlp`` → ``/help``, etc.  Agent names are also candidates and can
+    be typed without the leading ``/``.
     """
 
-    def __init__(self, inner: Completer) -> None:
-        self.inner = inner
+    def __init__(self, commands: list[SlashCommand], agents: list[str]) -> None:
+        self._candidates: list[tuple[str, str]] = [(cmd.name, cmd.description) for cmd in commands]
+        self._candidates.extend((name, "agent") for name in agents)
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):  # noqa: ANN201
-        """Yield completions only when the current line starts with ``/``."""
-        if not document.text_before_cursor.lstrip().startswith("/"):
+        """Yield fuzzy-matched slash commands for the current word."""
+        text = document.text_before_cursor.lstrip()
+        if not text.startswith("/"):
             return
-        yield from self.inner.get_completions(document, complete_event)
+
+        word = document.get_word_before_cursor(WORD=True)
+        # Fuzzy-match against candidate names.  process.extract returns
+        # (choice, score, index) tuples; index lets us recover metadata.
+        names = [name for name, _ in self._candidates]
+        matches = process.extract(
+            word,
+            names,
+            scorer=fuzz.WRatio,
+            limit=_SLASH_MAX_RESULTS,
+            score_cutoff=_SLASH_MIN_SCORE if word else 0,
+        )
+        for name, _score, idx in matches:
+            _, desc = self._candidates[idx]
+            yield Completion(
+                name,
+                start_position=-len(word),
+                display=name,
+                display_meta=desc,
+            )
 
 
 _AT_CONTEXT_TYPES: dict[str, str] = {
@@ -73,12 +101,19 @@ class AtCompleter(Completer):
     """Completer that activates when the input contains ``@`` at the cursor.
 
     Yields context-type completions (``file:``, ``git:diff``, etc.) and,
-    for ``@file:``, delegates to ``FileFinder.search()`` for path-based
-    file completion.
+    for ``@file:``, delegates to a shared ``FileFinder`` instance for
+    fuzzy path matching.  The finder's cache is reused across keystrokes,
+    so only the first keystroke after an ``invalidate()`` pays the scan
+    cost.
     """
 
-    def __init__(self, context_settings: ContextSettings | None = None) -> None:
+    def __init__(
+        self,
+        context_settings: ContextSettings | None = None,
+        file_finder: FileFinder | None = None,
+    ) -> None:
         self._context_settings = context_settings
+        self._file_finder: FileFinder | None = file_finder
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):  # noqa: ANN201
         text = document.text_before_cursor
@@ -105,18 +140,28 @@ class AtCompleter(Completer):
             yield from self._file_completions(file_prefix)
 
     def _file_completions(self, prefix: str):  # type: ignore[no-untyped-def]
-        from fin_assist.context.files import FileFinder
+        finder = self._get_file_finder()
+        paths = finder.search_paths(prefix if prefix else "")
+        for path in paths:
+            yield Completion(
+                path,
+                start_position=-len(prefix) if prefix else 0,
+                display=path,
+                display_meta="file",
+            )
 
-        finder = FileFinder(settings=self._context_settings)  # type: ignore[arg-type]
-        results = finder.search(prefix if prefix else "")
-        for item in results:
-            if item.status == "available":
-                yield Completion(
-                    item.id,
-                    start_position=-len(prefix) if prefix else 0,
-                    display=item.id,
-                    display_meta="file",
-                )
+    def _get_file_finder(self) -> FileFinder:
+        """Return the shared FileFinder, lazily creating one if needed.
+
+        Lazy creation keeps import costs off the hot path for users who
+        never type ``@file:`` and makes the ``AtCompleter`` usable in
+        tests without wiring a finder.
+        """
+        if self._file_finder is None:
+            from fin_assist.context.files import FileFinder
+
+            self._file_finder = FileFinder(settings=self._context_settings)
+        return self._file_finder
 
 
 _AT_PATTERN = re.compile(r"@(\w+:\S*)")
@@ -205,14 +250,16 @@ def _resolve_single_ref(
 
 
 class FinPrompt:
-    """Reusable prompt_toolkit session with slash-command fuzzy completion.
+    """Reusable prompt_toolkit session with fuzzy completion + history.
 
     Features:
-    - Fuzzy completion for slash commands (defined in SLASH_COMMANDS)
-    - Tab completion for agent names when configured
+    - Fuzzy slash-command completion via rapidfuzz (``SlashCompleter``)
     - ``@``-completion for context injection (file, git, history)
+    - Shared ``FileFinder`` with per-``ask()`` cache invalidation so
+      file-list scans don't repeat mid-prompt
+    - Completion runs in a background thread (``complete_in_thread``) so
+      the UI stays responsive even on cold scans
     - Persistent history across sessions
-    - Readline-style keybindings
     """
 
     def __init__(
@@ -224,27 +271,42 @@ class FinPrompt:
         self.agents = agents or []
         self.history_path = history_path
         self._context_settings = context_settings
+        self._file_finder: FileFinder | None = None
 
     @property
     def context_settings(self) -> ContextSettings | None:
         return self._context_settings
 
+    def _get_file_finder(self) -> FileFinder:
+        """Lazily construct and reuse a single ``FileFinder``."""
+        if self._file_finder is None:
+            from fin_assist.context.files import FileFinder
+
+            self._file_finder = FileFinder(settings=self._context_settings)
+        return self._file_finder
+
     def _build_completer(self) -> Completer:
-        words = [cmd.name for cmd in SLASH_COMMANDS] + self.agents
-        word_completer = WordCompleter(words, ignore_case=True)
-        slash_completer = SlashCompleter(FuzzyCompleter(word_completer))
-        at_completer = AtCompleter(context_settings=self._context_settings)
+        slash_completer = SlashCompleter(SLASH_COMMANDS, self.agents)
+        at_completer = AtCompleter(
+            context_settings=self._context_settings,
+            file_finder=self._get_file_finder(),
+        )
         return _CombinedCompleter(slash_completer, at_completer)
 
     def _build_session(self) -> PromptSession[str]:
         return PromptSession(
             completer=self._build_completer(),
+            complete_in_thread=True,
             history=FileHistory(self.history_path),
             style=Style.from_dict({"": "#ansibrightgreen"}),
         )
 
     async def ask(self, prompt_text: str, *, default: str | None = None) -> str:
         """Prompt for input with completion and history.
+
+        Invalidates the ``FileFinder`` cache at the start of each call so
+        files added between prompts are picked up.  During a single prompt
+        the cache is reused across keystrokes.
 
         Args:
             prompt_text: The prompt text to display.
@@ -257,6 +319,7 @@ class FinPrompt:
             KeyboardInterrupt: When the user presses Ctrl+C.
             EOFError: When the user presses Ctrl+D.
         """
+        self._get_file_finder().invalidate()
         session = self._build_session()
         return await session.prompt_async(prompt_text, default=default or "")
 

@@ -118,7 +118,7 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  │  • fin-assist agents         — list available agents                  │   │
 │  │  • fin-assist do "prompt"    — one-shot query (default_agent)         │   │
 │  │  • fin-assist do --agent <name> "prompt" — one-shot to named agent   │   │
-│  │  • fin-assist do --edit      — open $EDITOR for prompt input         │   │
+│  │  • fin-assist do --edit      — open input panel pre-filled with prompt│   │
 │  │  • fin-assist do             — no prompt → opens input panel         │   │
 │  │  • fin-assist talk           — multi-turn session (default_agent)    │   │
 │  │  • fin-assist talk --agent <name> — multi-turn with named agent     │   │
@@ -718,7 +718,7 @@ fin-assist serve                        → start agent hub on 127.0.0.1:4096
 fin-assist agents                       → list available agents (GET /agents)
 fin-assist do "prompt"                  → one-shot query to default_agent from config
 fin-assist do --agent <name> "prompt"   → one-shot query to named agent
-fin-assist do --edit                    → open $EDITOR for prompt input
+fin-assist do --edit                    → open input panel pre-filled with prompt
 fin-assist do                           → no prompt → opens input panel
 fin-assist talk                          → multi-turn session with default_agent
 fin-assist talk --agent <name>          → multi-turn session with named agent
