@@ -27,7 +27,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 - `build_user_message`/`format_context` helpers in `llm/prompts.py` are dead code
 - `supported_context_types` published in agent cards, never consumed by clients
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
-- Scoped CLI tools approval=always is not final state — per-subcommand approval is a planned Skills API enhancement (see Skills API issue)
+- Scoped CLI tools approval=always is not final state — per-subcommand approval is Phase A of the sequenced Skills API plan (see "Design Sketches: Skills API" below)
 
 ---
 
@@ -88,12 +88,208 @@ Design is resolved (see architecture.md and handoff.md historical notes). Now th
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
 | 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing — see "Sequenced roadmap" in Next Session |
-| 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); full Skills API + MCP pending |
+| 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); sequenced Phase A/B/C sketch resolved 2026-04-27 — see "Design Sketches" below |
 | 16 | Additional Agents | 🔄 Git agent shipped; SDD/TDD/code review pending |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
 | — | Phoenix/OTel tracing | 📐 Design resolved; queued as next session |
 | — | Nix/Home Manager packaging | 📐 Sketched |
+
+---
+
+## Design Sketches
+
+### Skills API: sequenced refactor (Phase 15 breakdown)
+
+**Status:** Sketch resolved 2026-04-27. Ready to start Phase A in a fresh session.
+
+**Why this exists:** the scoped CLI + WorkflowConfig pattern from the git agent (2026-04-27) is a prototype for the broader Skills API (`architecture.md:991`, Phase 15). Rather than landing Skills as one big refactor, split into three sequenced phases, each independently shippable with a real user-visible exit gate.
+
+**Grounding citations** (in-repo, so this sketch stays honest):
+
+- Scoped CLI prototype + TODO for per-subcommand approval: `src/fin_assist/agents/tools.py:213`, `src/fin_assist/agents/tools.py:295`
+- Current `ApprovalPolicy` shape (only `never`/`always`, no rules): `src/fin_assist/agents/tools.py:40`
+- `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99`
+- Empty `skills/` + `mcp/` placeholder folders: `architecture.md:291`, `architecture.md:294`
+- Skills API vision (API + CLI + Skills pattern): `docs/architecture.md:991`–`:1007`
+- Existing note: "Scoped CLI tools approval=always is not final state": this file, "Remaining tracked items"
+
+---
+
+#### Phase A — Subcommand approval rules
+
+**Goal:** `git diff` runs un-gated; `git push` still asks. Highest-value slice of the user's idea, aligned with the explicit TODO at `tools.py:213`.
+
+**Design:**
+
+```python
+# src/fin_assist/agents/tools.py
+@dataclass
+class ApprovalRule:
+    pattern: str            # fnmatch-style glob against the full args string
+    mode: Literal["never", "always"]
+    reason: str | None = None
+
+@dataclass
+class ApprovalPolicy:
+    mode: Literal["never", "always"]        # fallback when no rule matches
+    rules: list[ApprovalRule] = field(default_factory=list)
+    reason: str | None = None
+
+    def evaluate(self, args: str) -> tuple[Literal["never", "always"], str | None]:
+        for r in self.rules:
+            if fnmatch(args, r.pattern):
+                return r.mode, r.reason
+        return self.mode, self.reason
+```
+
+**Touchpoints:**
+
+- `src/fin_assist/agents/tools.py:40` — extend `ApprovalPolicy` (above)
+- `src/fin_assist/agents/tools.py:295` — `_make_scoped_cli` callable becomes aware of its policy so the backend can query `policy.evaluate(args)` per call
+- Backend adapter (pydantic-ai glue that reads `approval_policy`) — switch from static `requires_approval` flag to per-call evaluation via pydantic-ai's `approval_required()` toolset wrapper pattern
+- **Rules still Python-defined in `create_default_registry()`** — no config schema change yet. Config authoring lands in Phase B.
+
+**TDD tests (before implementation, per `AGENTS.md`):**
+
+- `test_approval_policy_evaluate.py`: pattern matching, first-match-wins, fallback to `mode`, empty rules behaves like current `ApprovalPolicy`
+- `test_tools_scoped_cli_approval.py`: `git diff` → never, `git push origin main` → always, `git log --oneline -5` → never, unknown subcommand → fallback
+- Executor integration: deferred `StepEvent` emitted only when `evaluate()` returns `always`
+
+**Exit gate:** through the git agent, `git diff` runs without an approval prompt; `git push` still pauses. Manual demo + tests.
+
+**Files touched (estimate):** ~4 source, ~2 new test files, ~200 LOC + tests.
+
+---
+
+#### Phase B — Skill bundling (ToolDefinition → SkillDefinition)
+
+**Goal:** one TOML object bundles a scoped CLI + its approval rules + named scripts + workflows. Makes skills authorable end-to-end in config.
+
+**Design (TOML shape):**
+
+```toml
+[skills.git]
+type = "cli"                         # preps the tool-type taxonomy in Phase C
+prefix = "git"
+description = "Run any git subcommand."
+
+[skills.git.approval]
+default = "always"
+rules = [
+  { pattern = "diff*",   mode = "never" },
+  { pattern = "status*", mode = "never" },
+  { pattern = "log*",    mode = "never" },
+  { pattern = "show*",   mode = "never" },
+]
+
+[skills.git.scripts.pr-checklist]
+description = "Print the PR review checklist from scripts/git/pr-checklist.sh"
+path = "scripts/git/pr-checklist.sh"
+approval = "never"
+
+# Workflows move under skills (decided 2026-04-27) to unlock cross-agent reuse.
+# The existing [agents.<name>.workflows.<w>] keys MUST be migrated; no dual-read.
+[skills.git.workflows.commit]
+description = "Generate a conventional commit message from current changes."
+prompt_template = "git-commit"
+entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
+```
+
+**Touchpoints:**
+
+- **New:** `src/fin_assist/skills/` package (currently empty placeholder at `architecture.md:291`). Contains:
+  - `definition.py` — `SkillDefinition`, `SkillConfig` (pydantic model)
+  - `loader.py` — reads `config.skills`, instantiates `SkillDefinition`s
+  - `registration.py` — adapter that expands a skill into N `ToolDefinition`s (the CLI itself + one per named script), all sharing the skill's approval policy, and registers them into `ToolRegistry`
+- `src/fin_assist/config/schema.py:85` — add `skills: dict[str, SkillConfig]` at root `Config` level. **Remove** `workflows` from `AgentConfig`; migrate to `SkillConfig.workflows`. `AgentConfig.tools` now references either raw tool names or skill names (skill name expands to "CLI tool + its scripts").
+- `src/fin_assist/hub/app.py:create_hub_app` — load skills and register into the shared `ToolRegistry` before `AgentSpec` construction (so `spec.tools` resolution sees them).
+- `config.toml` — migrate `[agents.git.workflows.*]` to `[skills.git.workflows.*]`. Agent still references the skill via `tools = ["git", "gh"]`.
+- `src/fin_assist/cli/main.py` — workflow resolution (`fin do git commit`) now looks up the workflow via the agent's skills, not `AgentConfig.workflows` directly.
+
+**What Phase B explicitly does NOT do:**
+
+- No tool-type dispatch beyond validation. `type = "cli"` is required and parsed, but only the CLI branch is wired. Second branch (`mcp`, `function`, `browser`) waits for Phase C with a real consumer.
+- No KG / NL-over-docs discoverability. Current `description` is sufficient (and `fin list tools` already surfaces it).
+- No cross-project skill auto-discovery from `~/.config/fin/skills/`. Phase 15 stretch goal.
+
+**TDD tests:**
+
+- `test_skills_config.py`: TOML parsing for skill + approval rules + scripts + workflows
+- `test_skills_registration.py`: a skill with `scripts = {foo, bar}` registers 3 `ToolDefinition`s (`git`, `git.foo`, `git.bar`) all sharing the approval policy
+- `test_skills_workflow_resolution.py`: `fin do git commit` resolves to `[skills.git.workflows.commit]`, not the old `[agents.git.workflows.commit]`
+- Migration test: loading a config with the legacy `[agents.*.workflows.*]` shape raises a clear error pointing to the new location (no silent fallback)
+
+**Exit gate:** `config.toml` defines `skills.git` with subcommand rules and at least one named script; `[agents.git] tools = ["git"]` auto-resolves to the Skill; behavior identical to Phase A but config-driven. A **second** skill authored end-to-end in TOML (candidate: `just`, `gh`, or `docker` — pick at implementation time based on what's most useful for the dev loop) as the config-path validation.
+
+**Files touched (estimate):** ~3 new source files, ~3 modified source files, ~4 new test files, ~400 LOC + tests + config migration.
+
+---
+
+#### Phase C — Tool-type primitive
+
+**Goal:** `type: Literal["cli", "mcp", ...]` as a first-class field, with type-specific OTel span attributes and a self-documenting registry.
+
+**Gate for starting Phase C:** a second tool type has a concrete consumer. Most likely trigger: MCP integration (`architecture.md:294`, `tools.py:22`). Secondary candidates: browser-use, Python-script-exec-in-sandbox. **Do not start Phase C speculatively** — the primitive is premature generalization without a second consumer.
+
+**Design:**
+
+```python
+# src/fin_assist/agents/tool_types.py  (new)
+class ToolTypeAdapter(Protocol):
+    """How a tool of type <T> is invoked, traced, and loaded from config."""
+
+    type_name: str  # "cli", "mcp", "function", "browser", ...
+
+    def span_attributes(self) -> list[str]:
+        """OTel attribute names this type emits. Powers `fin list tool-types`."""
+
+    async def invoke(
+        self, definition: ToolDefinition, args: dict[str, Any]
+    ) -> str:
+        """Run the tool and emit a type-shaped OTel span around the callable."""
+
+    def load_from_config(self, skill_config: SkillConfig) -> list[ToolDefinition]:
+        """Turn TOML config into ToolDefinitions. Phase B's CLI loader moves here."""
+```
+
+- `ToolDefinition.type: str` — required field (default `"cli"` for backward compat at first, made required once all skills declare explicitly)
+- OTel instrumentation lives in the adapter, **not** in the tool callable. Preserves "platform types zero framework deps" invariant at `agents/tools.py:1`
+- Global `ToolTypeRegistry` (alongside `ToolRegistry`) maps `type_name` → adapter
+
+**Expanded exit gate (per 2026-04-27 discussion):**
+
+1. **Type-adapter pattern codified.** `ToolTypeAdapter` protocol lands with the `cli` adapter as the first implementation. The existing `_make_scoped_cli` logic moves behind the adapter interface; all current CLI-typed skills flow through it unchanged. Span attributes for `cli`: `cli.prefix`, `cli.args`, `cli.exit_code`, `cli.duration_ms`, `cli.timed_out`.
+2. **Second adapter lands end-to-end.** Most likely `mcp` — `MCPToolsetAdapter` connects to one configured MCP server, enumerates its tools via the MCP client protocol, and registers each as a `ToolDefinition(type="mcp", ...)`. Span attributes for `mcp`: `mcp.server`, `mcp.tool_name`, `mcp.request_id`, `mcp.duration_ms`. Ships with one real MCP server working end-to-end (candidate: `mcp-server-git` or a filesystem server; decide at implementation time based on ecosystem state).
+3. **`fin list tool-types` CLI surface.** New subcommand matching the existing `fin list tools/prompts/output-types` pattern (from handoff Tier 1 work). Output shape:
+   ```
+   cli        span attrs: cli.prefix, cli.args, cli.exit_code, cli.duration_ms, cli.timed_out
+              skills: git, gh, just
+   mcp        span attrs: mcp.server, mcp.tool_name, mcp.request_id, mcp.duration_ms
+              skills: mcp.filesystem, mcp.github
+   ```
+   Self-documenting: adding a new type means its span schema is discoverable without reading adapter source. Enforces the invariant that types are semantically distinct (if two types have identical `span_attributes()`, one of them is decorative).
+4. **Span semantics verified in Phoenix.** By the time Phase C starts, Phoenix/OTel has shipped (next-session work per `handoff.md:36`). Exit criterion: open Phoenix, see `cli`-type and `mcp`-type invocations side-by-side with their type-specific attributes, and be able to filter traces by `tool.type`. **This is the gate that proves the primitive has real semantic weight rather than being a decorative enum.**
+
+**Files touched (estimate):** ~5 new source files (tool_types module, MCP adapter, MCP client wrapper), ~4 modified (ToolDefinition field, backend adapter wiring, CLI `list` command, Phoenix instrumentation hooks), ~5 new test files, ~600 LOC + tests + MCP integration test.
+
+---
+
+#### Explicitly parked (from the original brainstorm)
+
+- **Knowledge-graph–backed tool discoverability** (NL Q&A over man pages / docs). Revisit post-Skills as a new `ContextProvider` implementation if a real pain point appears — LLMs already know `git`'s surface area, and Context7 covers library docs. Not on Phase A/B/C critical path.
+- **"One `bash` supertool" framing.** Rejected in favor of distinct prefix-scoped Skills. The codebase direction (`tools.py:14`) is explicitly away from generic shell as primary surface; scoped CLIs are the replacement.
+- **"Agents orchestrate many CLIs" as new design.** Already the shape (`[agents.git] tools = ["git", "gh", "run_shell", ...]`); Skills make it more structured but don't change the conceptual model.
+
+#### Sequencing summary
+
+| Phase | Ship | Blocks on | Real consumer |
+|---|---|---|---|
+| A | Per-subcommand approval (Python-defined rules) | — | Git agent UX today |
+| B | Skill object (TOML-authored skills, script bundling, workflows migrated under skills) | Phase A | User-authored skills; replaces agent-scoped workflows |
+| C | Tool-type taxonomy + adapter pattern + `fin list tool-types` | Phase B + Phoenix/OTel + a real second type (MCP likely) | MCP integration or browser-use |
+
+**Start here in next session:** Phase A, TDD-first per `AGENTS.md`. Open the failing `test_approval_policy_evaluate.py` first.
 
 ---
 
