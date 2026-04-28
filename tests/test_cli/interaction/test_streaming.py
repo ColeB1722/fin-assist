@@ -207,16 +207,16 @@ class TestFormatToolCall:
         assert "custom_tool" in plain
         assert "🔧" in plain
 
-    def test_git_diff_no_key_arg(self):
+    def test_git_tool_shows_args(self):
         event = StreamEvent(
             kind="tool_call",
-            tool_name="git_diff",
-            tool_args={},
+            tool_name="git",
+            tool_args={"args": "diff"},
         )
         rendered = _format_tool_call(event)
         plain = rendered.plain
-        assert "git_diff" in plain
-        assert ":" not in plain.split("git_diff", 1)[1]
+        assert "git" in plain
+        assert "diff" in plain
 
 
 class TestFormatToolResult:
@@ -224,7 +224,7 @@ class TestFormatToolResult:
         event = StreamEvent(
             kind="tool_result",
             text="No uncommitted changes",
-            tool_name="git_diff",
+            tool_name="git",
         )
         rendered = _format_tool_result(event)
         plain = rendered.plain

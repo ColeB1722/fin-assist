@@ -1022,3 +1022,104 @@ class TestListCommand:
             result = _run_main("list", "tools")
         mock_ensure.assert_not_called()
         assert result == 0
+
+
+class TestResolveWorkflow:
+    def test_no_workflows_returns_prompt_unchanged(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import AgentConfig, Config
+
+        config = Config()
+        prompt, override = _resolve_workflow("test", None, "hello", config)
+        assert prompt == "hello"
+        assert override is None
+
+    def test_explicit_workflow_name_resolves(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+
+        config = Config(
+            agents={
+                "git": AgentConfig(
+                    system_prompt="git",
+                    workflows={
+                        "commit": WorkflowConfig(
+                            description="Commit workflow",
+                            prompt_template="git-commit",
+                            entry_prompt="Analyze current changes and commit.",
+                        ),
+                    },
+                ),
+            }
+        )
+        prompt, override = _resolve_workflow("git", "commit", "commit", config)
+        assert prompt == "Analyze current changes and commit."
+        assert override == "git-commit"
+
+    def test_prompt_matches_workflow_name(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+
+        config = Config(
+            agents={
+                "git": AgentConfig(
+                    system_prompt="git",
+                    workflows={
+                        "commit": WorkflowConfig(
+                            entry_prompt="Analyze current changes and commit.",
+                        ),
+                    },
+                ),
+            }
+        )
+        prompt, override = _resolve_workflow("git", None, "commit", config)
+        assert prompt == "Analyze current changes and commit."
+
+    def test_prompt_does_not_match_workflow(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+
+        config = Config(
+            agents={
+                "git": AgentConfig(
+                    system_prompt="git",
+                    workflows={
+                        "commit": WorkflowConfig(
+                            entry_prompt="Analyze current changes.",
+                        ),
+                    },
+                ),
+            }
+        )
+        prompt, override = _resolve_workflow("git", None, "status check", config)
+        assert prompt == "status check"
+        assert override is None
+
+    def test_workflow_without_entry_prompt_uses_original(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+
+        config = Config(
+            agents={
+                "git": AgentConfig(
+                    system_prompt="git",
+                    workflows={
+                        "commit": WorkflowConfig(
+                            prompt_template="git-commit",
+                        ),
+                    },
+                ),
+            }
+        )
+        prompt, override = _resolve_workflow("git", "commit", "commit", config)
+        assert prompt == "commit"
+        assert override == "git-commit"
+
+    def test_unknown_agent_returns_prompt_unchanged(self):
+        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.config.schema import Config
+
+        config = Config()
+        prompt, override = _resolve_workflow("nonexistent", None, "hello", config)
+        assert prompt == "hello"
+        assert override is None

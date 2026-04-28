@@ -40,8 +40,8 @@ if TYPE_CHECKING:
 _TOOL_ICONS: dict[str, str] = {
     "run_shell": "⚡",
     "read_file": "📄",
-    "git_diff": "📋",
-    "git_log": "📋",
+    "git": "📋",
+    "gh": "🐙",
     "shell_history": "📜",
 }
 
@@ -79,6 +79,8 @@ def _key_arg_for_tool(tool_name: str, args: dict[str, Any]) -> str:
             return str(command)
         case "read_file", {"path": path}:
             return str(path)
+        case "git" | "gh", {"args": tool_args}:
+            return str(tool_args)
         case "shell_history", {"query": query} if query:
             return str(query)
         case _:

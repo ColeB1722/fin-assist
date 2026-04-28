@@ -50,8 +50,8 @@ class AgentSpec:
 
     _CONTEXT_TYPE_MAP: dict[str, str] = {
         "read_file": "file",
-        "git_diff": "git_diff",
-        "git_log": "git_log",
+        "git": "git",
+        "gh": "gh",
         "shell_history": "history",
     }
 

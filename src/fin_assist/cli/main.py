@@ -120,6 +120,39 @@ async def _get_agent_or_error(
     return None, agents
 
 
+def _resolve_workflow(
+    agent_name: str,
+    workflow_name: str | None,
+    prompt: str,
+    config,
+) -> tuple[str, str | None]:
+    """Resolve a workflow for an agent and return (effective_prompt, system_prompt_override).
+
+    If ``workflow_name`` is given explicitly, look it up in the agent's config.
+    If no workflow is given but ``prompt`` matches a workflow name, use that
+    workflow's ``entry_prompt`` as the effective prompt.
+
+    Returns (effective_prompt, system_prompt_override).  If no workflow matches,
+    returns (prompt, None) — i.e. the prompt is used as-is with the default
+    system prompt.
+    """
+    agent_cfg = config.agents.get(agent_name)
+    if agent_cfg is None or not agent_cfg.workflows:
+        return prompt, None
+
+    target = workflow_name
+    if target is None and prompt in agent_cfg.workflows:
+        target = prompt
+
+    if target is None or target not in agent_cfg.workflows:
+        return prompt, None
+
+    wf = agent_cfg.workflows[target]
+    effective_prompt = wf.entry_prompt or prompt
+    system_prompt_override = wf.prompt_template or None
+    return effective_prompt, system_prompt_override
+
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -235,18 +268,34 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 if not prompt:
                     return 0
 
+            if not prompt:
+                return 0
+
+            prompt, system_prompt_override = _resolve_workflow(
+                args.agent,
+                args.workflow,
+                prompt,
+                config,
+            )
+
+            if system_prompt_override:
+                from fin_assist.agents.registry import SYSTEM_PROMPTS
+
+                override_text = SYSTEM_PROMPTS.get(system_prompt_override, system_prompt_override)
+                prompt = f"[Workflow context]\n{override_text}\n\n[Request]\n{prompt}"
+
             prompt = resolve_at_references(prompt, context_settings=config.context)
             result, deferred_calls = await render_stream(
                 client.stream_agent(args.agent, prompt),
                 show_thinking=args.show_thinking,
             )
 
-            if deferred_calls:
+            while deferred_calls:
                 from fin_assist.cli.interaction.approve import run_approval_widget
 
                 decisions = await run_approval_widget(deferred_calls)
                 if decisions is not None:
-                    result, _ = await render_stream(
+                    result, deferred_calls = await render_stream(
                         client.stream_agent(
                             args.agent,
                             "",
@@ -303,6 +352,22 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 context_settings=config.context,
             )
             message = args.message
+
+            if message:
+                message, system_prompt_override = _resolve_workflow(
+                    args.agent,
+                    args.workflow,
+                    message,
+                    config,
+                )
+                if system_prompt_override:
+                    from fin_assist.agents.registry import SYSTEM_PROMPTS
+
+                    override_text = SYSTEM_PROMPTS.get(
+                        system_prompt_override, system_prompt_override
+                    )
+                    message = f"[Workflow context]\n{override_text}\n\n[Request]\n{message}"
+
             final_context_id = await run_chat_loop(
                 client.stream_agent,
                 args.agent,
@@ -416,6 +481,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show agent thinking/reasoning in the output.",
     )
+    do_parser.add_argument(
+        "--workflow",
+        default=None,
+        help="Name of a workflow defined in the agent's config (e.g. commit, pr, summarize).",
+    )
 
     talk_parser = subparsers.add_parser(
         "talk",
@@ -452,6 +522,11 @@ def main(argv: list[str] | None = None) -> int:
         "--show-thinking",
         action="store_true",
         help="Show agent thinking/reasoning in the chat output.",
+    )
+    talk_parser.add_argument(
+        "--workflow",
+        default=None,
+        help="Name of a workflow defined in the agent's config.",
     )
 
     list_parser = subparsers.add_parser(
@@ -503,7 +578,7 @@ def main(argv: list[str] | None = None) -> int:
                     "Example:\n\n"
                     "  [agents.default]\n"
                     '  system_prompt = "chain-of-thought"\n'
-                    '  tools = ["read_file", "git_diff", "run_shell"]'
+                    '  tools = ["read_file", "git", "run_shell"]'
                 )
             else:
                 names = ", ".join(config.agents)

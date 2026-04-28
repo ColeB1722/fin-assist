@@ -7,9 +7,17 @@ mechanism (e.g., pydantic-ai's ``Tool`` dataclass or ``@agent.tool``
 decorator).
 
 Tools are **shareable between agents** — agents opt in via config
-(``tools = ["read_file", "git_diff"]``).  The registry is global; each
+(``tools = ["read_file", "git"]``).  The registry is global; each
 agent's ``AgentSpec`` references tool names, and the backend registers
 only the tools the agent needs.
+
+**Scoped CLI tools** (``git``, ``gh``) are the prototype for the future
+Skills API.  Each wraps a command prefix and lets the LLM choose the
+subcommand/args — one tool definition per CLI instead of one per
+subcommand.  This saves prompt tokens and maps naturally to the
+API + CLI + Skills pattern (see architecture.md).  Approval is currently
+``always`` for all scoped CLI tools; per-subcommand approval is a planned
+Skills API enhancement.
 
 MCP integration (#84): A future ``MCPToolset`` would wrap an MCP client
 and register discovered tools into the ``ToolRegistry`` with appropriate
@@ -180,25 +188,62 @@ def create_default_registry(
 
     registry.register(
         ToolDefinition(
-            name="git_diff",
-            description="Show unstaged and staged changes in the current git repository.",
-            callable=_make_git_diff(context_settings),
+            name="git",
+            description=(
+                "Run a git subcommand and return its output. "
+                "The argument is passed directly to git (e.g. 'diff', 'log --oneline -5', "
+                "'status --porcelain'). Requires user approval before execution."
+            ),
+            callable=_make_scoped_cli("git"),
             parameters_schema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "args": {
+                        "type": "string",
+                        "description": (
+                            "Arguments to pass to git (e.g. 'diff', 'status', 'log --oneline -10')."
+                        ),
+                    },
+                },
+                "required": ["args"],
             },
+            approval_policy=ApprovalPolicy(
+                mode="always",
+                reason=(
+                    "Git commands require approval (per-subcommand approval planned in Skills API)"
+                ),
+            ),
         )
     )
 
     registry.register(
         ToolDefinition(
-            name="git_log",
-            description="Show recent git commit history (last 10 commits).",
-            callable=_make_git_log(context_settings),
+            name="gh",
+            description=(
+                "Run a GitHub CLI (gh) subcommand and return its output. "
+                "The argument is passed directly to gh (e.g. 'pr create', 'issue list'). "
+                "Requires user approval before execution."
+            ),
+            callable=_make_scoped_cli("gh"),
             parameters_schema={
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "args": {
+                        "type": "string",
+                        "description": (
+                            "Arguments to pass to gh (e.g. 'pr create --title X', 'pr list')."
+                        ),
+                    },
+                },
+                "required": ["args"],
             },
+            approval_policy=ApprovalPolicy(
+                mode="always",
+                reason=(
+                    "GitHub CLI commands require approval "
+                    "(per-subcommand approval planned in Skills API)"
+                ),
+            ),
         )
     )
 
@@ -247,6 +292,50 @@ def create_default_registry(
     return registry
 
 
+def _make_scoped_cli(prefix: str, timeout: int = 30):
+    """Create an async callable that runs ``<prefix> {args}`` via subprocess.
+
+    The returned function enforces the prefix — the LLM only chooses the
+    subcommand and arguments.  This is the foundation for scoped CLI tools
+    (``git``, ``gh``) and the future Skills API.
+    """
+
+    async def _scoped_cli(args: str) -> str:
+        command = f"{prefix} {args}"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except Exception as e:  # noqa: BLE001
+            return f"Error executing {prefix}: {e}"
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except TimeoutError:
+            await _terminate_and_wait(proc)
+            return f"Command timed out after {timeout} seconds: {command}"
+        except asyncio.CancelledError:
+            await _terminate_and_wait(proc)
+            raise
+        except Exception as e:  # noqa: BLE001
+            await _terminate_and_wait(proc)
+            return f"Error executing {prefix}: {e}"
+
+        stdout = stdout_bytes.decode(errors="replace")
+        stderr = stderr_bytes.decode(errors="replace")
+        output = stdout
+        if stderr:
+            output += f"\nSTDERR: {stderr}"
+        if proc.returncode != 0:
+            output += f"\nExit code: {proc.returncode}"
+        return output or "(no output)"
+
+    _scoped_cli.__name__ = f"_{prefix}"
+    return _scoped_cli
+
+
 def _make_read_file(settings: ContextSettings | None):
     async def _read_file(path: str) -> str:
         from fin_assist.context.files import FileFinder
@@ -258,32 +347,6 @@ def _make_read_file(settings: ContextSettings | None):
         return item.content
 
     return _read_file
-
-
-def _make_git_diff(settings: ContextSettings | None):
-    async def _git_diff() -> str:
-        from fin_assist.context.git import GitContext
-
-        ctx = GitContext(settings=settings)
-        item = await asyncio.to_thread(ctx.get_item, "git_diff:diff")
-        if item.status != "available":
-            return f"Error getting git diff: {item.error_reason}"
-        return item.content
-
-    return _git_diff
-
-
-def _make_git_log(settings: ContextSettings | None):
-    async def _git_log() -> str:
-        from fin_assist.context.git import GitContext
-
-        ctx = GitContext(settings=settings)
-        item = await asyncio.to_thread(ctx.get_item, "git_log:log")
-        if item.status != "available":
-            return f"Error getting git log: {item.error_reason}"
-        return item.content
-
-    return _git_log
 
 
 def _make_shell_history(settings: ContextSettings | None):
