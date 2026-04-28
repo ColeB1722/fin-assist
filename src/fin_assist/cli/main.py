@@ -290,12 +290,12 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                 show_thinking=args.show_thinking,
             )
 
-            if deferred_calls:
+            while deferred_calls:
                 from fin_assist.cli.interaction.approve import run_approval_widget
 
                 decisions = await run_approval_widget(deferred_calls)
                 if decisions is not None:
-                    result, _ = await render_stream(
+                    result, deferred_calls = await render_stream(
                         client.stream_agent(
                             args.agent,
                             "",

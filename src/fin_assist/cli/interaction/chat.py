@@ -148,11 +148,11 @@ async def run_chat_loop(
 
         from fin_assist.cli.interaction.approve import run_approval_widget
 
-        if deferred_calls:
+        while deferred_calls:
             decisions = await run_approval_widget(deferred_calls)
             if decisions is not None:
                 try:
-                    result, _ = await render_stream(
+                    result, deferred_calls = await render_stream(
                         stream_fn(
                             agent_name,
                             "",
@@ -164,8 +164,10 @@ async def run_chat_loop(
                     ctx_id = result.context_id or ctx_id
                 except Exception as e:
                     console.print(f"[red]Error resuming: {e}[/red]")
+                    break
             else:
                 console.print("[dim]Tool call cancelled[/dim]")
+                deferred_calls = []
                 console.print()
                 continue
 

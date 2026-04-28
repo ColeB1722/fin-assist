@@ -60,8 +60,9 @@ message, and commit. Steps:
 1. Run `git status --porcelain` to see changed files.
 2. Run `git diff` and `git diff --cached` to see unstaged and staged changes.
 3. Run `git log --oneline -10` to understand recent commit style.
-4. Stage appropriate files with `git add` (prefer `git add -A` unless the \
-user specified particular files).
+4. Stage ONLY the files relevant to this commit. Use `git add <files>` for \
+specific files. Only use `git add -A` if the user explicitly asks to stage \
+everything.
 5. Compose a conventional commit message (type(scope): description). Use the \
 diff content to determine type (feat, fix, refactor, docs, chore, etc.) and \
 write a concise imperative description.
@@ -74,7 +75,8 @@ Create a pull request from the current branch. Steps:
 3. Run `git diff main...HEAD` (or the appropriate base branch) to see the \
 full diff for the PR.
 4. Compose a PR title and body based on the changes.
-5. Run `gh pr create --title "title" --body "body"`.
+5. Create the PR using a heredoc for the body to preserve formatting:
+   `gh pr create --title "title" --body-file - <<'EOF'\nbody text\nEOF`
 
 ### summarize
 Summarize the current state of the repository without executing any mutating \
@@ -89,7 +91,9 @@ commands. Steps:
 and adapt the closest workflow.
 - Always inspect the repository state before making changes.
 - For commit messages, follow conventional commits format.
-- For PRs, include a clear description of what changed and why.
+- For PRs, use `--body-file -` with a heredoc instead of `--body "..."` to \
+avoid shell escaping issues with multiline content, backticks, and quotes.
+- Stage files selectively — never `git add -A` unless the user asks.
 - Never force push or run destructive commands unless explicitly asked.
 - Keep responses concise — show the action, not the reasoning.\
 """
@@ -117,10 +121,12 @@ Steps:
 1. Inspect the current branch changes using git tools.
 2. Determine the base branch (default: main).
 3. Compose a PR title and body.
-4. Create the PR using gh.
+4. Create the PR using a heredoc for the body: \
+`gh pr create --title "title" --body-file - <<'EOF'\nbody\nEOF`
 
 The PR title should follow conventional commit style. The body should explain \
-what changed and why, in clear prose.\
+what changed and why, in clear prose. Always use `--body-file -` with a \
+heredoc instead of `--body "..."` to avoid shell escaping issues.\
 """
 
 GIT_SUMMARIZE_INSTRUCTIONS = """\
