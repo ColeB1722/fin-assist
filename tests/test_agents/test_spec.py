@@ -192,14 +192,14 @@ class TestAgentSpecCardMetadata:
     def test_supported_context_types_from_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file", "git_diff", "git_log"]),
+            agent_config=AgentConfig(tools=["read_file", "git", "gh"]),
             config=mock_config,
             credentials=mock_credentials,
         )
         meta = agent.agent_card_metadata
         assert _MAP["read_file"] in meta.supported_context_types
-        assert _MAP["git_diff"] in meta.supported_context_types
-        assert _MAP["git_log"] in meta.supported_context_types
+        assert _MAP["git"] in meta.supported_context_types
+        assert _MAP["gh"] in meta.supported_context_types
         assert "env" not in meta.supported_context_types
 
     def test_no_context_types_when_no_tools(self, mock_config, mock_credentials) -> None:
@@ -231,13 +231,13 @@ class TestAgentSpecSupportsContext:
     def test_supports_context_types_from_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file", "git_diff"]),
+            agent_config=AgentConfig(tools=["read_file", "git"]),
             config=mock_config,
             credentials=mock_credentials,
         )
         assert agent.supports_context(_MAP["read_file"]) is True
-        assert agent.supports_context(_MAP["git_diff"]) is True
-        assert agent.supports_context(_MAP["git_log"]) is False
+        assert agent.supports_context(_MAP["git"]) is True
+        assert agent.supports_context(_MAP["gh"]) is False
         assert agent.supports_context("env") is False
 
     def test_supports_no_context_when_no_tools(self, mock_config, mock_credentials) -> None:
@@ -248,7 +248,7 @@ class TestAgentSpecSupportsContext:
             credentials=mock_credentials,
         )
         assert agent.supports_context("file") is False
-        assert agent.supports_context("git_diff") is False
+        assert agent.supports_context("git") is False
 
     def test_rejects_unknown_context_type(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)
@@ -405,11 +405,11 @@ class TestAgentSpecConfigProperties:
     def test_tools_from_config(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file", "git_diff"]),
+            agent_config=AgentConfig(tools=["read_file", "git"]),
             config=mock_config,
             credentials=mock_credentials,
         )
-        assert agent.tools == ["read_file", "git_diff"]
+        assert agent.tools == ["read_file", "git"]
 
     def test_tools_default_empty(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(

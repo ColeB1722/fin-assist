@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-27)**: 704 tests passing, CI green. All Tier 1 features shipped: `@`-completion, `fin list`, input panel + `--edit`, remove built-in agents, client artifact-merge fix. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
+**Current state (2026-04-27)**: 729 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
 
 **Core platform status:**
 
@@ -17,25 +17,42 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | `fin list` capabilities | ✅ Complete — `tools`, `prompts`, `output-types` (local, no hub) |
 | Remove built-in agents | ✅ Complete — `_DEFAULT_AGENTS = {}`, all from config.toml |
 | Client artifact-merge fix | ✅ Complete — splice in both `stream_agent()` and `_send_and_wait()` |
-| Observability / tracing | 📐 Design resolved (Phoenix + OTel); implementation deferred (Phase D) |
+| Git agent (#79) | ✅ Complete — scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows (commit/pr/summarize) |
+| Observability / tracing | 📐 Design resolved (Phoenix + OTel); queued as next session — see "Sequenced roadmap" |
 
 **Remaining tracked items:**
 
 - `_CONTEXT_TYPE_MAP` centralization — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool→context mappings; tests read the private attribute.
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
 - `build_user_message`/`format_context` helpers in `llm/prompts.py` are dead code
-- `git_status` provider orphaned — not exposed as a tool or `@`-completion
 - `supported_context_types` published in agent cards, never consumed by clients
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
+- Scoped CLI tools approval=always is not final state — per-subcommand approval is a planned Skills API enhancement (see Skills API issue)
 
 ---
 
 ## Next Session
 
-Pick from:
+**Planned: Tracing — Phoenix + OTel.**
+
+Design is resolved (see architecture.md and handoff.md historical notes). Now that the git agent provides real multi-step tool-call + deferred-approval flows to observe, the tracing signal will be meaningful. Wire OTel spans to `StepEvent`/`StepHandle` boundaries from PR #87, ship Phoenix as the observability backend.
+
+### Sequenced roadmap (why this order)
+
+| # | Work | Rationale |
+|---|------|-----------|
+| 1 | **Tracing: Phoenix + OTel** (next session) | Design resolved but zero code in `src/`. Git agent provides real multi-step tool-call + deferred-approval flows to observe. `StepEvent`/`StepHandle` boundaries from PR #87 are fresh — cheapest time to wire instrumentation. Phoenix gives us an eval UI for free once traces are clean. |
+| 2 | **Eval harness (per-agent, not platform-level)** | Evals are downstream of observability when using Phoenix. Two real agents exist (test + git) — eval criteria are meaningful. Platform stance: evals live at the agent level (`tests/evals/<agent>/`). Closes [#14](https://github.com/ColeB1722/fin-assist/issues/14). Likely surfaces [#80](https://github.com/ColeB1722/fin-assist/issues/80) (AgentBackend simplification). |
+| 3 | **Skills API** | Generalizes the scoped CLI tools + workflow config pattern from the git agent. Per-subcommand approval, context templates, skill auto-discovery. See the Skills API GitHub issue for the full vision. |
+
+**Why not tracing first:** tracing one agent (the `test` agent) gives ~10% of the learnings of tracing a real agent with non-trivial tool calls. The scaffolding would ship but the signal wouldn't.
+
+**Why not evals first:** without tracing, eval failures are opaque — you know an eval failed but not why the agent went wrong in the middle of a 3-step tool loop. Phoenix eval primitives specifically consume OTel traces, so doing them in the other order duplicates work.
+
+### Alternative picks if priorities change
 
 1. **Phase 4 design discussions** — open issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). Each issue body is a session-ready brief. `#92` has a research spike as pre-work.
-2. **Tech debt** — `_CONTEXT_TYPE_MAP` centralization, dead code cleanup in `llm/prompts.py`, AgentBackend simplification (#80).
+2. **Tech debt** — `_CONTEXT_TYPE_MAP` centralization, dead code cleanup in `llm/prompts.py`, AgentBackend simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)).
 3. **Future phases** — Multiplexer, TUI, Skills/MCP, additional agents, multi-agent workflows.
 4. **Other open issues** — see `gh issue list` for the broader backlog.
 
@@ -64,17 +81,18 @@ Pick from:
 | — | PR #87 self-review triage (Phases 1–3) | ✅ Complete (2026-04-26) |
 | — | Phase 4 architecture discussions | 📐 Filed as issues #89–#94 |
 | — | Documentation sync (README, architecture.md, manual-testing.md, handoff.md) | ✅ Complete (2026-04-27) |
+| — | Git agent (#79): scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows | ✅ Complete (2026-04-27) |
 | 9b | Full SSE Streaming (was blocked on fasta2a) | ✅ Covered by a2a-sdk migration |
 | 10 | Non-blocking + interactive tasks | 📐 Superseded by deferred tools |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
-| 14 | Testing Infrastructure (Deep Evals) | ⬜ Not Started |
-| 15 | Skills + MCP Integration | ⬜ Not Started |
-| 16 | Additional Agents | ⬜ Not Started |
+| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing — see "Sequenced roadmap" in Next Session |
+| 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); full Skills API + MCP pending |
+| 16 | Additional Agents | 🔄 Git agent shipped; SDD/TDD/code review pending |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
-| — | Phoenix/OTel tracing | 📐 Design resolved (Phase D) |
+| — | Phoenix/OTel tracing | 📐 Design resolved; queued as next session |
 | — | Nix/Home Manager packaging | 📐 Sketched |
 
 ---
@@ -82,6 +100,16 @@ Pick from:
 ## Historical Reference
 
 Key completed milestones. See git log for full detail; code is the source of truth.
+
+### Git Agent + Scoped CLI Tools (#79, 2026-04-27)
+
+First real end-user agent. Introduced three concepts that generalize to the Skills API:
+
+- **Scoped CLI tools**: `git` and `gh` tools that wrap a command prefix (`git {args}`, `gh {args}`). Replaced per-subcommand wrappers (`git_diff`, `git_log`) — one tool per CLI instead of one per subcommand, saving prompt tokens. Approval is `always` for all scoped CLI tools; per-subcommand approval is a planned Skills API enhancement.
+- **WorkflowConfig**: Agent-scoped config primitive for prompt-steered sub-tasks. Each workflow has a description, prompt_template (system prompt override), entry_prompt (sent as user message), and optional serving_modes override. CLI resolves workflows via `fin do git commit` (positional) or `--workflow commit` (explicit flag).
+- **Git agent system prompt**: Covers three workflows (commit, PR, summarize) with step-by-step instructions. Each workflow has a dedicated prompt template in `SYSTEM_PROMPTS` for focused steering.
+
+Files changed: `tools.py` (scoped CLI factory, remove `git_diff`/`git_log`), `spec.py` (`_CONTEXT_TYPE_MAP` update), `prompts.py` (git instructions), `registry.py` (prompt registration), `schema.py` (`WorkflowConfig`), `config.toml` (git agent + workflows), `main.py` (workflow resolution + `--workflow` flag), `streaming.py` (emoji map + key arg for scoped tools).
 
 ### Tier 1 Features + Doc Sync (2026-04-27)
 
@@ -187,3 +215,5 @@ Phases 1–8b: repo setup, core package structure, LLM module (pydantic-ai + cre
 - Platform types in `agents/` have zero `hub/` imports by design (platform vs transport separation)
 - `@`-completion is the sole user-driven context path (`@file:`, `@git:diff`, `@git:log`, `@history:`); `--file`/`--git-diff` CLI flags removed
 - `fin list tools/prompts/output-types` lists platform registries locally (no hub connection)
+- Scoped CLI tools (`git`, `gh`) are the prototype for the Skills API — one tool per CLI, LLM picks subcommand/args
+- WorkflowConfig is agent-scoped prompt steering; full Skills API will generalize to global registry + context templates + per-subcommand approval

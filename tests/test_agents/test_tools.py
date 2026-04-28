@@ -129,9 +129,14 @@ class TestCreateDefaultRegistry:
         tools = registry.list_tools()
         names = {t.name for t in tools}
         assert "read_file" in names
-        assert "git_diff" in names
-        assert "git_log" in names
+        assert "git" in names
+        assert "gh" in names
         assert "shell_history" in names
+
+    def test_git_diff_and_git_log_removed(self) -> None:
+        registry = create_default_registry()
+        assert registry.get("git_diff") is None
+        assert registry.get("git_log") is None
 
     def test_builtin_tools_have_descriptions(self) -> None:
         registry = create_default_registry()
@@ -144,23 +149,24 @@ class TestCreateDefaultRegistry:
             assert tool.parameters_schema, f"Tool {tool.name} has no parameters_schema"
             assert tool.parameters_schema.get("type") == "object"
 
-    def test_context_tools_have_no_approval_policy(self) -> None:
+    def test_read_only_tools_have_no_approval_policy(self) -> None:
         registry = create_default_registry()
-        context_tools = ["read_file", "git_diff", "git_log", "shell_history"]
-        for name in context_tools:
+        read_only_tools = ["read_file", "shell_history"]
+        for name in read_only_tools:
             tool = registry.get(name)
             assert tool is not None
             assert tool.approval_policy is None, (
                 f"Tool {tool.name} unexpectedly has approval_policy"
             )
 
-    def test_run_shell_has_always_approval_policy(self) -> None:
+    def test_scoped_cli_tools_have_always_approval_policy(self) -> None:
         registry = create_default_registry()
-        tool = registry.get("run_shell")
-        assert tool is not None
-        assert tool.approval_policy is not None
-        assert tool.approval_policy.mode == "always"
-        assert tool.approval_policy.reason is not None
+        for name in ("git", "gh", "run_shell"):
+            tool = registry.get(name)
+            assert tool is not None
+            assert tool.approval_policy is not None
+            assert tool.approval_policy.mode == "always"
+            assert tool.approval_policy.reason is not None
 
     def test_read_file_has_path_parameter(self) -> None:
         registry = create_default_registry()
@@ -170,11 +176,23 @@ class TestCreateDefaultRegistry:
         assert "path" in props
         assert props["path"]["type"] == "string"
 
-    def test_git_diff_has_no_required_parameters(self) -> None:
+    def test_git_has_args_parameter(self) -> None:
         registry = create_default_registry()
-        tool = registry.get("git_diff")
+        tool = registry.get("git")
         assert tool is not None
-        assert tool.parameters_schema.get("required", []) == []
+        props = tool.parameters_schema["properties"]
+        assert "args" in props
+        assert "required" in tool.parameters_schema
+        assert "args" in tool.parameters_schema["required"]
+
+    def test_gh_has_args_parameter(self) -> None:
+        registry = create_default_registry()
+        tool = registry.get("gh")
+        assert tool is not None
+        props = tool.parameters_schema["properties"]
+        assert "args" in props
+        assert "required" in tool.parameters_schema
+        assert "args" in tool.parameters_schema["required"]
 
     def test_shell_history_has_optional_query(self) -> None:
         registry = create_default_registry()
@@ -292,74 +310,54 @@ class TestReadFileCallable:
         assert "File not found" in result
 
 
-class TestGitDiffCallable:
+class TestGitCallable:
     @pytest.mark.asyncio
-    async def test_returns_diff_when_available(self) -> None:
-        from fin_assist.context.base import ContextItem
-
-        mock_item = ContextItem(
-            id="git_diff:diff", type="git_diff", content="diff content", status="available"
-        )
-        with patch("fin_assist.context.git.GitContext") as MockCtx:
-            MockCtx.return_value.get_item.return_value = mock_item
+    async def test_runs_git_with_args(self) -> None:
+        proc = _FakeProc(stdout=b"M file.py\n")
+        with patch("asyncio.create_subprocess_shell", return_value=proc) as mock_spawn:
             registry = create_default_registry()
-            tool = registry.get("git_diff")
+            tool = registry.get("git")
             assert tool is not None
-            result = await _invoke(tool)
-        assert result == "diff content"
-
-    @pytest.mark.asyncio
-    async def test_returns_error_when_not_available(self) -> None:
-        from fin_assist.context.base import ContextItem
-
-        mock_item = ContextItem(
-            id="git_diff:diff",
-            type="git_diff",
-            status="error",
-            error_reason="Not a git repo",
-        )
-        with patch("fin_assist.context.git.GitContext") as MockCtx:
-            MockCtx.return_value.get_item.return_value = mock_item
-            registry = create_default_registry()
-            tool = registry.get("git_diff")
-            assert tool is not None
-            result = await _invoke(tool)
-        assert "Error getting git diff" in result
-
-
-class TestGitLogCallable:
-    @pytest.mark.asyncio
-    async def test_returns_log_when_available(self) -> None:
-        from fin_assist.context.base import ContextItem
-
-        mock_item = ContextItem(
-            id="git_log:log", type="git_log", content="abc123 commit", status="available"
-        )
-        with patch("fin_assist.context.git.GitContext") as MockCtx:
-            MockCtx.return_value.get_item.return_value = mock_item
-            registry = create_default_registry()
-            tool = registry.get("git_log")
-            assert tool is not None
-            result = await _invoke(tool)
-        assert result == "abc123 commit"
+            result = await _invoke(tool, args="status --porcelain")
+        assert "M file.py" in result
+        mock_spawn.assert_called_once()
+        called_cmd = mock_spawn.call_args[0][0]
+        assert called_cmd.startswith("git ")
+        assert "status --porcelain" in called_cmd
 
     @pytest.mark.asyncio
-    async def test_returns_error_when_not_available(self) -> None:
-        from fin_assist.context.base import ContextItem
-
-        mock_item = ContextItem(
-            id="git_log:log",
-            type="git_log",
-            status="error",
-            error_reason="git not available",
-        )
-        with patch("fin_assist.context.git.GitContext") as MockCtx:
-            MockCtx.return_value.get_item.return_value = mock_item
+    async def test_spawn_failure_returns_error(self) -> None:
+        with patch("asyncio.create_subprocess_shell", side_effect=OSError("no git")):
             registry = create_default_registry()
-            tool = registry.get("git_log")
+            tool = registry.get("git")
             assert tool is not None
-            result = await _invoke(tool)
-        assert "Error getting git log" in result
+            result = await _invoke(tool, args="log")
+        assert "Error executing git" in result
+
+
+class TestGhCallable:
+    @pytest.mark.asyncio
+    async def test_runs_gh_with_args(self) -> None:
+        proc = _FakeProc(stdout=b"42\tOpen\tFix bug\tmain")
+        with patch("asyncio.create_subprocess_shell", return_value=proc) as mock_spawn:
+            registry = create_default_registry()
+            tool = registry.get("gh")
+            assert tool is not None
+            result = await _invoke(tool, args="pr list")
+        assert "Fix bug" in result
+        mock_spawn.assert_called_once()
+        called_cmd = mock_spawn.call_args[0][0]
+        assert called_cmd.startswith("gh ")
+        assert "pr list" in called_cmd
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_returns_error(self) -> None:
+        with patch("asyncio.create_subprocess_shell", side_effect=OSError("no gh")):
+            registry = create_default_registry()
+            tool = registry.get("gh")
+            assert tool is not None
+            result = await _invoke(tool, args="pr list")
+        assert "Error executing gh" in result
 
 
 class TestShellHistoryCallable:

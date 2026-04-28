@@ -16,6 +16,7 @@ from fin_assist.config.schema import (
     GeneralSettings,
     ProviderConfig,
     ServerSettings,
+    WorkflowConfig,
 )
 from fin_assist.paths import DATA_DIR
 
@@ -438,6 +439,7 @@ class TestAgentConfig:
         assert ac.thinking == "medium"
         assert ac.serving_modes == ["do", "talk"]
         assert ac.tags == []
+        assert ac.workflows == {}
 
     def test_shell_config(self) -> None:
         ac = AgentConfig(
@@ -473,6 +475,50 @@ class TestAgentConfig:
         )
         config, _ = load_config(config_file)
         assert config.agents["shell"].serving_modes == ["do"]
+
+    def test_config_workflows_from_toml(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[agents.git]\n"
+            'system_prompt = "git"\n'
+            'serving_modes = ["do"]\n'
+            "\n"
+            "[agents.git.workflows.commit]\n"
+            'description = "Generate a commit message."\n'
+            'prompt_template = "git-commit"\n'
+            'entry_prompt = "Analyze the current changes."\n'
+            "\n"
+            "[agents.git.workflows.summarize]\n"
+            'description = "Summarize changes."\n'
+            'entry_prompt = "Summarize current diffs."\n'
+            'serving_modes = ["do", "talk"]\n'
+        )
+        config, _ = load_config(config_file)
+        git = config.agents["git"]
+        assert "commit" in git.workflows
+        assert git.workflows["commit"].prompt_template == "git-commit"
+        assert git.workflows["commit"].entry_prompt == "Analyze the current changes."
+        assert git.workflows["commit"].serving_modes is None
+        assert git.workflows["summarize"].serving_modes == ["do", "talk"]
+
+
+class TestWorkflowConfig:
+    def test_defaults(self) -> None:
+        wf = WorkflowConfig()
+        assert wf.description == ""
+        assert wf.prompt_template == ""
+        assert wf.entry_prompt == ""
+        assert wf.serving_modes is None
+
+    def test_custom_values(self) -> None:
+        wf = WorkflowConfig(
+            description="Commit workflow",
+            prompt_template="git-commit",
+            entry_prompt="Generate a commit message.",
+            serving_modes=["do"],
+        )
+        assert wf.description == "Commit workflow"
+        assert wf.serving_modes == ["do"]
 
 
 class TestServerSettingsDataDir:

@@ -451,7 +451,7 @@ Agents are defined entirely in `config.toml`, not as separate Python classes. A 
 #### Current Agent: `test` (`[agents.test]`)
 
 - **Purpose**: Development test agent with file, shell, and git tools
-- **Config**: `system_prompt = "test"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`, `tools = ["read_file", "git_diff", "run_shell"]`
+- **Config**: `system_prompt = "test"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`, `tools = ["read_file", "git", "run_shell"]`
 - **Output**: `str` (free-form text response)
 
 #### SDD Agent (`[agents.sdd]`) — future
@@ -478,7 +478,78 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git_diff", "run_shell"]
+tools = ["read_file", "git", "run_shell"]
+```
+
+### Git Agent (`[agents.git]`)
+
+The git agent is the first real end-user agent and the first to use **scoped CLI tools** and **workflows**.
+
+- **Purpose**: Git workflows — commit, PR, summarize
+- **Config**: `system_prompt = "git"`, `output_type = "text"`, `serving_modes = ["do"]`, `tools = ["read_file", "git", "gh", "run_shell"]`
+- **Workflows**: `commit`, `pr`, `summarize` — each with its own `entry_prompt` and `prompt_template`
+- **Output**: `str` (free-form text response)
+
+#### Scoped CLI Tools
+
+Instead of per-subcommand tool wrappers (`git_diff`, `git_log`), the platform provides **scoped CLI tools** that wrap a command prefix:
+
+| Tool | Prefix | Approval | Description |
+|------|--------|----------|-------------|
+| `git` | `git` | `always` | Run any git subcommand |
+| `gh` | `gh` | `always` | Run any GitHub CLI subcommand |
+
+The LLM chooses the subcommand/args — one tool definition per CLI instead of one per subcommand. This saves prompt tokens and maps naturally to the **API + CLI + Skills** pattern (see Phase 15).
+
+> **Note**: Approval is currently `always` for all scoped CLI tools. Per-subcommand approval (e.g. `git diff` → never, `git push` → always) is a planned Skills API enhancement. See the Skills API issue for details.
+
+#### Workflows
+
+Workflows are config-driven prompt-steering primitives. They allow an agent to expose named sub-tasks with their own entry prompts and system prompt templates:
+
+```toml
+[agents.git.workflows.commit]
+description = "Generate a conventional commit message from current changes."
+prompt_template = "git-commit"
+entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
+```
+
+- `fin do git commit` → agent=git, workflow=commit (entry_prompt sent as user message, prompt_template injected as context)
+- `fin do git --workflow commit` → same, explicit workflow flag
+- `fin do git` → agent=git, no workflow (LLM routes based on user input)
+
+This is level 2 of the workflow spectrum (prompt steering). Future extensions may add tool scoping and per-subcommand approval overrides — see the Skills API vision below.
+
+```toml
+[agents.test]
+system_prompt = "test"
+output_type = "text"
+thinking = "medium"
+serving_modes = ["do", "talk"]
+tools = ["read_file", "git", "shell_history", "run_shell"]
+
+[agents.git]
+system_prompt = "git"
+output_type = "text"
+thinking = "medium"
+serving_modes = ["do"]
+tools = ["read_file", "git", "gh", "run_shell"]
+
+[agents.git.workflows.commit]
+description = "Generate a conventional commit message from current changes."
+prompt_template = "git-commit"
+entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
+
+[agents.git.workflows.pr]
+description = "Create a pull request from current branch to main."
+prompt_template = "git-pr"
+entry_prompt = "Analyze the current branch changes and create a pull request."
+
+[agents.git.workflows.summarize]
+description = "Summarize current changes without executing any commands."
+prompt_template = "git-summarize"
+entry_prompt = "Summarize the current staged and unstaged changes."
+serving_modes = ["do", "talk"]
 ```
 
 ### Output Type Registry
@@ -768,7 +839,7 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git_diff", "run_shell"]
+tools = ["read_file", "git", "shell_history", "run_shell"]
 
 [providers.anthropic]
 # API key stored separately in credentials
@@ -919,11 +990,24 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 
 ### Phase 15: Skills + MCP Integration ⬜
 - [ ] Skills framework (configurable behaviors per agent)
+- [ ] Per-subcommand approval policies (e.g. `git diff` → never, `git push` → always)
+- [ ] Context templates: markdown files encoding domain knowledge injected when a skill is activated
+- [ ] Skill auto-discovery from `~/.config/fin/skills/` or MCP servers
 - [ ] MCP client integration
 - [ ] CLI/TUI components for skill/MCP configuration
 - [ ] Per-project skill/MCP configuration
 
+The Skills API generalizes the scoped CLI tools + workflow config pattern established by the git agent. A "skill" is the full package: a scoped CLI tool (capability), workflow definitions (behavior), and context templates (knowledge). This follows the **API + CLI + Skills** architectural pattern — CLI tools provide deterministic execution, skills provide workflow intelligence.
+
+Progression:
+1. **Now**: Agent-scoped `WorkflowConfig` + scoped CLI tools (`git`, `gh`) with `approval=always`
+2. **Next**: Per-subcommand approval policies, global workflow registry for cross-agent reuse
+3. **Full Skills API**: Declarative skill registration, context injection, auto-discovery, skill composition
+
+See the Skills API GitHub issue for the full vision.
+
 ### Phase 16: Additional Agents ⬜
+- [x] Git agent (`[agents.git]`) — commit, PR, summarize workflows with scoped `git`/`gh` tools
 - [ ] Create `agents/sdd.py` (design brainstorming)
 - [ ] Define `SketchResult` model
 - [ ] Implement tools: `read_file`, `write_file`, `list_docs`
@@ -1027,7 +1111,7 @@ url = "http://127.0.0.1:5002"
 **Why defer:** No external agents exist yet. The change is small and well-understood (~50 lines), but designing the config schema without a real external process to validate against risks over-fitting. Once a toy Rust/Gleam agent exists, the schema will be obvious. The discovery endpoint is already forward-compatible — agent entries include a `url` field that can point externally.
 
 ### Near-term (Phases 13-15)
-- **Skills framework** — Configurable behaviors (e.g., brainstorming mode, terse mode)
+- **Skills API** — Scoped CLI tools + workflow config + context templates + per-subcommand approval (generalizes git agent pattern)
 - **MCP integration** — Natural language interface to configurable MCP tools/servers
 - **Additional agents** — SDD, TDD, code review, shell completion, computer use, journaling
 - **Multi-agent workflows** — Agent-to-agent via A2A, orchestration patterns

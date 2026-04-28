@@ -63,6 +63,25 @@ class ServerSettings(BaseModel):
     log_path: str = str(DATA_DIR / "hub.log")
 
 
+class WorkflowConfig(BaseModel):
+    """Per-workflow configuration within an agent.
+
+    Workflows are prompt-steered sub-tasks an agent can perform.  They define
+    a description (for discovery), a prompt template name or inline text, an
+    entry prompt sent as the initial user message, and optional serving-mode
+    overrides.
+
+    This is level 2 of the workflow spectrum (prompt steering).  Future
+    extensions (level 3) may add ``tool_scope`` and ``approval_override``
+    fields — see the Skills API vision in architecture.md.
+    """
+
+    description: str = ""
+    prompt_template: str = ""
+    entry_prompt: str = ""
+    serving_modes: list[ServingMode] | None = None
+
+
 class AgentConfig(BaseModel):
     """Per-agent configuration.
 
@@ -78,6 +97,7 @@ class AgentConfig(BaseModel):
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     tags: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
+    workflows: dict[str, WorkflowConfig] = Field(default_factory=dict)
 
 
 _DEFAULT_AGENTS: dict[str, AgentConfig] = {}
