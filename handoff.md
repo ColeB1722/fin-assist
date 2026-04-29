@@ -275,6 +275,14 @@ class ToolTypeAdapter(Protocol):
 
 ---
 
+#### Skills vs. `context/` overlap
+
+`GitContext` in `context/git.py` is a hard-coded, limited subset of what the `git` scoped CLI tool already does — both run `subprocess.run(["git", "diff", ...])`. With per-subcommand approval (Phase A), `@git:diff` can resolve *through the skill* (diff → `never` approval) instead of a separate `ContextProvider`. This eliminates the duplication.
+
+But Skills doesn't subsume `context/` as a whole. `FileFinder` and `ShellHistory` aren't CLI wrappers — they have `search`/`get_item` semantics, structured data models, and path-aware ranking. They're data providers, not command runners. The `@`-completion concept (user-driven context injection) is orthogonal to Skills (model-driven tool bundles) — two intake paths that sometimes call the same underlying command.
+
+**Simplification path:** Phase A/B absorbs `GitContext` into skill-backed resolution. `@git:diff` becomes "invoke the `git` skill with `never` approval" instead of a dedicated provider. The `@`-completion UX stays in CLI; the resolver learns about skills as a source. `FileFinder` and `ShellHistory` remain as `ContextProvider`s. `skills/` should be a top-level package (peer to `agents/` and `context/`) — both hub and CLI need access.
+
 #### Explicitly parked (from the original brainstorm)
 
 - **Knowledge-graph–backed tool discoverability** (NL Q&A over man pages / docs). Revisit post-Skills as a new `ContextProvider` implementation if a real pain point appears — LLMs already know `git`'s surface area, and Context7 covers library docs. Not on Phase A/B/C critical path.
