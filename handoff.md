@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-29)**: 729 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). Tracing design sketch resolved — see "Design Sketches: Phoenix + OTel Tracing" below.
+**Current state (2026-04-29)**: 750 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Phoenix + OTel Tracing" below for architecture.
 
 **Core platform status:**
 
@@ -18,7 +18,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | Remove built-in agents | ✅ Complete — `_DEFAULT_AGENTS = {}`, all from config.toml |
 | Client artifact-merge fix | ✅ Complete — splice in both `stream_agent()` and `_send_and_wait()` |
 | Git agent (#79) | ✅ Complete — scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows (commit/pr/summarize) |
-| Observability / tracing | 📐 Design sketch resolved (Phoenix + OTel); implementation this session — see "Design Sketches" |
+| Observability / tracing | ✅ Complete (PR #103) — OTel spans for task/step/tool_execution/approval; see "Design Sketches" |
 
 **Remaining tracked items:**
 
@@ -35,17 +35,17 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Planned: Skills API Phase A — Subcommand approval rules.**
 
-Tracing is shipped (or in progress). The next slice is Phase A of the Skills API: extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC, TDD-first. See "Design Sketches: Skills API" Phase A below.
+Tracing shipped (PR #103). The next slice is Phase A of the Skills API: extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC, TDD-first. See "Design Sketches: Skills API" Phase A below.
 
 ### Sequenced roadmap (why this order)
 
 | # | Work | Rationale |
 |---|------|-----------|
-| 1 | **Tracing: Phoenix + OTel** (this session) | Design sketch resolved. Wire OTel spans to `StepEvent`/`StepHandle` boundaries. `Agent.instrument_all()` for framework-layer spans. FastAPI auto-instrumentation for HTTP transport. Phoenix as standalone dev backend. ~350 LOC + tests. See "Design Sketches: Phoenix + OTel Tracing" below. |
+| 1 | **Tracing: Phoenix + OTel** | ✅ Complete (PR #103). OTel spans for task/step/tool_execution/approval. Phoenix health probe. In-memory test fixture. ~450 LOC + 21 tests. See "Design Sketches" below. |
 | 2 | **Eval harness (per-agent, not platform-level)** | Evals are downstream of observability when using Phoenix. Two real agents exist (test + git) — eval criteria are meaningful. Platform stance: evals live at the agent level (`tests/evals/<agent>/`). Closes [#14](https://github.com/ColeB1722/fin-assist/issues/14). Likely surfaces [#80](https://github.com/ColeB1722/fin-assist/issues/80) (AgentBackend simplification). |
 | 3 | **Skills API** | Generalizes the scoped CLI tools + workflow config pattern from the git agent. Per-subcommand approval, context templates, skill auto-discovery. See the Skills API GitHub issue for the full vision. |
 
-**Why tracing before skills:** `step_start`/`step_end` are currently no-ops in `executor.py:360`. Skills Phase A adds per-call approval evaluation; Phase B adds skill-loaded tool-surface swapping. Each new feature makes the instrumentation surface more complex. Wire it now while the boundary is clean.
+**Why tracing before skills:** `step_start`/`step_end` are now wired to OTel spans in `executor.py`. Skills Phase A adds per-call approval evaluation; Phase B adds skill-loaded tool-surface swapping. Each new feature makes the instrumentation surface more complex — wiring it while the boundary was clean paid off.
 
 **Why not evals first:** without tracing, eval failures are opaque — you know an eval failed but not why the agent went wrong in the middle of a 3-step tool loop. Phoenix eval primitives specifically consume OTel traces, so doing them in the other order duplicates work.
 
@@ -87,12 +87,12 @@ Tracing is shipped (or in progress). The next slice is Phase A of the Skills API
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
-| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing ships — see "Sequenced roadmap" in Next Session |
+| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued — tracing shipped, evals can start |
 | 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); sequenced Phase A/B/C sketch resolved 2026-04-27 — see "Design Sketches" below |
 | 16 | Additional Agents | 🔄 Git agent shipped; SDD/TDD/code review pending |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
-| — | Phoenix/OTel tracing | 📐 Design sketch resolved 2026-04-29; implementation next — see "Design Sketches" |
+| — | Phoenix/OTel tracing | ✅ Complete (2026-04-29, PR #103) |
 | — | Nix/Home Manager packaging | 📐 Sketched |
 
 ---
@@ -101,18 +101,18 @@ Tracing is shipped (or in progress). The next slice is Phase A of the Skills API
 
 ### Phoenix + OTel Tracing
 
-**Status:** Sketch resolved 2026-04-29. Ready for implementation.
+**Status:** Implemented 2026-04-29 (PR #103).
 
-**Why this exists:** `step_start`/`step_end` are currently no-ops in `executor.py:360`. The git agent provides real multi-step tool-call + deferred-approval flows to observe. `Agent.instrument_all()` gives us pydantic-ai framework-layer spans for free. FastAPI auto-instrumentation provides the HTTP transport layer. Now is the cheapest time to wire instrumentation — before Skills Phase A/B adds per-call approval and tool-surface swapping.
+**Why this exists:** `step_start`/`step_end` now drive OTel span boundaries in `executor.py`. The git agent provides real multi-step tool-call + deferred-approval flows to observe. `Agent.instrument_all()` gives us pydantic-ai framework-layer spans for free. FastAPI auto-instrumentation provides the HTTP transport layer. Wiring instrumentation before Skills Phase A/B (per-call approval, tool-surface swapping) kept the boundary clean.
 
 **Grounding citations:**
 
-- `step_start`/`step_end` no-ops: `src/fin_assist/hub/executor.py:360`
-- `StepEvent` kinds and `content` contract: `src/fin_assist/agents/step.py:22-54`
-- `_PydanticAIStepHandle.__aiter__()` emits step boundaries: `src/fin_assist/agents/backend.py:135-198`
-- `ApprovalPolicy` (two-mode, no rules): `src/fin_assist/agents/tools.py:40-60`
-- Hub app factory (init order): `src/fin_assist/hub/app.py:45-107`
-- Agent card + extension: `src/fin_assist/hub/factory.py:95-125`
+- `step_start`/`step_end` handling: `src/fin_assist/hub/executor.py`
+- `StepEvent` kinds and `content` contract: `src/fin_assist/agents/step.py`
+- `_PydanticAIStepHandle.__aiter__()` emits step boundaries: `src/fin_assist/agents/backend.py`
+- `ApprovalPolicy` (two-mode, no rules): `src/fin_assist/agents/tools.py`
+- Hub app factory (init order): `src/fin_assist/hub/app.py`
+- Agent card + extension: `src/fin_assist/hub/factory.py`
 
 ---
 
