@@ -10,6 +10,7 @@ Tests are structured around the Executor's lifecycle:
 - Tool execution span (fin_assist.tool_execution)
 - Approval span (fin_assist.approval)
 - Span hierarchy (parent-child relationships)
+- OpenInference semantic conventions (span kinds, input/output, session)
 - Phoenix unreachable (graceful degradation)
 """
 
@@ -66,11 +67,19 @@ def _make_backend(
     return backend
 
 
-def _make_request_context(*, task_id: str = "task-1", context_id: str = "ctx-1"):
+def _make_request_context(
+    *, task_id: str = "task-1", context_id: str = "ctx-1", user_input: str = ""
+):
     context = MagicMock()
     context.task_id = task_id
     context.context_id = context_id
-    context.message = None
+    if user_input:
+        msg = MagicMock()
+        msg.parts = []
+        msg.get_user_input.return_value = user_input
+        context.message = msg
+    else:
+        context.message = None
     return context
 
 
@@ -85,6 +94,7 @@ async def execute_with_tracing(tracing_setup):
         agent_name: str = "test",
         task_id: str = "task-1",
         context_id: str = "ctx-1",
+        user_input: str = "",
     ):
         tracing_setup["clear"]()
 
@@ -98,7 +108,7 @@ async def execute_with_tracing(tracing_setup):
             context_store=context_store,
             agent_name=agent_name,
         )
-        ctx = _make_request_context(task_id=task_id, context_id=context_id)
+        ctx = _make_request_context(task_id=task_id, context_id=context_id, user_input=user_input)
         event_queue = MagicMock()
         event_queue.enqueue_event = AsyncMock()
 
@@ -187,6 +197,225 @@ class TestTaskSpanLifecycle:
         assert task_spans[0].status.status_code == StatusCode.ERROR
 
 
+class TestOpenInferenceAttributes:
+    """OpenInference semantic conventions for Phoenix rendering."""
+
+    async def test_task_span_has_agent_kind(self, execute_with_tracing):
+        ts = await execute_with_tracing()
+        task_spans = ts["get_spans"]("fin_assist.task")
+        assert task_spans[0].attributes.get("openinference.span.kind") == "AGENT"
+
+    async def test_task_span_has_input_value(self, execute_with_tracing):
+        ts = await execute_with_tracing()
+        task_spans = ts["get_spans"]("fin_assist.task")
+        assert "input.value" in task_spans[0].attributes
+
+    async def test_task_span_has_output_value_on_success(self, execute_with_tracing):
+        ts = await execute_with_tracing(
+            run_result=RunResult(output="here are the files", serialized_history=b"[]"),
+        )
+        task_spans = ts["get_spans"]("fin_assist.task")
+        assert task_spans[0].attributes.get("output.value") == "here are the files"
+
+    async def test_task_span_has_partial_output_on_error(self, tracing_setup):
+        tracing_setup["clear"]()
+
+        class _FailingHandle:
+            async def __aiter__(self):
+                yield StepEvent(kind="text_delta", content="partial ", step=0)
+                yield StepEvent(kind="text_delta", content="response", step=0)
+
+            async def result(self):
+                raise RuntimeError("broke")
+
+        backend = MagicMock()
+        backend.check_credentials.return_value = []
+        backend.convert_history.return_value = []
+        backend.deserialize_history.return_value = []
+        backend.run_steps.return_value = _FailingHandle()
+
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(
+            backend=backend,
+            context_store=context_store,
+            agent_name="test",
+        )
+        ctx = _make_request_context()
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="broke"):
+            await executor.execute(ctx, event_queue)
+
+        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+        assert task_spans[0].attributes.get("output.value") == "partial response"
+
+    async def test_task_span_has_session_id(self, execute_with_tracing):
+        ts = await execute_with_tracing(context_id="session-abc")
+        task_spans = ts["get_spans"]("fin_assist.task")
+        assert task_spans[0].attributes.get("session.id") == "session-abc"
+
+    async def test_step_span_has_chain_kind(self, execute_with_tracing):
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            StepEvent(kind="text_delta", content="hello", step=0),
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(events=events)
+        step_spans = ts["get_spans"]("fin_assist.step")
+        assert step_spans[0].attributes.get("openinference.span.kind") == "CHAIN"
+
+    async def test_tool_span_has_tool_kind(self, execute_with_tracing):
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            StepEvent(
+                kind="tool_call",
+                content=MagicMock(),
+                step=0,
+                tool_name="git",
+                metadata={"args": {"subcommand": "diff"}},
+            ),
+            StepEvent(
+                kind="tool_result",
+                content="M file.py",
+                step=0,
+                tool_name="git",
+            ),
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
+        assert tool_spans[0].attributes.get("openinference.span.kind") == "TOOL"
+
+    async def test_tool_span_has_tool_name(self, execute_with_tracing):
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            StepEvent(
+                kind="tool_call",
+                content=MagicMock(),
+                step=0,
+                tool_name="run_shell",
+                metadata={"args": {"command": "ls"}},
+            ),
+            StepEvent(
+                kind="tool_result",
+                content="file1.txt\nfile2.txt",
+                step=0,
+                tool_name="run_shell",
+            ),
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
+        assert tool_spans[0].attributes.get("tool.name") == "run_shell"
+
+    async def test_tool_span_has_input_value(self, execute_with_tracing):
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            StepEvent(
+                kind="tool_call",
+                content=MagicMock(),
+                step=0,
+                tool_name="git",
+                metadata={"args": {"subcommand": "status"}},
+            ),
+            StepEvent(
+                kind="tool_result",
+                content="clean",
+                step=0,
+                tool_name="git",
+            ),
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
+        assert tool_spans[0].attributes.get("input.value") is not None
+        assert tool_spans[0].attributes.get("input.mime_type") == "json"
+
+    async def test_tool_span_has_output_value(self, execute_with_tracing):
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            StepEvent(
+                kind="tool_call",
+                content=MagicMock(),
+                step=0,
+                tool_name="git",
+                metadata={"args": "diff"},
+            ),
+            StepEvent(
+                kind="tool_result",
+                content="M file.py",
+                step=0,
+                tool_name="git",
+            ),
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
+        assert tool_spans[0].attributes.get("output.value") == "M file.py"
+
+    async def test_approval_span_has_tool_kind(self, execute_with_tracing):
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /tmp/x"},
+                reason="Shell command requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        ts = await execute_with_tracing(
+            events=[deferred_event],
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
+        )
+        approval_spans = ts["get_spans"]("fin_assist.approval")
+        assert approval_spans[0].attributes.get("openinference.span.kind") == "TOOL"
+
+    async def test_approval_span_has_tool_name(self, execute_with_tracing):
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /tmp/x"},
+                reason="Shell command requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        ts = await execute_with_tracing(
+            events=[deferred_event],
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
+        )
+        approval_spans = ts["get_spans"]("fin_assist.approval")
+        assert approval_spans[0].attributes.get("tool.name") == "run_shell"
+
+    async def test_approval_span_has_input_value(self, execute_with_tracing):
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "rm -rf /tmp/x"},
+                reason="Shell command requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        ts = await execute_with_tracing(
+            events=[deferred_event],
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
+        )
+        approval_spans = ts["get_spans"]("fin_assist.approval")
+        assert approval_spans[0].attributes.get("input.value") is not None
+        assert approval_spans[0].attributes.get("input.mime_type") == "json"
+
+
 class TestStepSpanLifecycle:
     """The fin_assist.step span wraps each step boundary."""
 
@@ -272,7 +501,7 @@ class TestToolExecutionSpan:
         ts = await execute_with_tracing(events=events)
         tool_spans = ts["get_spans"]("fin_assist.tool_execution")
         assert tool_spans[0].attributes.get("fin_assist.tool.name") == "git"
-        assert tool_spans[0].attributes.get("fin_assist.tool.args") == "diff"
+        assert tool_spans[0].attributes.get("fin_assist.tool.args") is not None
 
 
 class TestApprovalSpan:

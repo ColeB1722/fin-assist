@@ -42,6 +42,7 @@ Part (``metadata.type = "approval_result"``), the Executor reconstructs
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from google.protobuf.struct_pb2 import Struct
 from opentelemetry import trace as trace_api
+from opentelemetry.context import attach, detach
 from opentelemetry.trace import StatusCode
 from opentelemetry.trace.status import Status
 
@@ -72,8 +74,13 @@ logger = logging.getLogger(__name__)
 
 def _get_tracer() -> Tracer:
     """Return the fin-assist OTel tracer (no-op if tracing is not set up)."""
-    from opentelemetry.trace import get_tracer
+    from opentelemetry.trace import get_tracer, get_tracer_provider
 
+    provider = get_tracer_provider()
+    from opentelemetry.trace import ProxyTracerProvider
+
+    if isinstance(provider, ProxyTracerProvider):
+        return provider.get_tracer("fin_assist")
     return get_tracer("fin_assist")
 
 
@@ -95,9 +102,12 @@ class _ExecutionContext:
     updater: TaskUpdater
     artifact_id: str
     created_artifacts: set[str] = field(default_factory=set)
+    text_chunks: list[str] = field(default_factory=list)
     task_span: Span | None = None
     current_step_span: Span | None = None
     current_tool_span: Span | None = None
+    _task_context_token: Any = field(default=None, repr=False)
+    _step_context_token: Any = field(default=None, repr=False)
 
 
 class Executor(AgentExecutor):
@@ -141,10 +151,12 @@ class Executor(AgentExecutor):
         backend: AgentBackend,
         context_store: ContextStore,
         agent_name: str = "",
+        model_name: str = "",
     ) -> None:
         self._backend = backend
         self._context_store = context_store
         self._agent_name = agent_name
+        self._model_name = model_name
         self._tracer: Tracer | None = None
 
     @property
@@ -176,15 +188,24 @@ class Executor(AgentExecutor):
         if ctx is None:
             return
 
+        user_input = ""
+        if context.message and hasattr(context.message, "parts"):
+            user_input = getattr(context.message, "get_user_input", lambda: "")() or ""
+
         task_span = self._active_tracer.start_span(
             "fin_assist.task",
             attributes={
+                "openinference.span.kind": "AGENT",
                 "gen_ai.agent.name": self._agent_name,
                 "fin_assist.task.id": ctx.task_id,
                 "fin_assist.context.id": ctx.raw_context_id or "",
+                "session.id": ctx.raw_context_id or "",
+                "input.value": user_input,
             },
         )
         ctx.task_span = task_span
+
+        ctx._task_context_token = attach(trace_api.set_span_in_context(task_span))
 
         try:
             message_history = await self._load_history(ctx)
@@ -197,16 +218,28 @@ class Executor(AgentExecutor):
             result: RunResult = await handle.result()
         except Exception:
             logger.exception("execute failed task_id=%s", ctx.task_id)
-            task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
-            task_span.end()
+            if ctx.task_span is not None:
+                partial = "".join(ctx.text_chunks)
+                if partial:
+                    ctx.task_span.set_attribute("output.value", partial)
+                ctx.task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
+                ctx.task_span.end()
+            self._detach_task_context(ctx)
             await ctx.updater.failed()
             raise
+
+        self._detach_task_context(ctx)
 
         if has_deferred:
             await self._pause_for_approval(ctx, result)
             return
 
         await self._finalize(ctx, result)
+
+    def _detach_task_context(self, ctx: _ExecutionContext) -> None:
+        if ctx._task_context_token is not None:
+            detach(ctx._task_context_token)
+            ctx._task_context_token = None
 
     async def _setup_task(
         self,
@@ -344,6 +377,14 @@ class Executor(AgentExecutor):
 
         if ctx.task_span is not None:
             ctx.task_span.set_attribute("fin_assist.task.result_type", type(result.output).__name__)
+            if isinstance(result.output, str):
+                ctx.task_span.set_attribute("output.value", result.output)
+            else:
+                try:
+                    ctx.task_span.set_attribute("output.value", json.dumps(result.output))
+                    ctx.task_span.set_attribute("output.mime_type", "json")
+                except (TypeError, ValueError):
+                    ctx.task_span.set_attribute("output.value", str(result.output))
             ctx.task_span.end()
 
         logger.info("execute complete task_id=%s", ctx.task_id)
@@ -353,6 +394,7 @@ class Executor(AgentExecutor):
         """Route a ``StepEvent`` to the appropriate A2A artifact or state transition."""
         match event.kind:
             case "text_delta":
+                ctx.text_chunks.append(event.content)
                 await self._emit_artifact(
                     ctx.updater,
                     ctx.artifact_id,
@@ -396,9 +438,6 @@ class Executor(AgentExecutor):
                         "tool_name": event.tool_name or "",
                     }
                 )
-                # Backends are required to emit ``content`` as ``str`` for
-                # ``tool_result`` events — see StepEvent docstring and
-                # PydanticAIBackend._extract_tool_result_text.
                 content = event.content if isinstance(event.content, str) else str(event.content)
                 await self._emit_artifact(
                     ctx.updater,
@@ -416,17 +455,24 @@ class Executor(AgentExecutor):
 
     def _start_step_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         """Start a fin_assist.step span as a child of the task span."""
-        parent_context = trace_api.set_span_in_context(ctx.task_span) if ctx.task_span else None
+        parent = ctx.current_step_span or ctx.task_span
+        parent_context = trace_api.set_span_in_context(parent) if parent else None
         ctx.current_step_span = self._active_tracer.start_span(
             "fin_assist.step",
             context=parent_context,
             attributes={
+                "openinference.span.kind": "CHAIN",
                 "fin_assist.step.number": event.step,
             },
         )
+        ctx._step_context_token = attach(trace_api.set_span_in_context(ctx.current_step_span))
 
     def _end_step_span(self, ctx: _ExecutionContext) -> None:
-        """End the current step span."""
+        """End the current step span and restore the task span as active context."""
+        if ctx._step_context_token is not None:
+            detach(ctx._step_context_token)
+            ctx._step_context_token = None
+
         if ctx.current_step_span is not None:
             ctx.current_step_span.end()
         ctx.current_step_span = None
@@ -435,18 +481,26 @@ class Executor(AgentExecutor):
         """Start a fin_assist.tool_execution span as a child of the current step span."""
         parent = ctx.current_step_span or ctx.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
+        args = event.metadata.get("args", {})
+        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
         ctx.current_tool_span = self._active_tracer.start_span(
             "fin_assist.tool_execution",
             context=parent_context,
             attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": event.tool_name or "",
                 "fin_assist.tool.name": event.tool_name or "",
-                "fin_assist.tool.args": str(event.metadata.get("args", "")),
+                "fin_assist.tool.args": args_str,
+                "input.value": args_str,
+                "input.mime_type": "json",
             },
         )
 
     def _end_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         """End the current tool execution span, recording result attributes."""
         if ctx.current_tool_span is not None:
+            content = event.content if isinstance(event.content, str) else str(event.content)
+            ctx.current_tool_span.set_attribute("output.value", content)
             ctx.current_tool_span.end()
         ctx.current_tool_span = None
 
@@ -473,25 +527,31 @@ class Executor(AgentExecutor):
     async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         parent = ctx.current_step_span or ctx.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
+        deferred_content = event.content
+        args = getattr(deferred_content, "args", {})
+        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
         approval_span = self._active_tracer.start_span(
             "fin_assist.approval",
             context=parent_context,
             attributes={
+                "openinference.span.kind": "TOOL",
+                "tool.name": event.tool_name or "",
                 "fin_assist.tool.name": event.tool_name or "",
                 "fin_assist.approval.decision": "pending",
+                "input.value": args_str,
+                "input.mime_type": "json",
             },
         )
         approval_span.end()
 
         deferred_meta = Struct()
-        deferred_content = event.content
         deferred_meta.update(
             {
                 "type": "deferred",
                 "tool_name": event.tool_name or "",
                 "tool_call_id": getattr(deferred_content, "tool_call_id", ""),
                 "reason": getattr(deferred_content, "reason", None) or "",
-                "args": getattr(deferred_content, "args", {}),
+                "args": args,
             }
         )
         await self._emit_artifact(

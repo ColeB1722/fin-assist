@@ -36,6 +36,7 @@
     FIN_GENERAL__DEFAULT_PROVIDER = "openrouter";
     FIN_GENERAL__DEFAULT_MODEL = "anthropic/claude-sonnet-4.6";
     FIN_DATA_DIR = "./.fin";
+    FIN_TRACING__ENABLED = "true";
   };
 
   git-hooks.hooks = {
@@ -69,6 +70,7 @@
     echo "  just lint     - Run linter"
     echo "  just test     - Run tests"
     echo "  just run      - Run the TUI"
+    echo "  phoenix serve - Start Phoenix trace backend"
     echo ""
   '';
 }

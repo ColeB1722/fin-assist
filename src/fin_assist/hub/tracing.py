@@ -43,6 +43,7 @@ def setup_tracing(config: TracingSettings) -> None:
     resource = Resource.create(
         {
             ResourceAttributes.SERVICE_NAME: config.project_name,
+            "openinference.project.name": config.project_name,
         }
     )
 
