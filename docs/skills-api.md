@@ -1,6 +1,6 @@
 # Skills API — Design Sketch
 
-**Status:** Sketch, pre-implementation. Iterated 2026-04-28 — cross-tool format compat, `lookup` scope, and approval-direction decisions resolved (see §9). Sections marked "To be decided" are explicitly parked for resolution during implementation.
+**Status:** Sketch, pre-implementation. Iterated 2026-04-29 — skills reframed as **capability packs** (tools + docs + scripts + approvals + serving-mode affinity) that hot-load into an agent as a unit; `lookup(skill_id)` replaced by `load_skill` transition + per-skill `extensions/` disclosure; skills gain `fin.serving_modes`; invocation UX collapses to "always skill-scoped, user or agent picks." See §9 for resolved/deferred questions. Git history carries prior iterations.
 
 **Inspiration:** Anthropic's [skills.md](https://code.claude.com/docs/en/skills) pattern (directory of markdown files + frontmatter, progressive disclosure, on-demand body loading). [OpenCode's](https://open-code.ai/en/docs/skills) parallel implementation confirms the pattern is converging across agent tooling.
 
@@ -18,36 +18,41 @@ Three concrete gaps drive this design:
 
 The skills.md pattern addresses all three: per-task directories with markdown frontmatter + body, discovered via filesystem walk-up, loaded on demand, invocable as first-class structured actions.
 
+The key reframe in this iteration: a **skill is a capability pack**, not a prompt. When it loads, it replaces the agent's system-prompt content, tool surface, and approval overrides as a unit. Skills span a gradient from narrow/procedural (`pr` — short body, one scoped CLI, tight approvals) to broad/toolbox (`git` — index-style body with on-demand extension lookup, permissive tools, loose approvals) to conversation-shaping (`systems-architect` — body of stance and frames, zero or minimal tools, talk-mode only). One shape, authored differently.
+
 ## 2. Concept model
 
 Three concepts, strict containment, no overlap.
 
 ### Tool
 
-A callable primitive registered with the hub's `ToolRegistry`. Defined today in `src/fin_assist/agents/tools.py`. Examples: `git` (scoped CLI prefix), `gh`, `read_file`, `run_shell`.
+A callable primitive. Examples: `git` (scoped CLI prefix), `gh`, `read_file`, `run_shell`.
 
 - Has a **base approval policy** (`ApprovalPolicy` with subcommand rules — see Phase A).
 - Has a schema (for LLM tool-call surface) and an async callable (for execution).
 - Zero framework imports (`agents/` is platform, not transport).
-- **Unchanged by this design** except for the subcommand-approval extension in Phase A.
+- **Unchanged by Phase A** except for the subcommand-approval extension.
+- **Scope narrows in Phase B.** `ToolRegistry` becomes a **built-in tool catalog** — the home for Python-implemented callables (`git`, `read_file`, etc.) that skills reference by name in frontmatter. It stops being the per-agent tool assembler it is today; per-task tool assembly moves to the skill loader. `AgentConfig.tools` shrinks (or disappears) in favor of a `baseline_tools` concept on the agent. See §8 Phase B.
 
 ### Skill
 
-A named, invocable task. Maps 1:1 to A2A's `AgentSkill` type (already used in `src/fin_assist/hub/factory.py`). Backed by an on-disk `SKILL.md` file (frontmatter + body).
+A **capability pack** — a bundle of tools, prompt content, approval overrides, optional scripts, and optional extension docs that load as a unit. Maps 1:1 to A2A's `AgentSkill` type (already used in `src/fin_assist/hub/factory.py`). Backed by an on-disk `SKILL.md` file (frontmatter + body) plus optional sibling files.
 
 A skill declares:
 
-- **name, description** — `AgentSkill` fields (protocol-native, shared across agent tooling). `name` doubles as the skill identifier; description is short (one paragraph, always-in-prompt).
-- **fin.tools** — list of tool IDs this skill uses. Attaching the skill to an agent unions these into the agent's effective toolset.
-- **fin.approval** — per-tool, per-subcommand policy overrides applied **only while this skill's invocation is active** (see §6).
-- **fin.entry_prompt** — message injected when the skill is invoked via the A2A `skills/invoke` RPC method.
-- **body** — the rest of `SKILL.md`, loaded on-demand via the `lookup` tool (see §5).
+- **name, description** — `AgentSkill` fields (protocol-native, shared across agent tooling). `name` doubles as the skill identifier; description is short (one sentence, used in the general-mode skill list).
+- **fin.tools** — list of tool IDs this skill uses. Resolved against the built-in tool catalog at load time.
+- **fin.approval** — per-tool, per-subcommand policy overrides applied **only while this skill is active** (see §6). Loosen-only.
+- **fin.serving_modes** — which CLI modes this skill is valid in. Defaults to both. Hard constraint, same semantics as `AgentCardMeta.serving_modes` and the to-be-migrated `WorkflowConfig.serving_modes`. See §4.
+- **fin.entry_prompt** — first user message seeded when the skill is loaded via pre-commit invocation (§4). Optional for talk-skills.
+- **fin.scripts** (optional) — declared scripts from the skill's `scripts/` directory, each becoming a generated `ToolDefinition` at load time.
+- **body** — prose that becomes part of the system prompt when the skill loads. May reference sibling extension files; the `load_skill`/extension-lookup tool surface (§5) exposes them on demand.
 
-**Frontmatter shape.** The top-level fields `name` and `description` match the emerging cross-tool `SKILL.md` convention (Anthropic's skills.md, OpenCode's skills). Fin-specific extensions live under a `fin:` namespace, mirroring the `[tool.ruff]` / `[tool.pytest]` pattern in `pyproject.toml`. This means:
+**Frontmatter shape.** Top-level `name` and `description` match the emerging cross-tool `SKILL.md` convention (Anthropic's skills.md, OpenCode's skills). Fin-specific extensions live under a `fin:` namespace, mirroring the `[tool.ruff]` / `[tool.pytest]` pattern in `pyproject.toml`:
 
 - A fin `SKILL.md` is readable by other tools that adopt the shared format — they see `name` and `description`, ignore the `fin:` block.
 - A skill authored for another tool is loadable by fin (with defaults for missing `fin:` fields).
-- The `fin:` block is the natural payload for the A2A card extension (`fin_assist:skills`) — frontmatter and wire format line up one-to-one.
+- The `fin:` block is the natural payload for the A2A card extension — frontmatter and wire format line up one-to-one.
 
 Cross-directory discovery (reading `.claude/skills/` or `.opencode/skills/`) remains deferred — see §3.
 
@@ -56,27 +61,32 @@ Example `SKILL.md` frontmatter:
 ```yaml
 ---
 name: pr
-description: >
-  Generate a conventional commit, stage the right files, push the branch,
-  and open a PR with a summary derived from the diff.
+description: Create a PR from current branch — generates a conventional commit, pushes, opens PR with summary.
 fin:
+  serving_modes: [do]
   tools: [git, gh]
   approval:
     git:
       # Within this skill, `git push` is pre-approved (normally gated)
       - { pattern: "push*", mode: "never" }
+  scripts:
+    - name: pr-checklist
+      path: scripts/pr-checklist.sh
+      description: Print the PR review checklist.
+      approval: never
   entry_prompt: |
-    The user wants to create a pull request. The full procedure is
-    included below — follow it step by step. If any tool call fails,
-    stop and ask for help.
+    The user wants to create a pull request. The procedure is in this
+    skill's body — follow it step by step. If any tool call fails, stop
+    and ask for help.
 ---
 
 # Creating pull requests
 
 ## Step 1 — Understand the change
-[full instructions body — eagerly injected into the system prompt
-when this skill is invoked; `lookup` is not available in this mode.
-See §5 for invocation-mode semantics.]
+[...body inlined into the system prompt when the skill loads. For deeper
+references (edge cases, alternate flows), see the referenced extension
+files — e.g., `extensions/force-push-rules.md` — fetched on demand.
+See §5 for load/lookup semantics.]
 ```
 
 ### Agent
@@ -85,21 +95,14 @@ An agent declares:
 
 - Base identity (name, description, system_prompt, serving_modes) — unchanged from today.
 - **Attached skills** — list of skill IDs the agent exposes.
-- **Baseline tools** (optional) — tools the agent has available even outside any skill invocation (e.g., `read_file` for an agent meant to do ad-hoc code exploration).
+- **Baseline tools** (optional) — tools always available regardless of which skill (if any) is loaded. Used for minimal ad-hoc capabilities like `read_file` that the agent wants in every context.
 
-An agent's **effective toolset** when no skill is active:
+An agent runs in one of two configurations per turn:
 
-```
-baseline_tools ∪ (tool for skill in attached_skills for tool in skill.tools)
-```
+- **General** — no skill active. Effective toolset is `baseline_tools`. System prompt carries the agent's base system prompt plus a short list of loadable skill descriptions (filtered to skills matching the current serving mode). A `load_skill` tool is available iff the agent has ≥1 attached skill in the current serving mode.
+- **Skill-loaded** — active skill S. Effective toolset is `baseline_tools ∪ S.tools ∪ S.scripts_as_tools`. System prompt carries the agent's base system prompt plus S's body. S's approval overrides prepend to base policies for S's declared tools. The skill-list and `load_skill` are **not** in scope; an `extension` lookup tool is registered iff S has an `extensions/` directory.
 
-An agent's **effective toolset** during a skill invocation:
-
-```
-baseline_tools ∪ active_skill.tools
-```
-
-(Other attached skills' tools aren't removed — we don't hide capabilities mid-turn — but the active skill's approval overrides take precedence for its declared tools. See §6.)
+One skill is loaded at a time per turn. Loading is a **transition** — system prompt content, tool surface, and approval overrides all swap as a unit. The transition is one-shot within a task: once loaded, a skill stays loaded for the remainder of that task. See §4 for persistence across talk-session turns.
 
 ### What was "Workflow" — gone
 
@@ -114,13 +117,19 @@ Migration: current `AgentConfig.workflows` dict becomes skill files. Each workfl
 ```
 .fin/skills/<skill-id>/
   SKILL.md                # required: frontmatter + body
-  scripts/                # optional: supporting files
-    generate-pr.sh
-  examples/               # optional: reference material
-    good-pr.md
+  scripts/                # optional: declared in frontmatter; become ToolDefinitions on load
+    pr-checklist.sh
+  extensions/             # optional: deeper docs referenced from body; fetched via lookup
+    force-push-rules.md
+    rebase-semantics.md
 ```
 
 Single-file skills (no supporting assets) can live as `.fin/skills/<id>/SKILL.md` directly — the directory exists solely to be a home for the bundle if/when it grows.
+
+`scripts/` and `extensions/` serve different purposes:
+
+- **`scripts/`** — executable files that become LLM-callable tools when the skill loads. Each must be declared in frontmatter (`fin.scripts`) with name, description, and approval policy. Discovery is explicit, not auto-enumerate — declarations are reviewable.
+- **`extensions/`** — prose documentation the body may reference. Not tools; content fetched via the extension-lookup tool (§5). Jump-table semantics: enumerable by file name within the skill, not free-form retrieval.
 
 ### Search paths
 
@@ -182,7 +191,7 @@ This is where the reframe earns its keep: fin's notion of "skill" maps onto A2A'
 
 ### Agent card publishing
 
-Today, `hub/factory.py:111-118` publishes one `AgentSkill` per agent card — a placeholder equal to the agent itself. Under this design, `AgentCard.skills` becomes the actual list of attached skills:
+Today, `hub/factory.py:111-118` publishes one `AgentSkill` per agent card — a placeholder equal to the agent itself. Under this design, `AgentCard.skills` becomes the actual list of **attached** skills:
 
 ```python
 agent_card = AgentCard(
@@ -201,13 +210,33 @@ agent_card = AgentCard(
 )
 ```
 
+**Tools do not appear on the card.** A2A's `AgentCard` standardizes `skills` but has no `tools` field — the protocol treats tools as implementation detail of skills, not card-level capability. This design honors that: clients discover what an agent can do by reading its skill list; to learn what tools a given skill brings, clients invoke it.
+
 Fin-specific skill metadata (tools list, approval overrides, entry_prompt reference) rides on an extension. The existing `fin_assist:meta` extension at `src/fin_assist/hub/factory.py:104` can grow a `skills` field, or a new `fin_assist:skills` extension can be added — minor call at implementation time.
+
+**Walk-up discovered skills do not appear on the card.** The card lists statically attached skills only. CLI walk-up (§3) finds project-local skills and injects them at task creation time; they are runtime additions, not card-level identity. Cards re-render per request so attached-skill changes (skill file edits, mtime-triggered cache reloads) propagate without a server restart.
+
+### Invocation model — always skill-scoped, user or agent picks
+
+Every turn runs in one of two configurations: **general** (no skill) or **skill-loaded**. These are not "invocation modes"; they are states within a single turn that may transition (via `load_skill`) at most once per task.
+
+**Three entry variants, one underlying state:**
+
+| Entry | Mechanism | Starting state |
+|---|---|---|
+| **Pre-commit** | `fin do <agent> <skill-id>` (or `fin talk <agent> <skill-id>`) routes to `skills/invoke(skill_id)` RPC | Task starts in skill-loaded; `entry_prompt` seeds first user message if declared |
+| **Agent-routed** | `fin do <agent> "<message>"` routes to `message/send`; general-mode system prompt includes skill list; agent may call `load_skill` | Task starts in general; transitions to skill-loaded iff agent chooses |
+| **Stay general** | Same as above; agent does not call `load_skill` | Task stays in general throughout |
+
+From the CLI's perspective: `fin do git pr` is a pre-commit shortcut for "I know which skill, don't route." `fin do git "make me a pr"` is agent-routed — slight latency from the routing tool call, some risk of mis-routing, but handles unclear intent. `fin do git "why did this test fail"` likely stays general — no skill matches cleanly, agent uses baseline capability only.
+
+**Hub-side state driver.** The task carries `active_skill_id: str | None`. Initially `None` for message/send, set to the skill id for skills/invoke. Set exactly once via `load_skill`. That single piece of state drives (1) system-prompt composition, (2) tool-surface assembly, (3) approval override resolution (§6), and (4) event tagging for client presentation (see below).
 
 ### `skills/invoke` RPC method
 
-A2A supports **Method Extensions** ("Extended Skills" in the spec): custom RPC methods declared via extensions. This design registers a `skills/invoke` method on agent endpoints.
+A2A supports **Method Extensions** ("Extended Skills" in the spec): custom RPC methods declared via extensions. This design registers `skills/invoke` on agent endpoints for the pre-commit entry.
 
-Shape (sketch — final schema TBD during implementation):
+Shape (final schema TBD during implementation):
 
 ```
 Request:
@@ -217,95 +246,92 @@ Response:
   task_id: string            # standard A2A task created; client streams updates
 ```
 
-Semantics:
+On receipt: hub validates the skill_id against attached + walk-up skills, validates the skill's `serving_modes` matches the request's mode, builds the task with `active_skill_id` set from the start, seeds `entry_prompt` as the first user message if declared.
 
-1. Client calls `skills/invoke` with a skill_id the agent supports.
-2. Hub creates an A2A task (same machinery as `message/send`).
-3. Hub builds the system prompt with the skill's **full body** eagerly injected (not just the description — see §5 for the rationale).
-4. Hub assembles the task's toolset **excluding** the `lookup` tool. The body is already in-context; other skills' bodies are intentionally out of reach.
-5. Hub seeds the task with the skill's `entry_prompt` as the first user message.
-6. Hub marks the task with `active_skill_id` — one piece of state driving three effects: approval override lookup (§6), `lookup` availability (§5), and eager-body injection (this step).
-7. Task proceeds normally: streams events, requests approval when needed, emits artifacts, terminates.
+### Persistence across a `talk` session
 
-From the CLI's perspective: `fin do shell pr` routes to `skills/invoke(skill_id="pr")` on the shell agent instead of `message/send`. `fin do shell "free-form message"` still uses `message/send` — unstructured invocation remains supported.
+A2A tasks are turn-scoped; `fin talk` conversations are session-scoped. Skill persistence rules:
+
+- **Talk-skill loaded in a talk session:** persists across turns. Loading `systems-architect` at turn 1 keeps it active at turns 2, 3, ... The skill is the conversation's shape, not a single turn's action.
+- **Do-skill loaded in a talk session:** scoped to one task. Loading `pr` mid-conversation performs the action (with its own approval flow), task ends, conversation returns to the prior context (talk-skill or general).
+- **Switching skills mid-session:** user-driven only. A CLI command (e.g., `/skill security-reviewer`) or re-running `fin talk <agent> <skill>`. Agent-initiated switches are not permitted — the one-shot-transition invariant applies per task, and at the session level the user owns the conversation's shape.
+- **Session resume (`fin talk --resume <id>`):** persisted skill state is restored. If the session ended while `systems-architect` was loaded, resume loads `systems-architect` again.
+
+### Nested-context rendering — UX note (parked)
+
+Running a do-skill inside a talk session creates a nested-context UX problem: how does a client distinguish the do-skill sub-task from the surrounding talk conversation? Server-side requirements fall out cleanly:
+
+- **Skill-transition events** on `StepEvent`: `skill_loaded(skill_id)`, `skill_completed(skill_id, outcome)`.
+- **`active_skill_id` on artifact metadata** so renderers can group or frame artifacts by their originating skill.
+- **Distinct tagging** of do-skill artifacts (`metadata.origin = "skill:<id>"`) so clients can filter or collapse them.
+
+Client-side presentation (inline-marked, detached panel, summary collapse) is a Phase B CLI decision that will probably get revisited when the TUI lands. The hub ships the signal; clients decide the shape. Also aligns with the Phoenix span-attribute-per-skill work in Phase C.
 
 ### Invocation paths summary
 
-| Path | Entry point | When used |
+| Path | When used |
+|---|---|
+| Pre-commit | `fin do <agent> <skill-id>` — user knows which skill, no routing |
+| Agent-routed | `fin do <agent> "<message>"` — agent may call `load_skill` based on message |
+| Stay general | `fin do <agent> "<message>"` — agent stays general, uses baseline only |
+| `@`-completion | `@file:foo.py`, `@git:diff` — orthogonal, CLI-only context splicing |
+
+`@`-completion is orthogonal to skills. It is a CLI ergonomic for splicing context into prompts before send, owned entirely by `cli/context/` (see §7). No A2A involvement, no hub roundtrip, no overlap with skill invocation.
+
+## 5. Skill loading and extension lookup
+
+Two behaviors, both backed by the skill filesystem layout, both available only in the state where they make sense. The exact tool shape (one tool with optional arg vs. two distinct tools, exact parameter names) is an implementation detail resolved in Phase B. The behavioral contract:
+
+### Behavior 1: load a skill (general-state only)
+
+**Purpose:** transition the task from general into skill-loaded state.
+
+- **Argument:** `skill_id` — enumerable against the agent's attached + walk-up-discovered skills, filtered by current serving mode.
+- **Effect:** atomically swaps system-prompt content (base prompt + skill body), tool surface (baseline + skill tools + skill scripts-as-tools), and approval overrides (skill's prepend to base). Registers the extension-lookup tool iff the skill has an `extensions/` directory. Unregisters itself (no double-loads; one transition per task).
+- **Scope:** available only when `active_skill_id` is `None`. After one successful call, no longer in scope.
+- **Failure mode:** unknown id, wrong serving mode, or skill failed to load — tool returns a clear error string; model recovers via normal tool-error handling; no state change.
+
+### Behavior 2: fetch an extension (skill-loaded state only)
+
+**Purpose:** on-demand retrieval of referenced docs within the active skill.
+
+- **Argument:** `name` — matches a file in the active skill's `extensions/` directory (jump table, not free-form search).
+- **Effect:** returns the file contents as a string. Read-only. No state change.
+- **Scope:** registered only when the active skill has an `extensions/` directory. Hermetic per skill — no cross-skill access, no access to extensions from any skill other than the active one.
+- **Failure mode:** unknown name — tool returns error string; model recovers.
+
+### Rationale for the state-gated availability
+
+1. **No wasted roundtrip.** A pre-committed or already-loaded skill doesn't need the model to route — routing machinery is absent from skill-loaded state.
+2. **Pollution containment.** Skill bodies may contain literal tool calls (`git push --force-with-lease`). With behaviors gated to their valid state, each skill's body and approval overrides are scoped to its own active window. The two gates are duals of the same `active_skill_id` state that drives §6 approval resolution.
+3. **Bounded prompt budget.** General state pays N × short-descriptions (cheap). Skill-loaded state pays 1 × body + extension index (targeted). Neither state pays both.
+4. **Discoverable surface per state.** The tool list the model sees is exactly what's callable in the current state. No "sometimes available, sometimes not" tools to reason about in natural language.
+
+### Jump table, not retrieval
+
+Both behaviors are **jump-table lookups against enumerable keys**:
+
+- `load_skill(id)` — id is enumerable against the current skill list; the list is in the system prompt.
+- `extension(name)` — name is enumerable against files in the active skill's `extensions/` directory; names appear in the body where they're referenced.
+
+Neither behavior is free-form retrieval. A tempting extension — "let the model search a docs corpus by topic" — is explicitly rejected:
+
+| | Jump-table lookup (shipped) | Topic retrieval (not shipped) |
 |---|---|---|
-| Unstructured | A2A `message/send` | `fin do <agent> "<message>"` — free-form task |
-| Skill-invoked | A2A `skills/invoke` extension | `fin do <agent> <skill-id>` — named task, structured seeding |
-| `@`-completion | CLI-only, pre-send | `@file:foo.py`, `@git:diff` — user forces context into the prompt |
+| Semantics | Enumerable keys, dict resolution | Query → ranked passages |
+| Failure mode | Clean: key not found → error, model recovers | Fuzzy: zero/wrong/ok matches, tokens burned on rephrase |
+| Prompt-budget cost | Bounded (N ids, M extension names) | Unbounded or gambling on discoverability |
+| Implementation | ~dict wrap | Vector store or FTS, embedding model, chunking |
+| Eval story | Did the key resolve? Trivial. | Precision/recall — its own eval harness |
 
-`@`-completion is **orthogonal** to skills. It is a CLI ergonomic for splicing context into prompts before send, owned entirely by `cli/context/` (see §7). No A2A involvement, no hub roundtrip, no overlap with skill invocation.
-
-## 5. The `lookup` tool
-
-One of the skills.md pattern's core ideas is **progressive disclosure**: short descriptions in the system prompt (cheap, always-on), full bodies loaded on demand (expensive, only when needed). Fin adopts this via a built-in `lookup` tool available to every agent that has attached skills.
-
-### Shape (Phase B)
-
-```
-lookup(skill_id: string) -> string
-```
-
-- Takes a skill_id.
-- Returns the body of that skill's `SKILL.md` (everything after the frontmatter).
-- Scoped to the invoking agent's attached skills — an agent can only lookup skills it has.
-- Approval: `never` (reads are free).
-
-That is the entire Phase B shape. One signature, one behavior, no corpus scoping, no tags, no caching semantics to learn.
-
-### Availability by invocation mode
-
-**Design decision:** `lookup` availability is a function of invocation mode. The two modes have distinct prompt shapes and distinct tool surfaces.
-
-| Mode | Entry | System prompt additions | `lookup` tool |
-|---|---|---|---|
-| **Free-form** (`message/send`) | `fin do git "..."` | Short descriptions of all attached skills | Available |
-| **Skill-invoked** (`skills/invoke`) | `fin do git pr` | Active skill's **full body**, eagerly injected | **Not available** |
-
-**Rationale:**
-
-1. **No wasted roundtrip.** If the user explicitly invoked skill `pr`, the model shouldn't need a tool call to load the procedure — we already know which one it needs. Eager injection collapses that indirection.
-2. **Pollution containment.** A skill's body may contain literal tool calls (`git push --force-with-lease`). If that body is reachable via `lookup` while a different skill is active, the model could lift the wrong command into the wrong context. Cutting `lookup` during skill invocation makes each skill's safety model hermetic — body and approval overrides are both scoped to the active invocation. This mirrors the invocation-scoped approval rule in §6; the two behaviors are duals keyed off the same `active_skill_id` state.
-3. **Distinct prompt-budget profiles.** Free-form pays N × short-descriptions cost (cheap, always-on), bodies on demand. Skill-invoked pays 1 × full-body cost (expensive but targeted), nothing else. Neither mode pays both.
-
-**What about composition?** A skill whose body calls `lookup("other-skill")` would, under this rule, fail — `lookup` isn't registered during skill invocation. This is intentional for Phase B. If composition emerges as a real need, the resolution is a `compose: [other-skill]` frontmatter field that re-enables *scoped* `lookup` for explicitly declared skill ids. See open question #7.
-
-### Why ship it in Phase B
-
-- Locks in the right authoring habit from day one: "description in frontmatter, details in body."
-- Enables the pattern where a skill's `entry_prompt` says "call `lookup('pr')` to load the procedure." This is the core reusability mechanism.
-- Keeps prompt budget controlled: system prompt carries N short descriptions, not N full bodies.
-- ~50 LOC to implement: hub has the bodies loaded already (§3), `lookup` just returns them.
+If RAG-over-local-docs is ever valuable, it gets a different tool with different return semantics (ranked passages, not whole bodies). Conflating forces weasel-worded descriptions and trains the model on fuzzy resolution where precise would do.
 
 ### What Phase B explicitly doesn't do
 
-- No free-form topic lookup (`lookup(topic="conventional-commits")`) — see below; this is a different product, not a deferred mode of the same tool.
-- No arbitrary-corpus retrieval from `.fin/docs/` or similar. `lookup` reads only skill bodies.
-- No caching of lookup results (hub already caches `SKILL.md` parsing; tool call overhead is negligible).
-- No cross-agent leakage: skill_ids outside the invoking agent's attached skills return an error.
-
-### `lookup(skill_id)` is a jump table, not a retrieval tool
-
-A tempting extension is `lookup(topic)` — give the model a free-form string, resolve against a local docs corpus. Explicitly rejected, because it's a **different product** dressed in the same tool name:
-
-| | `lookup(skill_id)` (shipped) | `lookup(topic)` (not shipped) |
-|---|---|---|
-| Semantics | Jump table: enumerable ids, dict resolution | Retrieval: query → ranked passages |
-| Backing store | Skill bodies (already parsed, already in memory) | Arbitrary markdown corpus requiring indexing |
-| Failure mode | Clean: id not found → error, model recovers | Fuzzy: zero matches, wrong matches, or ok matches — model burns tokens on rephrased queries |
-| Prompt-budget cost | Tool description lists N ids (bounded) | Tool description describes a corpus vaguely (unbounded or gambling on discoverability) |
-| Implementation | ~50 LOC dict wrap | Vector store or FTS engine, embedding model, index refresh strategy, chunking decisions |
-| Eval story | Did the id resolve? Trivial. | Retrieval precision/recall — needs its own eval harness |
-| When wrong | Look at the skill directory | Look at the corpus, the index, the chunker, the embedder |
-
-If RAG-over-local-docs is ever valuable, it gets a **different tool name** (e.g. `recall`, `search_docs`) with its own return type (passages, not whole bodies) and its own failure semantics. Conflating the two forces the tool's description to be weasel-worded ("maybe a skill, maybe a doc") and trains the model on fuzzy resolution semantics where precise semantics would do.
-
-**The name `lookup` is reserved for skill-id resolution.** Tool names leak into skill bodies (`entry_prompt: "call lookup('pr')..."`); renaming later means rewriting skill bodies. Keep the semantics stable from day one.
-
-Phase C can extend `lookup`'s shape if real pain emerges within the skill-id scope (e.g., scoped composition per open question #7). It does not grow into free-form retrieval.
+- **No free-form topic retrieval** in either behavior.
+- **No cross-skill extension access.** `extension(name)` reads only the active skill's `extensions/`.
+- **No skill composition.** A skill's body cannot load another skill mid-execution; `load_skill` is unregistered once a skill is active. If composition emerges as a real need, the resolution is a `compose: [other-skill]` frontmatter field that re-enables scoped loading for explicitly declared ids. Parked as an open question — the cross-skill non-inheritance rules (tools, approvals, bodies all hermetic) make the feature do so little it hasn't justified the surface area.
+- **No caching of results.** Hub already caches parsed `SKILL.md` and extension files; tool-call overhead is negligible.
 
 ## 6. Approval policy
 
@@ -353,9 +379,9 @@ Merging all skills' overrides into a single agent-wide policy would mean the `pr
 
 **Implementation plumbing:**
 
-The executor needs to know "which skill's context is this tool call inside." The cleanest way: the `skills/invoke` RPC marks the task with `active_skill_id`; executor reads it when evaluating a tool call; `ToolDefinition.approval` lookup becomes `approval.for_skill(active_skill_id)` instead of a bare attribute read.
+The executor needs to know "which skill's context is this tool call inside." The cleanest way: the task carries `active_skill_id` (set by `skills/invoke` at task creation or by `load_skill` mid-task); executor reads it when evaluating a tool call; `ToolDefinition.approval` lookup becomes `approval.for_skill(active_skill_id)` instead of a bare attribute read.
 
-**One state, three effects.** `active_skill_id` drives (1) approval override resolution (this section), (2) `lookup` tool availability (§5), and (3) eager body injection into the system prompt (§4). All three collapse onto the same piece of state — no new coupling introduced by any one of them.
+**One state, four effects.** `active_skill_id` drives (1) approval override resolution (this section), (2) system-prompt composition (§2, §4), (3) tool-surface assembly including the state-gated load/extension behaviors (§5), and (4) event tagging for client-side nested-context rendering (§4). All four collapse onto the same piece of state.
 
 ### Direction of overrides: loosen-only
 
@@ -425,52 +451,60 @@ The design is split into three shippable phases. Each is independently useful; e
 
 **Does not ship:** skills, `SKILL.md` discovery, `lookup` tool, `skills/invoke` RPC, card-level skill publishing.
 
-### Phase B — Skills as A2A-native capabilities
+### Phase B — Skills as capability packs
 
-**Goal:** users can author skills as markdown files, invoke them structurally via `fin do <agent> <skill>`, and compose them across agents.
+**Goal:** users can author skills as on-disk bundles, pre-commit via `fin do <agent> <skill>`, let the agent route via `load_skill`, and author both do- and talk-style skills.
 
 **Scope:**
 
 - `src/fin_assist/skills/` package (currently an empty placeholder at `architecture.md:291`):
-  - `definition.py` — `SkillDefinition`, frontmatter schema
-  - `loader.py` — parses `SKILL.md` (frontmatter + body)
+  - `definition.py` — `SkillDefinition`, frontmatter schema (including `serving_modes`, `scripts`, approval overrides)
+  - `loader.py` — parses `SKILL.md` (frontmatter + body), materializes declared scripts as `ToolDefinition`s, indexes `extensions/`
   - `discovery.py` — walk-up + user-global search logic (**CLI-side**)
   - `registry.py` — hub-side cache keyed by absolute path, mtime-invalidated
 - `config/schema.py` changes:
   - Remove `AgentConfig.workflows` (migrated to skill files).
   - Add `AgentConfig.skills: list[str]` — skill ids attached to the agent.
-  - `AgentConfig.tools: list[str]` remains for baseline tools (outside any skill).
-- `hub/factory.py`: `AgentCard.skills` lists attached skills; fin-specific metadata via card extension.
-- `hub/app.py`: register `skills/invoke` RPC method (A2A extension). Implementation seeds a task with skill's `entry_prompt` and tags it with `active_skill_id`.
-- `agents/tools.py`: `ApprovalPolicy.for_skill(skill_id)` lookup; overrides merge.
-- Executor: propagate `active_skill_id` through `StepEvent` / approval checks.
-- `lookup` tool registered globally; scoped per-agent at call time.
+  - Rename/narrow `AgentConfig.tools` → `AgentConfig.baseline_tools` (always-on tools outside any skill).
+- `agents/tools.py`: `ToolRegistry` scope narrows to built-in tool catalog. `get_for_agent()` removed; skills resolve tool names via `registry.get()` at load time. `ApprovalPolicy.for_skill(skill_id)` lookup; overrides merge.
+- `hub/factory.py`: `AgentCard.skills` lists attached skills (walk-up skills are runtime-only); per-request card re-render so cache reloads propagate; fin-specific metadata via card extension.
+- `hub/app.py`: register `skills/invoke` RPC method (A2A extension) for pre-commit entry. Implementation sets `active_skill_id` at task creation, seeds `entry_prompt` as first user message when declared.
+- Executor: propagate `active_skill_id` through `StepEvent` for approval checks and client-side presentation. Emit `skill_loaded` / `skill_completed` events. Tag artifacts with `metadata.origin = "skill:<id>"` when produced under a loaded skill.
+- `load_skill` and extension-lookup tools: state-gated per §5. Agents with zero attached skills never see `load_skill`.
 - CLI:
   - `fin do <agent> <skill-id>` routes to `skills/invoke`.
-  - `fin do <agent> "<message>"` remains for free-form.
+  - `fin do <agent> "<message>"` routes to `message/send`; agent sees filtered skill list and may `load_skill`.
   - Walk-up discovery at command time; paths passed to hub on connect.
-  - `fin list skills` reads agent cards, shows attached skills across all agents.
+  - `fin talk` preserves skill state across turns per §4 persistence rules.
+  - `fin list skills` reads agent cards, shows attached skills across all agents grouped by agent.
+  - `fin validate skills` — diagnoses load errors across discovered skill locations with file+reason output.
+- Skill loader fail-soft: invalid skills are skipped with a prominent boot-time summary; invalid references (missing tool, missing script) fail the skill's load, not the hub's.
+- In-flight task pinning: once a skill is loaded into a task, subsequent edits to `SKILL.md` don't affect that task. Next task sees the new version via mtime-triggered reload.
 
 **Migration of existing workflows:**
 
 The git agent's three workflows (commit, pr, summarize) from `config.toml` become three `SKILL.md` files under `.fin/skills/`. `WorkflowConfig` type deleted.
 
-**Exit gate:** at least two real skills authored as `SKILL.md` files (likely: `pr` and `commit`, migrated from git agent workflows), invocable via `fin do git pr`, with subcommand approvals working per skill context. `lookup` tool usable from within a skill invocation.
+**Exit gate:** at least three real skills authored:
 
-**Estimate:** ~5 new source files, ~5 modified, ~5 new test files, ~500 LOC + tests + config migration.
+- One do-skill migrated from existing workflows (`pr` or `commit`), invocable via `fin do git pr` and via agent-routed `load_skill`, with subcommand approvals working per skill context.
+- One broad toolbox skill (`git`) with ≥1 extension file fetched via the extension-lookup tool during a turn.
+- One talk-skill (candidate: `reviewer` or `systems-architect`) persisting across turns in a `fin talk` session.
 
-**Does not ship:** MCP as a skill source, progressive-disclosure beyond `lookup`, free-form `lookup(topic)` retrieval, cross-directory discovery (`.claude/skills/` / `.opencode/skills/`), skill composition (`compose:` frontmatter), approval tightening.
+**Estimate:** ~6 new source files, ~6 modified, ~6 new test files, ~650 LOC + tests + config migration.
+
+**Does not ship:** MCP as a skill source, free-form topic retrieval, cross-directory discovery (`.claude/skills/` / `.opencode/skills/`), skill composition (`compose:` frontmatter), approval tightening, agent-initiated mid-session skill switching.
 
 ### Phase C — MCP, observability, stretch
 
-**Goal:** skills from external sources (MCP), trace-backed visibility, optional extensions to `lookup`.
+**Goal:** skills from external sources (MCP), trace-backed visibility, optional extensions within the jump-table scope.
 
 **Scope (speculative; exact contents depend on what Phase B surfaces):**
 
 - **MCP as a skill source.** An MCP server's tools map to a skill bundle; `SKILL.md` can be synthesized or authored alongside. Closes current issue #84.
 - **Phoenix/OTel integration** with `skill.id` as a span attribute, driven by the tracing work that should land *before* Phase C per the handoff roadmap.
-- **`lookup` extensions** — topic-based retrieval, corpus scoping (`.fin/docs/`), cross-skill lookup — **only** if Phase B usage shows real pain.
-- **Tool-type taxonomy** (the previous Phase C sketch in handoff) may re-enter here as a natural consequence of MCP-sourced skills needing type-aware instrumentation.
+- **Extension-lookup refinements** — e.g., per-skill `compose: [...]` for scoped cross-skill loading — **only** if Phase B usage shows real pain.
+- **Tool-type taxonomy** may re-enter here as a natural consequence of MCP-sourced skills needing type-aware instrumentation.
 
 **Blocks on:** Phase B shipped; Phoenix tracing shipped; a concrete MCP consumer identified (likely `mcp-server-git` or a filesystem server).
 
@@ -484,15 +518,25 @@ These are explicitly not blocking the start of Phase A. They will be resolved du
 2. **Skill path transmission over A2A.** How exactly does the CLI send discovered paths to the hub on connection — extension on `message/send`, dedicated setup RPC, headers on the streaming channel? Practical choice.
 3. **Hub-side cache eviction.** How long do parsed `SKILL.md` stay in memory after the last referencing connection closes? LRU vs. eager eviction.
 4. **Extension choice.** Fold skill metadata into existing `fin_assist:meta` extension or add `fin_assist:skills` as a separate extension? Separation is cleaner if the meta extension grows much more; merge if it stays small.
-5. **`lookup` error contract.** If an agent calls `lookup(skill_id)` for a skill it doesn't have attached, what happens? Tool returns error string vs. raises. Affects LLM recovery behavior.
-6. **Skill composition and scoped `lookup` during invocation.** Phase B's §5 design decision makes `lookup` unavailable during skill invocation (pollution containment). This forecloses the pattern where skill `pr` delegates to skill `commit` via `lookup("commit")`. If that pattern turns out to matter, the resolution is a `compose: [commit]` frontmatter field on `pr` that re-enables `lookup` *scoped to the declared ids only*. Considered and set aside in the Phase B design discussion — the cross-skill non-inheritance rules (tools, approval, bodies all stay hermetic) make the feature do so little that it didn't justify the surface area. Revisit when a real authoring pattern demands it.
-7. **Cross-directory discovery.** Opt-in reading of `.claude/skills/` and `.opencode/skills/` via `[skills] discovery_paths = [...]` config (see §3). Loader is structurally ready; ship when there's demand. Format compatibility is already in place via the `fin:` namespace convention.
+5. **Tool-surface shape for load/extension behaviors.** §5 defines two behavioral contracts gated to different states. Whether they're one tool with an optional arg (e.g., `lookup(skill_id=..., ext=...)`) or two distinct tools (`load_skill(skill_id)`, `extension(name)`) is a naming/ergonomics call. Two tools is probably cleaner (honest doc strings, no mode-switching arg), but exact call at implementation.
+6. **Body injection slot.** Does the skill body go into the system prompt, a dedicated slot, or a leading user message? Probably system prompt (it's steering, not user content), but pydantic-ai treats these differently and the right answer may depend on model-specific behavior.
+7. **`entry_prompt` firing on agent self-load.** Does the skill's `entry_prompt` fire when the agent self-loads via `load_skill`, or only when the user pre-commits? Argument for "only pre-commit": avoids injecting a fake user message after the agent already chose. Argument for "both": consistent seeding. Decide during Phase B.
+8. **`fin list skills` grouping.** Per-agent grouping, flat alphabetical with agent annotations, or user-selectable via flag. CLI ergonomics, easy to iterate on.
+9. **Cross-directory discovery.** Opt-in reading of `.claude/skills/` and `.opencode/skills/` via `[skills] discovery_paths = [...]` config (see §3). Loader is structurally ready; ship when there's demand. Format compatibility is already in place via the `fin:` namespace convention.
 
-**Resolved in design discussion (2026-04-28):**
+**Resolved in design discussions:**
 
-- **Cross-tool format compat:** adopted. `SKILL.md` uses top-level `name`/`description` (shared convention) with fin extensions under a `fin:` namespace. See §2.
-- **`lookup(topic)` free-form retrieval:** rejected as a different product. The name `lookup` is reserved for skill-id resolution. RAG-over-local-docs, if ever added, gets a distinct tool name (`recall`, `search_docs`). See §5.
-- **Approval tightening:** loosen-only in Phase B, enforced at config-load time. Future escape hatch is a per-skill `approval_allow_tighten: true` opt-in, not a global validation removal. See §6.
+- **Cross-tool format compat** (2026-04-28): adopted. Top-level `name`/`description`, fin extensions under `fin:` namespace. See §2.
+- **Free-form topic retrieval** (2026-04-28): rejected as a different product. Jump-table semantics for both load and extension behaviors. See §5.
+- **Approval direction** (2026-04-28): loosen-only in Phase B, enforced at config-load time. Future escape hatch is a per-skill `approval_allow_tighten: true` opt-in. See §6.
+- **Skills as capability packs, not prompts** (2026-04-29): skill loading replaces system-prompt content, tool surface, and approval overrides as a unit. One-shot transition per task via pre-commit or `load_skill`. See §2, §4, §5.
+- **`serving_modes` on skills** (2026-04-29): skills carry hard-constraint `fin.serving_modes` matching agent/workflow semantics. Drives skill-list filtering in general mode and persistence scope across turns. See §2, §4.
+- **Agent card truthfulness** (2026-04-29): `AgentCard.skills` lists statically attached skills only; tools never appear on the card (A2A has no such field); walk-up-discovered skills are runtime-only. See §4.
+- **Skill list injection in general mode** (2026-04-29): inject iff agent has ≥1 attached skill in the current serving mode. See §2, §4.
+- **Multi-turn persistence scope** (2026-04-29): persistence = skill's own `serving_modes`. Talk-skills persist across session; do-skills are task-scoped; switching is user-driven only; session resume restores loaded skill. See §4.
+- **Skill unavailability** (2026-04-29): load-time errors fail-soft with prominent boot summary + `fin validate skills` CLI; runtime errors surface as tool output; in-flight tasks pin to loaded version; cards re-render per request. See §4, §8.
+- **Skill composition** (2026-04-29): not in Phase B. Cross-skill loading forbidden during active skill; if demand emerges, `compose: [...]` frontmatter field re-enables scoped loading. See §5.
+- **`ToolRegistry` scope** (2026-04-29): narrows from per-agent assembler to built-in tool catalog; skills resolve tool names via `registry.get()` at load time. See §2, §8.
 
 ## 10. Relation to the wider codebase
 
