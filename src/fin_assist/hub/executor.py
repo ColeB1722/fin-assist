@@ -76,28 +76,6 @@ def _get_tracer() -> Any:
     return get_tracer("fin_assist")
 
 
-class _NoopSpan:
-    """Sentinel that accepts any attribute/enter/exit call without error."""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        pass
-
-    def set_attribute(self, *args):
-        pass
-
-    def end(self):
-        pass
-
-    def add_event(self, *args, **kwargs):
-        pass
-
-
-_NOOP_SPAN = _NoopSpan()
-
-
 @dataclass
 class _ExecutionContext:
     """Mutable state carried between Executor helper methods for one task.
@@ -318,7 +296,7 @@ class Executor(AgentExecutor):
         result: RunResult,
     ) -> None:
         """Save history and move the task to ``requires_input``."""
-        if ctx.task_span is not None and ctx.task_span is not _NOOP_SPAN:
+        if ctx.task_span is not None:
             ctx.task_span.set_attribute("fin_assist.task.paused_for_approval", True)
             ctx.task_span.end()
 
@@ -357,7 +335,7 @@ class Executor(AgentExecutor):
                 ctx.created_artifacts,
             )
 
-        if ctx.task_span is not None and ctx.task_span is not _NOOP_SPAN:
+        if ctx.task_span is not None:
             ctx.task_span.set_attribute("fin_assist.task.result_type", type(result.output).__name__)
             ctx.task_span.end()
 
@@ -442,7 +420,7 @@ class Executor(AgentExecutor):
 
     def _end_step_span(self, ctx: _ExecutionContext) -> None:
         """End the current step span."""
-        if ctx.current_step_span is not None and ctx.current_step_span is not _NOOP_SPAN:
+        if ctx.current_step_span is not None:
             ctx.current_step_span.end()
         ctx.current_step_span = None
 
@@ -461,7 +439,7 @@ class Executor(AgentExecutor):
 
     def _end_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         """End the current tool execution span, recording result attributes."""
-        if ctx.current_tool_span is not None and ctx.current_tool_span is not _NOOP_SPAN:
+        if ctx.current_tool_span is not None:
             ctx.current_tool_span.end()
         ctx.current_tool_span = None
 
@@ -486,7 +464,8 @@ class Executor(AgentExecutor):
         created_artifacts.add(artifact_id)
 
     async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
-        parent_context = trace_api.set_span_in_context(ctx.task_span) if ctx.task_span else None
+        parent = ctx.current_step_span or ctx.task_span
+        parent_context = trace_api.set_span_in_context(parent) if parent else None
         approval_span = self._tracer.start_span(
             "fin_assist.approval",
             context=parent_context,

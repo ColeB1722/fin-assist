@@ -18,8 +18,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+from opentelemetry.trace import StatusCode
 
 from fin_assist.agents.backend import RunResult
 from fin_assist.agents.step import StepEvent
@@ -70,6 +74,40 @@ def _make_request_context(*, task_id: str = "task-1", context_id: str = "ctx-1")
     return context
 
 
+@pytest.fixture
+async def execute_with_tracing(tracing_setup):
+    """Factory fixture that runs the executor with tracing and returns the tracing_setup dict."""
+
+    async def _run(
+        *,
+        events: list[StepEvent] | None = None,
+        run_result: RunResult | None = None,
+        agent_name: str = "test",
+        task_id: str = "task-1",
+        context_id: str = "ctx-1",
+    ):
+        tracing_setup["clear"]()
+
+        backend = _make_backend(events=events, run_result=run_result)
+        context_store = MagicMock()
+        context_store.load = AsyncMock(return_value=None)
+        context_store.save = AsyncMock()
+
+        executor = Executor(
+            backend=backend,
+            context_store=context_store,
+            agent_name=agent_name,
+        )
+        ctx = _make_request_context(task_id=task_id, context_id=context_id)
+        event_queue = MagicMock()
+        event_queue.enqueue_event = AsyncMock()
+
+        await executor.execute(ctx, event_queue)
+        return tracing_setup
+
+    return _run
+
+
 class TestSetupTracing:
     """Tests for setup_tracing() — these run without the tracing_setup fixture
     because setup_tracing() sets its own global TracerProvider.
@@ -80,112 +118,54 @@ class TestSetupTracing:
 
     def test_noop_when_disabled(self):
         config = TracingSettings(enabled=False)
-        setup_tracing(config)
+        assert setup_tracing(config) is None
 
     def test_setup_tracing_does_not_raise_with_unreachable_endpoint(self):
         config = TracingSettings(
             enabled=True,
             endpoint="http://localhost:9999",
         )
-        setup_tracing(config)
+        assert setup_tracing(config) is None
 
 
 class TestTaskSpanLifecycle:
     """The fin_assist.task span wraps the entire executor run."""
 
-    async def test_task_span_created_on_execute(self, tracing_setup):
-        tracing_setup["clear"]()
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test-agent",
+    async def test_task_span_created_on_execute(self, execute_with_tracing):
+        ts = await execute_with_tracing(
+            agent_name="test-agent", task_id="task-abc", context_id="ctx-xyz"
         )
-        ctx = _make_request_context(task_id="task-abc", context_id="ctx-xyz")
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
 
-    async def test_task_span_has_agent_name_attribute(self, tracing_setup):
-        tracing_setup["clear"]()
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="git",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+    async def test_task_span_has_agent_name_attribute(self, execute_with_tracing):
+        ts = await execute_with_tracing(agent_name="git")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
         assert task_spans[0].attributes.get("gen_ai.agent.name") == "git"
 
-    async def test_task_span_has_task_id_attribute(self, tracing_setup):
-        tracing_setup["clear"]()
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context(task_id="task-123")
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+    async def test_task_span_has_task_id_attribute(self, execute_with_tracing):
+        ts = await execute_with_tracing(task_id="task-123")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert task_spans[0].attributes.get("fin_assist.task.id") == "task-123"
 
-    async def test_task_span_has_context_id_attribute(self, tracing_setup):
-        tracing_setup["clear"]()
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context(context_id="ctx-456")
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+    async def test_task_span_has_context_id_attribute(self, execute_with_tracing):
+        ts = await execute_with_tracing(context_id="ctx-456")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert task_spans[0].attributes.get("fin_assist.context.id") == "ctx-456"
 
-    async def test_task_span_is_ended(self, tracing_setup):
+    async def test_task_span_is_ended(self, execute_with_tracing):
+        ts = await execute_with_tracing()
+        task_spans = ts["get_spans"]("fin_assist.task")
+        assert len(task_spans) == 1
+        assert task_spans[0].end_time is not None
+
+    async def test_task_span_has_error_status_on_exception(self, tracing_setup):
         tracing_setup["clear"]()
 
         backend = _make_backend()
+        backend.run_steps.side_effect = RuntimeError("test error")
+
         context_store = MagicMock()
         context_store.load = AsyncMock(return_value=None)
         context_store.save = AsyncMock()
@@ -199,73 +179,38 @@ class TestTaskSpanLifecycle:
         event_queue = MagicMock()
         event_queue.enqueue_event = AsyncMock()
 
-        await executor.execute(ctx, event_queue)
+        with pytest.raises(RuntimeError, match="test error"):
+            await executor.execute(ctx, event_queue)
 
         task_spans = tracing_setup["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
-        assert task_spans[0].end_time is not None
+        assert task_spans[0].status.status_code == StatusCode.ERROR
 
 
 class TestStepSpanLifecycle:
     """The fin_assist.step span wraps each step boundary."""
 
-    async def test_step_span_created_for_step_start_end(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_step_span_created_for_step_start_end(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(kind="text_delta", content="hello", step=0),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        step_spans = tracing_setup["get_spans"]("fin_assist.step")
+        ts = await execute_with_tracing(events=events)
+        step_spans = ts["get_spans"]("fin_assist.step")
         assert len(step_spans) == 1
 
-    async def test_step_span_has_step_number_attribute(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_step_span_has_step_number_attribute(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(kind="text_delta", content="hello", step=0),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        step_spans = tracing_setup["get_spans"]("fin_assist.step")
+        ts = await execute_with_tracing(events=events)
+        step_spans = ts["get_spans"]("fin_assist.step")
         assert step_spans[0].attributes.get("fin_assist.step.number") == 0
 
-    async def test_multiple_steps_create_multiple_step_spans(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_multiple_steps_create_multiple_step_spans(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(kind="text_delta", content="hello", step=0),
@@ -274,23 +219,8 @@ class TestStepSpanLifecycle:
             StepEvent(kind="text_delta", content="world", step=1),
             StepEvent(kind="step_end", content=None, step=1),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        step_spans = tracing_setup["get_spans"]("fin_assist.step")
+        ts = await execute_with_tracing(events=events)
+        step_spans = ts["get_spans"]("fin_assist.step")
         assert len(step_spans) == 2
         assert step_spans[0].attributes.get("fin_assist.step.number") == 0
         assert step_spans[1].attributes.get("fin_assist.step.number") == 1
@@ -299,9 +229,7 @@ class TestStepSpanLifecycle:
 class TestToolExecutionSpan:
     """The fin_assist.tool_execution span wraps tool_call -> tool_result pairs."""
 
-    async def test_tool_execution_span_created(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_tool_execution_span_created(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(
@@ -319,28 +247,11 @@ class TestToolExecutionSpan:
             ),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        tool_spans = tracing_setup["get_spans"]("fin_assist.tool_execution")
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
         assert len(tool_spans) == 1
 
-    async def test_tool_execution_span_has_name_and_args_attributes(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_tool_execution_span_has_name_and_args_attributes(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(
@@ -358,23 +269,8 @@ class TestToolExecutionSpan:
             ),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        tool_spans = tracing_setup["get_spans"]("fin_assist.tool_execution")
+        ts = await execute_with_tracing(events=events)
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
         assert tool_spans[0].attributes.get("fin_assist.tool.name") == "git"
         assert tool_spans[0].attributes.get("fin_assist.tool.args") == "diff"
 
@@ -382,9 +278,7 @@ class TestToolExecutionSpan:
 class TestApprovalSpan:
     """The fin_assist.approval span is created for deferred (approval-required) events."""
 
-    async def test_approval_span_created_for_deferred_event(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_approval_span_created_for_deferred_event(self, execute_with_tracing):
         deferred_event = StepEvent(
             kind="deferred",
             content=DeferredToolCall(
@@ -396,34 +290,14 @@ class TestApprovalSpan:
             step=0,
             tool_name="run_shell",
         )
-        backend = _make_backend(
+        ts = await execute_with_tracing(
             events=[deferred_event],
-            run_result=RunResult(
-                output=MagicMock(),
-                serialized_history=b"[]",
-            ),
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        approval_spans = tracing_setup["get_spans"]("fin_assist.approval")
+        approval_spans = ts["get_spans"]("fin_assist.approval")
         assert len(approval_spans) == 1
 
-    async def test_approval_span_has_decision_pending(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_approval_span_has_decision_pending(self, execute_with_tracing):
         deferred_event = StepEvent(
             kind="deferred",
             content=DeferredToolCall(
@@ -435,29 +309,11 @@ class TestApprovalSpan:
             step=0,
             tool_name="run_shell",
         )
-        backend = _make_backend(
+        ts = await execute_with_tracing(
             events=[deferred_event],
-            run_result=RunResult(
-                output=MagicMock(),
-                serialized_history=b"[]",
-            ),
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        approval_spans = tracing_setup["get_spans"]("fin_assist.approval")
+        approval_spans = ts["get_spans"]("fin_assist.approval")
         assert approval_spans[0].attributes.get("fin_assist.approval.decision") == "pending"
         assert approval_spans[0].attributes.get("fin_assist.tool.name") == "run_shell"
 
@@ -465,39 +321,20 @@ class TestApprovalSpan:
 class TestSpanHierarchy:
     """All platform spans have correct parent-child relationships."""
 
-    async def test_step_span_parent_is_task_span(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_step_span_parent_is_task_span(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(kind="text_delta", content="hello", step=0),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
-        step_spans = tracing_setup["get_spans"]("fin_assist.step")
+        ts = await execute_with_tracing(events=events)
+        task_spans = ts["get_spans"]("fin_assist.task")
+        step_spans = ts["get_spans"]("fin_assist.step")
         assert len(task_spans) == 1
         assert len(step_spans) == 1
         assert step_spans[0].parent.span_id == task_spans[0].context.span_id
 
-    async def test_tool_execution_parent_is_step_span(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_tool_execution_parent_is_step_span(self, execute_with_tracing):
         events = [
             StepEvent(kind="step_start", content=None, step=0),
             StepEvent(
@@ -515,29 +352,40 @@ class TestSpanHierarchy:
             ),
             StepEvent(kind="step_end", content=None, step=0),
         ]
-        backend = _make_backend(events=events)
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        step_spans = tracing_setup["get_spans"]("fin_assist.step")
-        tool_spans = tracing_setup["get_spans"]("fin_assist.tool_execution")
+        ts = await execute_with_tracing(events=events)
+        step_spans = ts["get_spans"]("fin_assist.step")
+        tool_spans = ts["get_spans"]("fin_assist.tool_execution")
         assert len(step_spans) == 1
         assert len(tool_spans) == 1
         assert tool_spans[0].parent.span_id == step_spans[0].context.span_id
 
-    async def test_approval_span_parent_is_task_span(self, tracing_setup):
+    async def test_approval_span_parent_is_step_span_when_step_active(self, execute_with_tracing):
+        deferred_event = StepEvent(
+            kind="deferred",
+            content=DeferredToolCall(
+                tool_name="run_shell",
+                tool_call_id="call_1",
+                args={"command": "ls"},
+                reason="requires approval",
+            ),
+            step=0,
+            tool_name="run_shell",
+        )
+        events = [
+            StepEvent(kind="step_start", content=None, step=0),
+            deferred_event,
+            StepEvent(kind="step_end", content=None, step=0),
+        ]
+        ts = await execute_with_tracing(
+            events=events,
+            run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
+        )
+        step_spans = ts["get_spans"]("fin_assist.step")
+        approval_spans = ts["get_spans"]("fin_assist.approval")
+        assert len(approval_spans) == 1
+        assert approval_spans[0].parent.span_id == step_spans[0].context.span_id
+
+    async def test_approval_span_parent_is_task_span_when_no_step(self, tracing_setup):
         tracing_setup["clear"]()
 
         deferred_event = StepEvent(
@@ -572,7 +420,6 @@ class TestSpanHierarchy:
 
         task_spans = tracing_setup["get_spans"]("fin_assist.task")
         approval_spans = tracing_setup["get_spans"]("fin_assist.approval")
-        assert len(task_spans) == 1
         assert len(approval_spans) == 1
         assert approval_spans[0].parent.span_id == task_spans[0].context.span_id
 
@@ -580,35 +427,16 @@ class TestSpanHierarchy:
 class TestTaskResultAttributes:
     """Task span gets result attributes after finalize."""
 
-    async def test_task_span_has_result_type_on_finalize(self, tracing_setup):
-        tracing_setup["clear"]()
-
-        backend = _make_backend(
+    async def test_task_span_has_result_type_on_finalize(self, execute_with_tracing):
+        ts = await execute_with_tracing(
             run_result=RunResult(output="text response", serialized_history=b"[]"),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
         attrs = task_spans[0].attributes
         assert attrs.get("fin_assist.task.result_type") == "str"
 
-    async def test_task_span_paused_for_approval_attribute(self, tracing_setup):
-        tracing_setup["clear"]()
-
+    async def test_task_span_paused_for_approval_attribute(self, execute_with_tracing):
         deferred_event = StepEvent(
             kind="deferred",
             content=DeferredToolCall(
@@ -620,25 +448,10 @@ class TestTaskResultAttributes:
             step=0,
             tool_name="run_shell",
         )
-        backend = _make_backend(
+        ts = await execute_with_tracing(
             events=[deferred_event],
             run_result=RunResult(output=MagicMock(), serialized_history=b"[]"),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
-
-        executor = Executor(
-            backend=backend,
-            context_store=context_store,
-            agent_name="test",
-        )
-        ctx = _make_request_context()
-        event_queue = MagicMock()
-        event_queue.enqueue_event = AsyncMock()
-
-        await executor.execute(ctx, event_queue)
-
-        task_spans = tracing_setup["get_spans"]("fin_assist.task")
+        task_spans = ts["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
         assert task_spans[0].attributes.get("fin_assist.task.paused_for_approval") is True

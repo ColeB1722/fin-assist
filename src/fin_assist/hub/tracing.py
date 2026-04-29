@@ -100,5 +100,6 @@ def _probe_phoenix(config: TracingSettings) -> None:
             logger.debug("skipping phoenix health check (non-default endpoint)")
     except Exception:
         logger.warning(
-            "phoenix health check: unreachable — traces will be dropped until backend is available"
+            "phoenix health check: unreachable — traces will be dropped until backend is available",
+            exc_info=True,
         )

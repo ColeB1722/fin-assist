@@ -128,7 +128,7 @@ pydantic-ai has built-in `Agent.instrument_all()` that emits OTel spans for mode
 
 Each layer is a child of the one above. In Phoenix, a trace looks like:
 
-```
+```text
 HTTP POST /agents/git/ (FastAPI auto-instrumentation)
   └── fin_assist.task (agent=git, task_id=abc, context_id=xyz)
         ├── fin_assist.step (step=0, kind=model_request)

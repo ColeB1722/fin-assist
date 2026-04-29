@@ -114,7 +114,7 @@ Migration: current `AgentConfig.workflows` dict becomes skill files. Each workfl
 
 ### Directory layout
 
-```
+```text
 .fin/skills/<skill-id>/
   SKILL.md                # required: frontmatter + body
   scripts/                # optional: declared in frontmatter; become ToolDefinitions on load
@@ -238,7 +238,7 @@ A2A supports **Method Extensions** ("Extended Skills" in the spec): custom RPC m
 
 Shape (final schema TBD during implementation):
 
-```
+```text
 Request:
   skill_id: string
   args: { ... }              # optional skill-specific arguments
@@ -389,7 +389,7 @@ Phase B ships **loosen-only** overrides. A skill can take a gated operation and 
 
 **Enforcement is config-time, not runtime.** At skill-load time the loader compares each override against the tool's base policy. A tightening override fails the load with a clear error:
 
-```
+```text
 Error in .fin/skills/production-deploy/SKILL.md:
   fin.approval.read_file[0] tries to tighten base mode 'never' → 'always'.
   Phase B supports loosening only; see docs/skills-api.md §6.
@@ -538,12 +538,12 @@ These are explicitly not blocking the start of Phase A. They will be resolved du
 
 **Current state of the repo:**
 
-- Scoped CLI tools: `src/fin_assist/agents/tools.py:213,295`
-- `ApprovalPolicy` (current two-mode version): `src/fin_assist/agents/tools.py:40`
-- `AgentConfig.tools` and `AgentConfig.workflows`: `src/fin_assist/config/schema.py:99`
-- Agent card publishing with one-skill placeholder: `src/fin_assist/hub/factory.py:111-118`
-- `fin_assist:meta` extension: `src/fin_assist/hub/factory.py:103-106`
-- Empty `skills/` placeholder: referenced at `architecture.md:291` (not yet created in source tree)
+- Scoped CLI tools: `src/fin_assist/agents/tools.py`
+- `ApprovalPolicy`: `src/fin_assist/agents/tools.py`
+- `AgentConfig.tools` and `AgentConfig.workflows`: `src/fin_assist/config/schema.py`
+- Agent card publishing with one-skill placeholder: `src/fin_assist/hub/factory.py`
+- `fin_assist:meta` extension: `src/fin_assist/hub/factory.py`
+- Empty `skills/` placeholder: referenced at `architecture.md` (not yet created in source tree)
 - `ContextProvider` implementations: `src/fin_assist/context/`
 - `@`-completion surface: `src/fin_assist/cli/prompt.py`
 
