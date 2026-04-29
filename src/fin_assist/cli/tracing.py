@@ -38,9 +38,11 @@ File vs OTLP parity with the hub
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The CLI reads the same ``TracingSettings`` the hub does and writes to
 the same ``file_path`` (``./.fin/traces.jsonl`` in dev).  The file
-exporter's ``FileSpanExporter`` uses ``fcntl.flock`` so interleaved
-writes from CLI and hub processes don't corrupt the file.  This is
-deliberate: operators grep one file, not two.
+exporter's ``FileSpanExporter`` uses a ``threading.Lock`` and line
+buffering so concurrent writes within a process don't interleave.
+Cross-process writes (CLI + hub) rely on POSIX append-mode atomicity
+for small writes.  This is deliberate: operators grep one file, not
+two.
 """
 
 from __future__ import annotations

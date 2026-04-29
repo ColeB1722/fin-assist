@@ -33,6 +33,7 @@ import pytest
 def _reset_global_provider() -> None:
     import opentelemetry.trace as _trace_mod
     from opentelemetry.trace import ProxyTracerProvider
+    from opentelemetry.util._once import Once
 
     provider = _trace_mod.get_tracer_provider()
     for method in ("force_flush", "shutdown"):
@@ -43,6 +44,7 @@ def _reset_global_provider() -> None:
             except Exception:  # noqa: BLE001
                 pass
     _trace_mod._TRACER_PROVIDER = ProxyTracerProvider()
+    _trace_mod._TRACER_PROVIDER_SET_ONCE = Once()
 
 
 @pytest.fixture
@@ -223,7 +225,8 @@ class TestIdempotencyAndVendorNeutrality:
 
         import fin_assist.hub.tracing as tracing_mod
 
-        src = open(tracing_mod.__file__).read()
+        with open(tracing_mod.__file__) as f:
+            src = f.read()
         assert "openinference.instrumentation" not in src, (
             "hub/tracing.py must stay vendor-neutral — backend-specific "
             "instrumentation belongs in agents/pydantic_ai_tracing.py"

@@ -77,8 +77,10 @@ class TracingSettings(BaseModel):
     * ``file_path`` — optional JSONL sink that writes every span as a
       line of OTLP/JSON.  Runs alongside the OTLP exporter (or alone,
       if no endpoint is configured) so traces survive when the remote
-      collector is offline and can be grep'd/jq'd directly.  Absent =
-      disabled; relative paths are resolved against the CWD.
+      collector is offline and can be grep'd/jq'd directly.  Defaults
+      to ``None`` (disabled); relative paths are resolved against the
+      CWD.  When enabled, the canonical default path is
+      ``paths.TRACES_PATH`` (``$FIN_DATA_DIR/traces.jsonl``).
     """
 
     enabled: bool = False
