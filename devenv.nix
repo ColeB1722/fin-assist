@@ -37,6 +37,7 @@
     FIN_GENERAL__DEFAULT_MODEL = "anthropic/claude-sonnet-4.6";
     FIN_DATA_DIR = "./.fin";
     FIN_TRACING__ENABLED = "true";
+    FIN_TRACING__PROVIDER = "phoenix";
     # JSONL sink colocated with other runtime state under $FIN_DATA_DIR.
     # Runs alongside the OTLP exporter (Phoenix at the default endpoint),
     # so when Phoenix is down we still capture spans — and coding agents

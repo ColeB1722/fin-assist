@@ -264,23 +264,31 @@ def _resolve_endpoint(config: TracingSettings) -> str:
     return config.endpoint
 
 
-def _otlp_explicitly_configured(config: TracingSettings) -> bool:
-    """Whether the user actually asked for OTLP export.
+def _want_otlp_exporter(config: TracingSettings) -> bool:
+    """Whether to construct the OTLP exporter.
 
-    Used to decide if the OTLP exporter should be constructed at all
-    when ``file_path`` is set.  The rule is: treat the schema default
-    as 'not set' — only build the OTLP exporter when the user has
-    either overridden the endpoint in ``TracingSettings`` or set
-    ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+    Resolution order (first match wins):
 
-    This matters because when only ``file_path`` is configured and
-    Phoenix isn't running at the default port, we don't want to
-    silently try to POST to a dead socket on every batch flush —
-    file-only users shouldn't pay that cost.
+    1. ``provider="none"`` → always False (file-only mode).
+    2. ``otlp_enabled=False`` → always False (explicit opt-out).
+    3. ``provider`` is any non-None value (e.g. ``"phoenix"``) → True.
+    4. ``provider=None`` (manual mode) → ``otlp_enabled`` (default True).
+
+    Before this function existed, the OTLP decision depended on
+    whether ``file_path`` was set: ``file_path is None or
+    _otlp_explicitly_configured(config)``.  Setting ``file_path``
+    without an explicit endpoint silently disabled OTLP — a confusing
+    default.  ``otlp_enabled=True`` (the new default) makes both
+    sinks active by default; ``provider="none"`` or
+    ``otlp_enabled=False`` opt out explicitly.
     """
-    if config.endpoint != _default_endpoint():
+    if config.provider == "none":
+        return False
+    if not config.otlp_enabled:
+        return False
+    if config.provider is not None:
         return True
-    return bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+    return config.otlp_enabled
 
 
 def _build_sampler(ratio: float):
@@ -391,11 +399,9 @@ def setup_tracing(
     provider = TracerProvider(resource=resource, sampler=sampler)
 
     # Construct the OTLP exporter only when the user has opted into it.
-    # When ``file_path`` is the sole configured sink, skip OTLP entirely
-    # so we don't ship spans at a dead localhost:6006 on every batch.
-    # Backward compat: if ``file_path`` is unset (the existing shape),
-    # we always build the OTLP exporter — even at the default endpoint —
-    # to match prior behavior.
+    # ``_want_otlp_exporter`` resolves provider / otlp_enabled / file_path
+    # into a single boolean.  See that function for the full decision table.
+    #
     # Processor stack (outermost → innermost):
     #   _DropSpansProcessor   ← filters framework noise (ASGI per-chunk, …)
     #   _TruncatingSpanProcessor   ← trims oversized string attrs
@@ -406,7 +412,7 @@ def setup_tracing(
     def _wrap(processor: BatchSpanProcessor) -> SpanProcessor:
         return _DropSpansProcessor(_TruncatingSpanProcessor(processor))
 
-    want_otlp = config.file_path is None or _otlp_explicitly_configured(config)
+    want_otlp = _want_otlp_exporter(config)
     if want_otlp:
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
         if headers:
@@ -464,12 +470,14 @@ def setup_tracing(
             )
 
     logger.info(
-        "tracing enabled endpoint=%s protocol=%s project=%s backends=%d file=%s otlp=%s",
+        "tracing enabled endpoint=%s protocol=%s project=%s"
+        " backends=%d file=%s otlp=%s provider=%s",
         endpoint,
         config.exporter_protocol,
         config.project_name,
         sum(1 for b in backends if hasattr(b, "install_tracing")),
         config.file_path or "-",
         "yes" if want_otlp else "no",
+        config.provider or "-",
     )
     return provider

@@ -360,8 +360,11 @@ class TestFileExporterWiring:
         still hit the file.  This is the 'Phoenix is down / offline dev'
         path.
 
-        We construct the config with the default endpoint untouched so the
-        resolver's 'schema-default == not set' contract applies.
+        Note: with ``otlp_enabled=True`` (the default), the OTLP
+        exporter is also constructed and will log connection errors
+        to the unreachable endpoint.  The file sink is unaffected.
+        For file-only mode, use ``provider="none"`` or
+        ``otlp_enabled=False``.
         """
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
@@ -579,6 +582,129 @@ class TestNoiseSuppression:
         lines = [_json.loads(line) for line in path.read_text().splitlines()]
         names = {line["name"] for line in lines}
         assert {"keep-1", "keep-2"}.issubset(names)
+
+
+class TestProviderPreset:
+    """``TracingSettings.provider`` is a human-readable preset that replaces
+    raw OTel env vars for the common case.
+
+    * ``"phoenix"`` — export to Phoenix at the default OTLP/HTTP endpoint.
+      Both OTLP and file sinks are active when ``file_path`` is set.
+    * ``"none"`` — file-only mode.  No OTLP exporter is constructed, even
+      when ``otlp_enabled`` is True.
+    * ``None`` (unset) — manual mode, ``otlp_enabled`` controls the decision.
+
+    This class also covers the ``otlp_enabled`` bug fix: before this field
+    existed, setting ``file_path`` without an explicit endpoint silently
+    disabled the OTLP exporter (``otlp=no`` in the hub log).  With
+    ``otlp_enabled=True`` (the default), both sinks are active.
+    """
+
+    def test_provider_phoenix_builds_otlp_exporter(self, reset_tracer_provider, caplog):
+        """``provider="phoenix"`` must construct the OTLP exporter even when
+        ``file_path`` is set and no explicit endpoint override exists.
+
+        This is the exact scenario that was broken: ``file_path`` set +
+        schema-default endpoint → ``otlp=no`` in the old code.
+        """
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, provider="phoenix", file_path="/dev/null")
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("otlp=yes" in rec.message for rec in caplog.records)
+
+    def test_provider_none_skips_otlp_exporter(self, reset_tracer_provider, caplog):
+        """``provider="none"`` is the explicit file-only mode: no OTLP
+        exporter is built even though tracing is enabled."""
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, provider="none")
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("otlp=no" in rec.message for rec in caplog.records)
+
+    def test_provider_none_with_file_path_is_file_only(self, reset_tracer_provider, tmp_path):
+        """``provider="none"`` + ``file_path`` = pure file-only tracing.
+        Spans must still land in the file."""
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(enabled=True, provider="none", file_path=str(path))
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")
+        with tracer.start_as_current_span("file-only"):
+            pass
+        provider.force_flush(5000)
+
+        lines = path.read_text().splitlines()
+        assert len(lines) == 1
+        assert _json.loads(lines[0])["name"] == "file-only"
+
+    def test_otlp_enabled_false_skips_otlp_exporter(self, reset_tracer_provider, caplog):
+        """``otlp_enabled=False`` is the explicit opt-out: no OTLP exporter
+        even when provider is unset."""
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, otlp_enabled=False)
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("otlp=no" in rec.message for rec in caplog.records)
+
+    def test_otlp_enabled_default_with_file_path_builds_otlp(self, reset_tracer_provider, caplog):
+        """Bug fix: the default ``otlp_enabled=True`` means both sinks are
+        active even when only ``file_path`` is explicitly set and the
+        endpoint is at the schema default.  Before the fix, this produced
+        ``otlp=no`` silently."""
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, file_path="/dev/null")
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("otlp=yes" in rec.message for rec in caplog.records)
+
+    def test_provider_none_overrides_otlp_enabled_true(self, reset_tracer_provider, caplog):
+        """``provider="none"`` wins over ``otlp_enabled=True`` — it's the
+        explicit "I want no OTLP" signal."""
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, provider="none", otlp_enabled=True)
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("otlp=no" in rec.message for rec in caplog.records)
+
+    def test_provider_phoenix_log_includes_provider_name(self, reset_tracer_provider, caplog):
+        """The startup log line should mention the provider preset so
+        operators can verify their config at a glance."""
+        import logging
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        config = TracingSettings(enabled=True, provider="phoenix")
+        with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
+            setup_tracing(config)
+        assert any("provider=phoenix" in rec.message for rec in caplog.records)
 
 
 class TestAttributeHygiene:

@@ -123,7 +123,11 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
     # Share the wrappers with the hub so the CLI gets the same noise-
     # filtering + truncation story.  Importing lazily keeps the
     # module's cold-start cost near zero when tracing is disabled.
-    from fin_assist.hub.tracing import _DropSpansProcessor, _TruncatingSpanProcessor
+    from fin_assist.hub.tracing import (
+        _DropSpansProcessor,
+        _TruncatingSpanProcessor,
+        _want_otlp_exporter,
+    )
 
     def _wrap(inner: BatchSpanProcessor):
         return _DropSpansProcessor(_TruncatingSpanProcessor(inner))
@@ -133,10 +137,11 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
 
         provider.add_span_processor(_wrap(BatchSpanProcessor(FileSpanExporter(config.file_path))))
 
-    # Only construct the OTLP exporter when the operator has explicitly
-    # pointed tracing somewhere — we do not want every ``fin`` to fire
-    # a TCP connect at a dead ``localhost:6006``.
-    if _otlp_explicitly_configured(config):
+    # Only construct the OTLP exporter when the operator has opted in
+    # via provider preset or otlp_enabled.  ``_want_otlp_exporter``
+    # consolidates the provider / otlp_enabled decision so the CLI
+    # stays in sync with the hub.
+    if _want_otlp_exporter(config):
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
             OTLPSpanExporter as GRPCSpanExporter,
         )
@@ -170,18 +175,6 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
 
     _installed = True
     return provider
-
-
-def _otlp_explicitly_configured(config: TracingSettings) -> bool:
-    """Mirror of ``hub.tracing._otlp_explicitly_configured`` — kept local
-    so the CLI tracer doesn't reach into a private hub helper.
-    """
-    from fin_assist.config.schema import TracingSettings as _TS
-
-    default = _TS.model_fields["endpoint"].default
-    if config.endpoint != default:
-        return True
-    return bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def _resolve_endpoint(config: TracingSettings) -> str:

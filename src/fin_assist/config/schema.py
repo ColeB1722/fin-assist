@@ -26,6 +26,8 @@ ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 ServingMode = Literal["do", "talk"]
 
+TracingProvider = Literal["phoenix", "none"]
+
 
 class GeneralSettings(BaseModel):
     """General application settings."""
@@ -59,6 +61,18 @@ class TracingSettings(BaseModel):
 
     The non-obvious knobs:
 
+    * ``provider`` — human-readable preset that replaces raw OTel env
+      vars for the common case.  ``"phoenix"`` exports to Phoenix at the
+      default OTLP/HTTP endpoint (both OTLP and file sinks active when
+      ``file_path`` is set).  ``"none"`` is file-only mode (no OTLP
+      exporter constructed).  ``None`` (unset) falls back to manual
+      mode where ``otlp_enabled`` and explicit endpoint/OTel env vars
+      control the decision.  Set via ``FIN_TRACING__PROVIDER=phoenix``.
+    * ``otlp_enabled`` — whether to build the OTLP exporter at all.
+      Defaults to ``True`` so both sinks are active by default.  Set to
+      ``False`` for file-only mode when you don't want TCP connect
+      attempts to the endpoint on every batch flush.
+      ``provider="none"`` overrides this (always off).
     * ``sampling_ratio`` — ``1.0`` in dev so every trace lands in
       Phoenix; production can dial it down (``0.1`` = 10% sampled)
       without code changes.
@@ -84,6 +98,7 @@ class TracingSettings(BaseModel):
     """
 
     enabled: bool = False
+    provider: TracingProvider | None = None
     endpoint: str = "http://localhost:6006/v1/traces"
     exporter_protocol: Literal["grpc", "http"] = "http"
     project_name: str = "fin-assist"
@@ -92,6 +107,7 @@ class TracingSettings(BaseModel):
     event_mode: Literal["attributes", "logs"] = "attributes"
     include_content: bool = True
     file_path: str | None = None
+    otlp_enabled: bool = True
 
 
 class ServerSettings(BaseModel):
