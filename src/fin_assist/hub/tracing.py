@@ -55,6 +55,59 @@ logger = logging.getLogger(__name__)
 _MAX_ATTR_BYTES = 50_000
 
 
+# Keys that are scrubbed from every span's attributes before export.
+# Two sources of noise:
+#
+# * ``logfire.*`` — pydantic-ai uses logfire as its internal tracing
+#   front-end.  When OpenInference bridges the span, the logfire
+#   attributes ride along with no semantic value for downstream
+#   consumers (they're the rendered log message + its JSON schema,
+#   both of which we already have in dedicated fields).
+# * ``final_result`` — pydantic-ai's dump of the full ``RunResult`` on
+#   the ``agent run`` span.  Already redundantly available as
+#   ``output.value`` (OpenInference) and ``pydantic_ai.all_messages``
+#   (pydantic-ai's own inventory attribute).  A single non-trivial
+#   tool output gets stored three times otherwise.
+_SCRUB_ATTR_PREFIXES = ("logfire.",)
+_SCRUB_ATTR_NAMES = frozenset({"final_result"})
+
+
+def _scrub_span_attributes(span) -> None:
+    """Delete attribute keys that leak from upstream instrumentors.
+
+    Applied at ``on_end`` before export.  Mirrors the mutation
+    contract in ``_truncate_span_attributes`` — see that function for
+    the rationale behind mutating ``_attributes`` directly vs.
+    ``set_attribute`` / ``pop`` on the read-only proxy.
+
+    Also drops ``session.id`` when it equals ``fin_assist.context.id``:
+    carrying both is redundant since we stamp both with the same value
+    inside the executor, but legacy dashboards may still read
+    ``session.id`` so we keep it whenever an operator set it to a
+    different value (can't happen in fin_assist code today, but a
+    future backend may want ``session.id`` = tenant-id).
+    """
+    attributes = getattr(span, "_attributes", None) or span.attributes
+    if not attributes:
+        return
+
+    for key in list(attributes.keys()):
+        if key in _SCRUB_ATTR_NAMES or any(key.startswith(p) for p in _SCRUB_ATTR_PREFIXES):
+            try:
+                del attributes[key]
+            except (TypeError, KeyError, AttributeError):
+                logger.debug("could not scrub attribute key=%s", key)
+
+    # Deduplicate session.id vs fin_assist.context.id when identical.
+    session_id = attributes.get("session.id") if hasattr(attributes, "get") else None
+    context_id = attributes.get("fin_assist.context.id") if hasattr(attributes, "get") else None
+    if session_id is not None and session_id == context_id:
+        try:
+            del attributes["session.id"]
+        except (TypeError, KeyError, AttributeError):
+            logger.debug("could not dedupe session.id")
+
+
 def _truncate_span_attributes(span) -> None:
     """Truncate string attributes that exceed the export size limit.
 
@@ -99,7 +152,17 @@ def _truncate_span_attributes(span) -> None:
 
 
 class _TruncatingSpanProcessor(SpanProcessor):
-    """SpanProcessor that truncates large string attributes before export."""
+    """SpanProcessor that scrubs noise attributes and truncates large
+    string attributes before export.
+
+    Order at ``on_end``:
+      1. ``_scrub_span_attributes`` — delete logfire-leaked attrs,
+         drop ``final_result``, dedupe ``session.id``.  Done first so
+         we don't waste work truncating attrs we're about to delete.
+      2. ``_truncate_span_attributes`` — trim any remaining string
+         attribute over ``_MAX_ATTR_BYTES``.
+      3. Forward to the downstream delegate (the batch exporter).
+    """
 
     def __init__(self, delegate: SpanProcessor) -> None:
         self._delegate = delegate
@@ -108,7 +171,59 @@ class _TruncatingSpanProcessor(SpanProcessor):
         self._delegate.on_start(span, parent_context)
 
     def on_end(self, span):
+        _scrub_span_attributes(span)
         _truncate_span_attributes(span)
+        self._delegate.on_end(span)
+
+    def shutdown(self):
+        self._delegate.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._delegate.force_flush(timeout_millis)
+
+
+# Attribute values whose spans we unconditionally drop before export.
+# Keyed by attribute name → set of values that mark the span as noise.
+#
+# Why key on attributes, not span names:
+# -------------------------------------
+# ASGI / FastAPI instrumentation names its per-chunk response spans
+# ``"http send"`` (older versions) or ``"{route} http send"`` (newer),
+# and the string isn't stable across the instrumentor's own refactors.
+# ``asgi.event.type = "http.response.body"`` *is* stable — it's the
+# ASGI-spec event name and shows up verbatim in the instrumentor
+# source.  Keying on it survives instrumentor upgrades.
+_NOISE_ATTRS: dict[str, frozenset[str]] = {
+    "asgi.event.type": frozenset({"http.response.body"}),
+}
+
+
+class _DropSpansProcessor(SpanProcessor):
+    """SpanProcessor that drops framework-noise spans before export.
+
+    Sits at the head of the export chain.  For each finishing span we
+    peek at its attributes; if any ``(name, value)`` pair matches
+    ``_NOISE_ATTRS`` we simply do not forward the span to the
+    downstream delegate, dropping it from every configured exporter
+    (OTLP, file, both) in one shot.
+
+    We can't prevent the span from being *created* — the instrumentor
+    that emits it doesn't check with us first — but suppressing at
+    export-time costs microseconds per span and gives us a single
+    choke point for future noise sources.
+    """
+
+    def __init__(self, delegate: SpanProcessor) -> None:
+        self._delegate = delegate
+
+    def on_start(self, span, parent_context=None):
+        self._delegate.on_start(span, parent_context)
+
+    def on_end(self, span):
+        attrs = getattr(span, "attributes", None) or {}
+        for attr_name, bad_values in _NOISE_ATTRS.items():
+            if attrs.get(attr_name) in bad_values:
+                return  # drop: do not forward to delegate
         self._delegate.on_end(span)
 
     def shutdown(self):
@@ -239,6 +354,16 @@ def setup_tracing(
         logger.debug("tracing disabled")
         return None
 
+    # Suppress a2a-sdk's per-class ``@trace_class`` instrumentation.
+    # It emits a ``SpanKind.SERVER`` span for every internal EventQueue /
+    # TaskStore / TaskManager method with zero useful attributes — ~195
+    # spans per ``fin do`` invocation.  The env var is the vendor-
+    # supported off-switch (see ``a2a/utils/telemetry.py``).  Using
+    # ``setdefault`` so operators can force-enable it for debugging by
+    # exporting ``OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=true`` before
+    # starting the hub.
+    os.environ.setdefault("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED", "false")
+
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
         OTLPSpanExporter as GRPCSpanExporter,
     )
@@ -271,6 +396,16 @@ def setup_tracing(
     # Backward compat: if ``file_path`` is unset (the existing shape),
     # we always build the OTLP exporter — even at the default endpoint —
     # to match prior behavior.
+    # Processor stack (outermost → innermost):
+    #   _DropSpansProcessor   ← filters framework noise (ASGI per-chunk, …)
+    #   _TruncatingSpanProcessor   ← trims oversized string attrs
+    #   BatchSpanProcessor    ← ships to the configured exporter
+    #
+    # The drop processor sits outermost so filtered spans short-circuit
+    # *before* paying the truncation + batch-queue cost.
+    def _wrap(processor: BatchSpanProcessor) -> SpanProcessor:
+        return _DropSpansProcessor(_TruncatingSpanProcessor(processor))
+
     want_otlp = config.file_path is None or _otlp_explicitly_configured(config)
     if want_otlp:
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
@@ -278,16 +413,16 @@ def setup_tracing(
             exporter = exporter_cls(endpoint=endpoint, headers=headers)
         else:
             exporter = exporter_cls(endpoint=endpoint)
-        provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(exporter)))
+        provider.add_span_processor(_wrap(BatchSpanProcessor(exporter)))
 
     # Attach the JSONL file sink as a second (or only) processor.  It
-    # rides the same truncating wrapper so large tool outputs don't
-    # balloon the file either.
+    # rides the same truncating + drop wrappers so the file output stays
+    # clean and bounded even when OTLP isn't configured.
     if config.file_path:
         from fin_assist.hub.file_exporter import FileSpanExporter
 
         file_exporter = FileSpanExporter(config.file_path)
-        provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(file_exporter)))
+        provider.add_span_processor(_wrap(BatchSpanProcessor(file_exporter)))
 
     from opentelemetry.trace import set_tracer_provider
 

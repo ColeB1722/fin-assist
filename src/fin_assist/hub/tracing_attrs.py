@@ -43,6 +43,7 @@ __all__ = [
     "OpenInferenceSpanKindValues",
     "SpanAttributes",
     "SpanNames",
+    "TaskStateValues",
 ]
 
 
@@ -67,8 +68,28 @@ class FinAssistAttributes:
     """Python type name of the task result (e.g. ``"str"`` or a pydantic
     model name for structured output)."""
 
-    TASK_PAUSED_FOR_APPROVAL = "fin_assist.task.paused_for_approval"
-    """Boolean set on the task span when the task pauses for HITL."""
+    TASK_STATE = "fin_assist.task.state"
+    """Terminal lifecycle state of a task, set on the ``fin_assist.task``
+    span before it ends.  Distinct from A2A's ``TaskState`` (which is
+    the wire protocol state) because it collapses uninteresting A2A
+    states and distinguishes interesting platform sub-states that A2A
+    doesn't model (e.g. ``paused_for_approval`` vs generic INPUT_REQUIRED).
+
+    Valid values live on :class:`TaskStateValues`.
+
+    One attribute with a small enum makes Phoenix filtering trivial:
+    one equality check per state instead of a compound predicate over
+    several booleans.  Replaces a short-lived
+    ``fin_assist.task.paused_for_approval`` boolean that never shipped
+    outside this branch."""
+
+    CLI_INVOCATION_ID = "fin_assist.cli.invocation_id"
+    """Matches the CLI-side attribute of the same name.  Stamped on the
+    ``fin_assist.task`` span by the executor when OTel baggage carries
+    the key (propagated over HTTP from the CLI tracer).  This is the
+    join key between the CLI trace and the hub task span — they live in
+    different ``trace_id``s because the HTTP boundary opens a new trace,
+    but both carry the same invocation_id."""
 
     TOOL_NAME = "fin_assist.tool.name"
     """fin-assist's own tool-name attribute, parallel to the OpenInference
@@ -99,6 +120,36 @@ class FinAssistAttributes:
     """Describes the semantic relationship of a span Link.  Known values:
     ``"resume_from_approval"`` (task span → paused approval_request span),
     ``"approval_for"`` (approval_decided → approval_request)."""
+
+
+class TaskStateValues:
+    """Valid values for :attr:`FinAssistAttributes.TASK_STATE`.
+
+    Kept as string constants (rather than ``enum.Enum``) so they can be
+    set directly on OTel spans without ``.value`` unwrapping at every
+    call site.  Centralized here so a renamed state is a single edit
+    across executor.py and its tests.
+    """
+
+    RUNNING = "running"
+    """Set at the start of ``execute()``; replaced by a terminal value
+    before the task span ends."""
+
+    PAUSED_FOR_APPROVAL = "paused_for_approval"
+    """The task is awaiting human approval.  Terminal from the point of
+    view of the *span* — the resume opens a new trace and a new span."""
+
+    RESUMED_FROM_APPROVAL = "resumed_from_approval"
+    """Transient: set at the start of a resume, immediately before
+    ``completed``/``failed`` replaces it.  Observable on the
+    ``approval_decided`` span rather than the task span (task.state is
+    last-write-wins)."""
+
+    COMPLETED = "completed"
+    """Normal successful completion."""
+
+    FAILED = "failed"
+    """Exception during ``execute()``; the task span was marked ERROR."""
 
 
 class SpanNames:

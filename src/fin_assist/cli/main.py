@@ -37,6 +37,7 @@ from fin_assist.cli.server import (
     ensure_server_running,
     stop_server,
 )
+from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
 from fin_assist.config.loader import load_config
 from fin_assist.paths import SESSIONS_DIR
 
@@ -620,41 +621,62 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         args.agent = agent
 
+    # Set up CLI-side tracing *before* any command runs so every HTTP
+    # call the CLI makes carries ``traceparent`` and the shared
+    # ``fin_assist.cli.invocation_id`` baggage entry.  No-op when
+    # ``config.tracing.enabled`` is False, so the off-path costs nothing.
+    #
+    # ``serve`` is deliberately excluded — it's the hub process itself,
+    # not a client, and it installs a full TracerProvider inside
+    # ``_serve_command`` with backend hooks.  Running both would try to
+    # set two global providers in one process.
+    if args.command != "serve":
+        setup_cli_tracing(config.tracing)
+
+    agent_attr = getattr(args, "agent", None) or ""
+
     match args.command:
         case "agents":
-            return asyncio.run(_agents_command(args, config, config_path))
+            with cli_root_span("agents"):
+                return asyncio.run(_agents_command(args, config, config_path))
         case "do":
-            return asyncio.run(_do_command(args, config, config_path))
+            with cli_root_span("do", agent=agent_attr):
+                return asyncio.run(_do_command(args, config, config_path))
         case "talk":
-            return asyncio.run(_talk_command(args, config, config_path))
+            with cli_root_span("talk", agent=agent_attr):
+                return asyncio.run(_talk_command(args, config, config_path))
         case "list":
-            return _list_command(args, config)
+            with cli_root_span("list"):
+                return _list_command(args, config)
         case "start":
-            try:
-                base_url = asyncio.run(ensure_server_running(config, config_path))
-                render_info(f"Hub running at {base_url}")
-                return 0
-            except ServerStartupError as e:
-                render_error(str(e))
-                return 1
+            with cli_root_span("start"):
+                try:
+                    base_url = asyncio.run(ensure_server_running(config, config_path))
+                    render_info(f"Hub running at {base_url}")
+                    return 0
+                except ServerStartupError as e:
+                    render_error(str(e))
+                    return 1
         case "stop":
-            if stop_server(port=config.server.port):
-                render_info("Hub stopped.")
-            else:
-                render_error("No running hub found (no PID file or process already stopped).")
-                return 1
-            return 0
+            with cli_root_span("stop"):
+                if stop_server(port=config.server.port):
+                    render_info("Hub stopped.")
+                else:
+                    render_error("No running hub found (no PID file or process already stopped).")
+                    return 1
+                return 0
         case "status":
-            status = asyncio.run(check_status(config))
-            if status.healthy:
-                pid_info = f", PID {status.pid}" if status.pid else ""
-                note = ""
-                if not status.pid_file_exists and status.pid:
-                    note = " [yellow](PID file missing — orphaned server)[/yellow]"
-                render_info(f"Hub running at {status.base_url}{pid_info}{note}")
-            else:
-                render_info("Hub is not running.")
-            return 0
+            with cli_root_span("status"):
+                status = asyncio.run(check_status(config))
+                if status.healthy:
+                    pid_info = f", PID {status.pid}" if status.pid else ""
+                    note = ""
+                    if not status.pid_file_exists and status.pid:
+                        note = " [yellow](PID file missing — orphaned server)[/yellow]"
+                    render_info(f"Hub running at {status.base_url}{pid_info}{note}")
+                else:
+                    render_info("Hub is not running.")
+                return 0
         case "serve":
             return _serve_command(args, config, config_path)
         case _:

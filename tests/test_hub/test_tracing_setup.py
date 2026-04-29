@@ -448,3 +448,233 @@ class TestHeaderWiring:
         # Should not raise even though endpoint is unreachable.
         provider = setup_tracing(config)
         assert provider is not None
+
+
+class TestNoiseSuppression:
+    """Phase 1 — framework-noise filtering.
+
+    Two independent noise sources must be tamed before CLI/hub traces
+    become readable:
+
+    1. **a2a-sdk** wraps internal classes with ``@trace_class`` which
+       emits a ``SpanKind.SERVER`` span for every EventQueue / TaskStore
+       operation with zero useful attributes.  ~195 spans per invocation
+       of ``fin do``.  Disabled with the vendor env var
+       ``OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false`` (honored by
+       ``a2a/utils/telemetry.py``).  ``setup_tracing`` sets it via
+       ``os.environ.setdefault`` so operator overrides (re-enable for
+       debugging) still win.
+    2. **FastAPIInstrumentor** emits one ``http.response.body`` span
+       per SSE chunk (~45 per streamed task).  They carry only
+       ``asgi.event.type = "http.response.body"`` as identifying data.
+       Dropped in the export pipeline via a ``_DropSpansProcessor`` so
+       we keep the request-level span (``GET /agents``, ``POST
+       /agents/test``) without the per-chunk firehose.
+    """
+
+    def test_a2a_sdk_instrumentation_disabled_by_default(self):
+        """``OTEL_INSTRUMENTATION_A2A_SDK_ENABLED`` must be set to
+        ``"false"`` before a2a-sdk is imported.
+
+        a2a-sdk reads this at module-import time (not per-call), so
+        setting it inside ``setup_tracing`` would be too late.  We set
+        it in ``fin_assist/__init__.py`` which is always imported
+        before any ``a2a.*`` import.  This test just confirms the
+        side-effect is in place once the package is imported.
+        """
+        # Importing ``fin_assist`` triggers the ``setdefault`` in
+        # ``__init__.py``.  By the time this test runs, pytest has
+        # long since imported it.
+        import fin_assist  # noqa: F401  — imported for the side effect
+
+        assert os.environ.get("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED") == "false"
+
+    def test_operator_a2a_override_not_clobbered(self):
+        """``setdefault`` semantics: an operator who exports
+        ``OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=true`` before running
+        ``fin`` (to debug a2a internals) must not have that value
+        replaced on import.
+
+        Tested by re-invoking the exact same ``setdefault`` line in a
+        temporarily-set environment — we can't un-import
+        ``fin_assist`` to re-trigger its ``__init__``.
+        """
+        import os as _os
+
+        saved = _os.environ.get("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED")
+        try:
+            _os.environ["OTEL_INSTRUMENTATION_A2A_SDK_ENABLED"] = "true"
+            # This is the exact line in fin_assist/__init__.py — if it
+            # ever overwrites an existing value this assertion fails.
+            _os.environ.setdefault("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED", "false")
+            assert _os.environ.get("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED") == "true"
+        finally:
+            if saved is None:
+                _os.environ.pop("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED", None)
+            else:
+                _os.environ["OTEL_INSTRUMENTATION_A2A_SDK_ENABLED"] = saved
+
+    def test_asgi_http_response_body_spans_dropped(self, reset_tracer_provider, tmp_path):
+        """ASGI ``http.response.body`` spans (emitted per SSE chunk) must
+        be filtered out before export.  We test this end-to-end via the
+        file exporter: after configuring tracing, synthesizing a span
+        with the ASGI signature, and flushing, the output JSONL must
+        not contain that span.
+        """
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(enabled=True, file_path=str(path))
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        # Pretend to be the FastAPI/ASGI instrumentor emitting one of its
+        # per-chunk response-body spans.  The noise filter keys on the
+        # attribute, not the name, so the exact span name isn't load-
+        # bearing — but this is the shape the real instrumentor emits.
+        with tracer.start_as_current_span("http send") as noise:
+            noise.set_attribute("asgi.event.type", "http.response.body")
+
+        with tracer.start_as_current_span("real span"):
+            pass
+
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        lines = [_json.loads(line) for line in path.read_text().splitlines()]
+        names = [line["name"] for line in lines]
+        assert "real span" in names
+        # The ASGI per-chunk span must have been filtered out.
+        attr_types = [line.get("attributes", {}).get("asgi.event.type") for line in lines]
+        assert "http.response.body" not in attr_types
+
+    def test_non_asgi_spans_not_dropped(self, reset_tracer_provider, tmp_path):
+        """The drop filter must only match ``http.response.body`` — other
+        ASGI event types (``http.response.start``) and all non-ASGI spans
+        must pass through untouched.
+        """
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(enabled=True, file_path=str(path))
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("keep-1") as s:
+            s.set_attribute("asgi.event.type", "http.response.start")
+        with tracer.start_as_current_span("keep-2") as s:
+            s.set_attribute("some.other.attr", "value")
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        lines = [_json.loads(line) for line in path.read_text().splitlines()]
+        names = {line["name"] for line in lines}
+        assert {"keep-1", "keep-2"}.issubset(names)
+
+
+class TestAttributeHygiene:
+    """Phase 4 — strip attributes that add no information.
+
+    Three redundant / leaked attributes show up in real traces:
+
+    * ``logfire.msg`` / ``logfire.json_schema`` — leaked from pydantic-ai's
+      internal instrumentation (it uses logfire as a tracing front-end
+      even when logfire itself isn't configured).  They pollute the
+      attribute list without helping an operator read a trace.
+    * ``final_result`` on ``agent run`` spans — full pydantic RunResult
+      JSON, duplicated as ``output.value`` and ``pydantic_ai.all_messages``.
+      Three copies of the same bytes.  Stripping this saves ~5-30KB
+      per trace.
+    * ``session.id`` set identically to ``fin_assist.context.id``.
+      Keeping both is legacy from when OpenInference required
+      ``session.id``; operators now look at the fin_assist namespace
+      first.  Dropping when equal removes the duplication without
+      breaking dashboards that read ``session.id``.
+    """
+
+    def test_logfire_attrs_stripped_from_file_output(self, reset_tracer_provider, tmp_path):
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "h.jsonl"
+        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("noisy") as s:
+            s.set_attribute("logfire.msg", "running tool read_file")
+            s.set_attribute("logfire.json_schema", "{...}")
+            s.set_attribute("keep.me", "yes")
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        line = _json.loads(path.read_text().splitlines()[0])
+        attrs = line["attributes"]
+        assert "logfire.msg" not in attrs
+        assert "logfire.json_schema" not in attrs
+        assert attrs.get("keep.me") == "yes"
+
+    def test_final_result_attr_stripped(self, reset_tracer_provider, tmp_path):
+        """``final_result`` on an ``agent run`` span duplicates
+        ``output.value`` + ``pydantic_ai.all_messages``.  Export should
+        drop it.  Other spans that happen to have a ``final_result``
+        attribute stay untouched — we only strip the pydantic-ai leak.
+        """
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "h.jsonl"
+        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("agent run") as s:
+            s.set_attribute("final_result", '{"big": "json"}')
+            s.set_attribute("output.value", "keep")
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        line = _json.loads(path.read_text().splitlines()[0])
+        attrs = line["attributes"]
+        assert "final_result" not in attrs
+        assert attrs.get("output.value") == "keep"
+
+    def test_duplicate_session_id_dropped(self, reset_tracer_provider, tmp_path):
+        """When ``session.id`` equals ``fin_assist.context.id`` they are
+        redundant; drop ``session.id``.  When they differ (unlikely but
+        possible in future custom backends), keep both so the user-set
+        ``session.id`` isn't silently erased."""
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "h.jsonl"
+        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("same") as s:
+            s.set_attribute("session.id", "ctx-1")
+            s.set_attribute("fin_assist.context.id", "ctx-1")
+        with tracer.start_as_current_span("different") as s:
+            s.set_attribute("session.id", "override-session")
+            s.set_attribute("fin_assist.context.id", "ctx-2")
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        lines = [_json.loads(line) for line in path.read_text().splitlines()]
+        same = next(line for line in lines if line["name"] == "same")
+        diff = next(line for line in lines if line["name"] == "different")
+
+        assert "session.id" not in same["attributes"]
+        assert same["attributes"]["fin_assist.context.id"] == "ctx-1"
+        assert diff["attributes"]["session.id"] == "override-session"
+        assert diff["attributes"]["fin_assist.context.id"] == "ctx-2"

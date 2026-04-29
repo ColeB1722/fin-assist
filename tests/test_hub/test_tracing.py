@@ -70,16 +70,18 @@ def _make_backend(
 def _make_context_store() -> MagicMock:
     """Return a MagicMock shaped like ``ContextStore``.
 
-    All four methods must be ``AsyncMock`` because ``Executor`` awaits
-    them unconditionally (including the trace-context methods added for
-    the HITL flow).  Centralized here so tests that don't care about
-    store internals get a working fake from one call.
+    Every async method the executor awaits must be ``AsyncMock`` or the
+    first await trips ``TypeError: can't await MagicMock``.  Phase 3
+    added ``load_pause_state`` / ``save_pause_state`` to the set; the
+    legacy ``*_trace_context`` pair stays for backwards compat.
     """
     store = MagicMock()
     store.load = AsyncMock(return_value=None)
     store.save = AsyncMock()
     store.load_trace_context = AsyncMock(return_value=None)
     store.save_trace_context = AsyncMock()
+    store.load_pause_state = AsyncMock(return_value=None)
+    store.save_pause_state = AsyncMock()
     return store
 
 
@@ -1020,7 +1022,16 @@ class TestTaskResultAttributes:
         attrs = task_spans[0].attributes
         assert attrs.get("fin_assist.task.result_type") == "str"
 
-    async def test_task_span_paused_for_approval_attribute(self, execute_with_tracing):
+    async def test_task_span_paused_state_attribute(self, execute_with_tracing):
+        """When a task pauses for approval, the task span's
+        ``fin_assist.task.state`` attribute ends at ``paused_for_approval``.
+
+        This replaces an earlier boolean
+        ``fin_assist.task.paused_for_approval`` that was emitted
+        alongside the enum during the Phase 3 tracing UX pass; the
+        boolean never shipped outside a feature branch so no downstream
+        consumer needs it.  See ``TaskStateValues`` for the full enum.
+        """
         deferred_event = StepEvent(
             kind="deferred",
             content=DeferredToolCall(
@@ -1038,4 +1049,4 @@ class TestTaskResultAttributes:
         )
         task_spans = ts["get_spans"]("fin_assist.task")
         assert len(task_spans) == 1
-        assert task_spans[0].attributes.get("fin_assist.task.paused_for_approval") is True
+        assert task_spans[0].attributes.get("fin_assist.task.state") == "paused_for_approval"

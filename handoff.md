@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-29)**: 849 tests passing, `just ci` green (format, lint, typecheck, test). Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). **Telemetry Hardening Phase 2 complete**: Phoenix-friendly attributes, HITL two-span trace continuity, OpenInference bridge, vendor-agnostic `setup_tracing`. **JSONL file exporter shipped ([#105](https://github.com/ColeB1722/fin-assist/issues/105))** — set `FIN_TRACING__FILE_PATH=./traces.jsonl` and every span lands in a grep/jq-friendly file, standalone or alongside OTLP. Remaining follow-ups: [#104, #106-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+106+107+108+109). Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Telemetry Hardening — Phase 2" below for architecture.
+**Current state (2026-04-29)**: 876 tests passing, `just ci` green (format, lint, typecheck, test). Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). **Telemetry Hardening Phase 2 complete**: Phoenix-friendly attributes, HITL two-span trace continuity, OpenInference bridge, vendor-agnostic `setup_tracing`. **JSONL file exporter shipped ([#105](https://github.com/ColeB1722/fin-assist/issues/105))** — set `FIN_TRACING__FILE_PATH=./traces.jsonl` and every span lands in a grep/jq-friendly file, standalone or alongside OTLP. **Tracing UX pass complete (closes [#104](https://github.com/ColeB1722/fin-assist/issues/104))** — CLI tracer with `cli.<command>` root spans + `HTTPXClientInstrumentor` + Baggage-propagated `fin_assist.cli.invocation_id`; `_DropSpansProcessor` filters ASGI/a2a-sdk noise; `fin_assist.task.state` enum replaces binary paused-for-approval flag; `save_pause_state` persists user_input so resumed traces show the original prompt; scrubs `logfire.*` / `final_result` / duplicate `session.id` on export. +27 tests (849 → 876). Remaining follow-ups: [#106-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+106+107+108+109). Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Telemetry Hardening — Phase 2" below for architecture and "Design Sketches: Tracing UX Pass" for the most recent work.
 
 **Core platform status:**
 
@@ -35,10 +35,10 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Recommended picks (in priority order):**
 
-1. **CLI-side OTel propagation** ([#104](https://github.com/ColeB1722/fin-assist/issues/104)) — closes the trace loop. Today a CLI command → hub task chain shows only the hub side. Wire a `TracerProvider` into the CLI process, inject `traceparent` via `HubClient`, watch the CLI command span become the parent of `fin_assist.task`. ~150 LOC, TDD-first. High user-visible value + completes the telemetry story. Pairs well with the new JSONL exporter: CLI-side spans land in the same file as hub spans, so `jq` across one file shows the whole trace.
-2. **`fin-assist trace replay <file>`** — small follow-up to the JSONL exporter shipped in this session. HTTP POST loop that re-ships JSONL lines at Phoenix's `/v1/traces` endpoint so a captured trace can be re-rendered in a fresh Phoenix instance. ~50 LOC. Not filed as its own issue yet (was the stretch part of #105).
-3. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" Phase A below.
-4. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from the parallel-tool-span refactor in Phase 2.
+1. **`fin-assist trace replay <file>`** — small follow-up to the JSONL exporter shipped in #105. HTTP POST loop that re-ships JSONL lines at Phoenix's `/v1/traces` endpoint so a captured trace can be re-rendered in a fresh Phoenix instance. ~50 LOC. Not filed as its own issue yet (was the stretch part of #105).
+2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" Phase A below.
+3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from the parallel-tool-span refactor in Phase 2.
+4. **Re-parent `running tool` under `fin_assist.tool_execution`** (new follow-up from tracing UX pass). Today the two are siblings under `fin_assist.step`, which double-counts `tool.name` queries. Requires a SpanProcessor.on_start hook that rewrites parents by tool_call_id — see "Design Sketches: Tracing UX Pass" for why this was deferred. No issue filed yet.
 
 ### Sequenced roadmap (why this order)
 
@@ -316,6 +316,36 @@ Point: nothing in the code knows whether you're targeting Phoenix, Tempo, Jaeger
 - `fin-assist trace replay <file>` subcommand — POST captured JSONL back to Phoenix's `/v1/traces`. Small, ~50 LOC.
 - Rotation (size-based via `RotatingFileHandler` pattern). Current escape hatch: `rm`.
 - Note: issue #105 originally proposed the env var `FIN_TRACING__CLI_TRACE_FILE`; we shipped as `FIN_TRACING__FILE_PATH` because the exporter isn't CLI-specific — the hub writes to it too.
+
+---
+
+### Tracing UX Pass (complete, 2026-04-29, closes #104)
+
+**Status:** ✅ **Complete**. 27 new tests, 849 → 876 passing, `just ci` green.
+
+**Why this exists:** Before this pass a single `fin do test "..."` produced **6 traces / 282 spans** in Phoenix, of which ~270 were framework noise (a2a-sdk `@trace_class` internals + FastAPI per-SSE-chunk spans) and the 6 traces were the CLI's 4 HTTP calls (`/health`, `/agents`, `/agents/<name>`, `/agents/<name>/:send-message`) each opening a fresh hub-side trace because no `traceparent` left the CLI. An approval round-trip added another 2 disconnected traces. Reading a trace in Phoenix required cross-referencing manually.
+
+**After:** one `fin do` invocation = **1 CLI trace + 1 hub trace** joined by a shared `fin_assist.cli.invocation_id` attribute (Baggage-propagated), ~30-40 useful spans, no per-chunk noise. Approval round-trip = CLI trace + 2 linked hub traces, all carrying the same invocation_id.
+
+**Shape (four phases):**
+
+| Phase | Change | Files |
+|-------|--------|-------|
+| 1 — Noise suppression | `os.environ.setdefault("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED", "false")` — vendor-supported off-switch for a2a-sdk's `@trace_class` emissions. `_DropSpansProcessor` at the head of the export chain drops spans with `asgi.event.type = "http.response.body"` (FastAPI per-SSE-chunk noise). Keys on the attribute value, not the span name, so instrumentor renames across versions don't break the filter. | `src/fin_assist/hub/tracing.py` |
+| 2 — CLI tracer | New module `src/fin_assist/cli/tracing.py`. `setup_cli_tracing(config)` installs a `TracerProvider` writing to the same JSONL file as the hub; `HTTPXClientInstrumentor().instrument()` auto-injects `traceparent` + `baggage` on every outgoing httpx request. `cli_root_span(command, agent=...)` opens a single `cli.<command>` root per invocation, stamps `fin_assist.cli.invocation_id` as both a span attribute and a Baggage entry. `approval_wait_span()` wraps the y/N prompt (nested inside `run_approval_widget`) so dashboards can subtract human think-time. Dispatcher in `cli/main.py` wraps every command except `serve` (which is the hub itself). Closes #104. | `src/fin_assist/cli/tracing.py`, `src/fin_assist/cli/main.py`, `src/fin_assist/cli/interaction/approve.py` |
+| 3 — Approval polish | New `FinAssistAttributes.TASK_STATE` (enum: `running`/`paused_for_approval`/`resumed_from_approval`/`completed`/`failed`) replaces the binary `TASK_PAUSED_FOR_APPROVAL` (the boolean was added earlier in this branch and never shipped, so no soft transition needed — dropped outright). `ContextStore.save_pause_state` extends `save_trace_context` by also persisting the original `user_input` so a resumed task's `input.value` isn't empty. Executor reads `fin_assist.cli.invocation_id` from baggage in `execute()` and stamps it onto the `fin_assist.task` span. Incidental bugfix: `user_input` was being read off the Message (no method) instead of the RequestContext — was always "" for months. | `src/fin_assist/hub/tracing_attrs.py`, `src/fin_assist/hub/context_store.py`, `src/fin_assist/hub/executor.py` |
+| 4 — Attribute hygiene | `_scrub_span_attributes` at `on_end` strips `logfire.*` (pydantic-ai leaks these even when logfire isn't configured), strips `final_result` on `agent run` (redundant with `output.value` + `pydantic_ai.all_messages`, ~5-30KB/trace), drops `session.id` when it equals `fin_assist.context.id`. | `src/fin_assist/hub/tracing.py` |
+
+**Plan-time bullets that were reconsidered during implementation:**
+
+- **"Convert `fin_assist.approval_request` to `span.add_event('approval_requested')`"** — deferred. Would have broken 10+ existing tests that pin the span's existence (parent relationships, the pause→resume Link target) and lost Phoenix filter queries like `name=fin_assist.approval_request AND status=paused`. The span is intentionally zero-duration — it's a pause-checkpoint marker with a SpanContext that the `approval_decided` span in the resume trace links back to. Keeping it was the right call.
+- **"Drop `fin_assist.tool_execution` span, merge attrs onto pydantic-ai's `running tool`"** — deferred. Our span is framework-independent (works regardless of which LLM framework the backend uses — the `StepEvent` abstraction is framework-agnostic by design), has stable attribute names we control, and is fully populated at `on_start` so Phoenix's live-trace view renders correctly (pydantic-ai's spans get enriched by the OpenInference bridge at `on_end`). The "duplicate tool spans" concern is cosmetic and fixable by a follow-up that re-parents `running tool` as a child of `fin_assist.tool_execution` instead of a sibling.
+- **"30-minute hard timeout on CLI root span across approval wait"** — punted. The root span already auto-closes when the user responds or Ctrl-C's. Adding `asyncio.wait_for` would just log noise after 30 minutes without materially helping debuggability.
+
+**Follow-ups, not filed as issues yet:**
+
+- Re-parent `running tool` under `fin_assist.tool_execution` (the child-vs-sibling fix described above). Needs a SpanProcessor.on_start hook that rewrites the child's parent based on matching tool_call_id — fragile because OTel spans aren't designed to be reparented post-creation and pydantic-ai may start the span before our executor attaches context. Low-value until Phoenix queries actually suffer from double-counted `tool.name` (which requires filtering-by-span-name to fix anyway).
+- 30-min CLI root timeout if it ever becomes a real pain point.
 
 ---
 

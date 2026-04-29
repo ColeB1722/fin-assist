@@ -65,6 +65,7 @@ from fin_assist.hub.tracing_attrs import (
     OpenInferenceSpanKindValues,
     SpanAttributes,
     SpanNames,
+    TaskStateValues,
 )
 from fin_assist.protobuf import struct_to_dict
 
@@ -143,6 +144,13 @@ class _ExecutionContext:
     raw_context_id: str | None
     updater: TaskUpdater
     artifact_id: str
+    user_input: str = ""
+    """Original user prompt for this task.  Persisted into the
+    ContextStore at pause so the resume can hydrate ``input.value`` on
+    the new task span — otherwise a resumed task's span has an empty
+    ``input.value`` (the resume message only carries ``approval_result``
+    metadata, not the original prompt).
+    """
     created_artifacts: set[str] = field(default_factory=set)
     text_chunks: list[str] = field(default_factory=list)
     task_span: Span | None = None
@@ -216,6 +224,27 @@ class Executor(AgentExecutor):
             self._tracer = _get_tracer()
         return self._tracer
 
+    @staticmethod
+    def _read_invocation_id_from_baggage() -> str:
+        """Read ``fin_assist.cli.invocation_id`` from current OTel baggage.
+
+        The CLI tracer sets this into Baggage inside ``cli_root_span``
+        (via ``baggage.set_baggage``).  When the outgoing httpx request
+        is intercepted by ``HTTPXClientInstrumentor``, the W3C
+        ``baggage`` header is injected.  The hub's FastAPI
+        instrumentor extracts the header back into the current
+        context, and this helper reads it.
+
+        Returns the empty string if baggage is missing or the value
+        isn't a string — callers treat "" as "no CLI trace" and skip
+        setting the attribute.  Returning ``str`` (never ``None``) keeps
+        call sites terse: ``if invocation_id:`` covers both cases.
+        """
+        from opentelemetry import baggage
+
+        value = baggage.get_baggage(FinAssistAttributes.CLI_INVOCATION_ID)
+        return value if isinstance(value, str) else ""
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Run one task through its lifecycle.
 
@@ -239,9 +268,21 @@ class Executor(AgentExecutor):
         if ctx is None:
             return
 
-        user_input = ""
-        if context.message and hasattr(context.message, "parts"):
-            user_input = getattr(context.message, "get_user_input", lambda: "")() or ""
+        # ``get_user_input`` lives on ``RequestContext``, not on the
+        # wrapped ``Message``.  The method concatenates text parts; we
+        # also tolerate a MagicMock message with ``get_user_input`` on
+        # it, which is what older tests use.
+        user_input: str = ""
+        if context.message is not None:
+            raw = ""
+            getter = getattr(context, "get_user_input", None)
+            if callable(getter):
+                raw = getter()
+            else:
+                msg_getter = getattr(context.message, "get_user_input", None)
+                if callable(msg_getter):
+                    raw = msg_getter()
+            user_input = raw if isinstance(raw, str) else ""
 
         # Resume detection needs to happen *before* the task span is
         # started so the task span can carry a Link back to the paused
@@ -249,9 +290,25 @@ class Executor(AgentExecutor):
         # trace is a continuation of a prior trace — the operator sees
         # a "linked" affordance and can click through.
         approval_decisions = self._extract_approval_decisions(context.message)
-        prior_trace_ctx = None
+        prior_trace_ctx: tuple[int, int, int] | None = None
+        prior_user_input: str = ""
         if approval_decisions and ctx.raw_context_id:
-            prior_trace_ctx = await self._context_store.load_trace_context(ctx.raw_context_id)
+            pause_state = await self._context_store.load_pause_state(ctx.raw_context_id)
+            if pause_state is not None:
+                prior_trace_ctx = (
+                    pause_state.trace_id,
+                    pause_state.span_id,
+                    pause_state.trace_flags,
+                )
+                prior_user_input = pause_state.user_input or ""
+
+        # On resume, the incoming message is just the approval_result
+        # metadata — no prompt.  Hydrating from the stored pause state
+        # gives Phoenix a meaningful ``input.value`` on the resumed
+        # task span instead of an empty string.
+        if not user_input and prior_user_input:
+            user_input = prior_user_input
+        ctx.user_input = user_input
 
         task_span_links = []
         if prior_trace_ctx is not None:
@@ -259,16 +316,33 @@ class Executor(AgentExecutor):
             if link is not None:
                 task_span_links.append(link)
 
+        task_attributes: dict[str, Any] = {
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: (OpenInferenceSpanKindValues.AGENT.value),
+            "gen_ai.agent.name": self._agent_name,
+            FinAssistAttributes.TASK_ID: ctx.task_id,
+            FinAssistAttributes.CONTEXT_ID: ctx.raw_context_id or "",
+            SpanAttributes.SESSION_ID: ctx.raw_context_id or "",
+            SpanAttributes.INPUT_VALUE: user_input,
+            # Start in ``running`` — ``completed``/``failed``/``paused_for_approval``
+            # overwrite this exactly once before span end.  Setting it at
+            # start (rather than only at end) means Phoenix's live-trace
+            # view can display the state while the task is still in
+            # flight.
+            FinAssistAttributes.TASK_STATE: TaskStateValues.RUNNING,
+        }
+
+        # Read the CLI-injected invocation id from baggage so the task
+        # span carries the same join key as the CLI root.  Empty /
+        # missing baggage means "no CLI trace" (e.g. direct hub call);
+        # in that case we omit the attribute entirely so queries
+        # filtering on it don't match unrelated tasks.
+        invocation_id = self._read_invocation_id_from_baggage()
+        if invocation_id:
+            task_attributes[FinAssistAttributes.CLI_INVOCATION_ID] = invocation_id
+
         task_span = self._active_tracer.start_span(
             SpanNames.TASK,
-            attributes={
-                SpanAttributes.OPENINFERENCE_SPAN_KIND: (OpenInferenceSpanKindValues.AGENT.value),
-                "gen_ai.agent.name": self._agent_name,
-                FinAssistAttributes.TASK_ID: ctx.task_id,
-                FinAssistAttributes.CONTEXT_ID: ctx.raw_context_id or "",
-                SpanAttributes.SESSION_ID: ctx.raw_context_id or "",
-                SpanAttributes.INPUT_VALUE: user_input,
-            },
+            attributes=task_attributes,
             links=task_span_links or None,
         )
         ctx.task_span = task_span
@@ -301,6 +375,7 @@ class Executor(AgentExecutor):
                 partial = "".join(ctx.text_chunks)
                 if partial:
                     ctx.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, partial)
+                ctx.task_span.set_attribute(FinAssistAttributes.TASK_STATE, TaskStateValues.FAILED)
                 ctx.task_span.record_exception(exc)
                 ctx.task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
                 ctx.task_span.end()
@@ -424,17 +499,20 @@ class Executor(AgentExecutor):
         user sees two disconnected traces.
         """
         if ctx.task_span is not None:
-            ctx.task_span.set_attribute(FinAssistAttributes.TASK_PAUSED_FOR_APPROVAL, True)
+            ctx.task_span.set_attribute(
+                FinAssistAttributes.TASK_STATE, TaskStateValues.PAUSED_FOR_APPROVAL
+            )
             ctx.task_span.end()
 
         if ctx.raw_context_id:
             await self._context_store.save(ctx.raw_context_id, result.serialized_history)
             if ctx.paused_approval_span_ctx is not None:
-                await self._context_store.save_trace_context(
-                    ctx.raw_context_id,
-                    ctx.paused_approval_span_ctx.trace_id,
-                    ctx.paused_approval_span_ctx.span_id,
-                    int(ctx.paused_approval_span_ctx.trace_flags),
+                await self._context_store.save_pause_state(
+                    context_id=ctx.raw_context_id,
+                    trace_id=ctx.paused_approval_span_ctx.trace_id,
+                    span_id=ctx.paused_approval_span_ctx.span_id,
+                    trace_flags=int(ctx.paused_approval_span_ctx.trace_flags),
+                    user_input=ctx.user_input,
                 )
         logger.info("paused for approval task_id=%s", ctx.task_id)
         deferred_msg = ctx.updater.new_agent_message(parts=[Part(text="Waiting for approval")])
@@ -473,6 +551,7 @@ class Executor(AgentExecutor):
             ctx.task_span.set_attribute(
                 FinAssistAttributes.TASK_RESULT_TYPE, type(result.output).__name__
             )
+            ctx.task_span.set_attribute(FinAssistAttributes.TASK_STATE, TaskStateValues.COMPLETED)
             if isinstance(result.output, str):
                 ctx.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.output)
             else:

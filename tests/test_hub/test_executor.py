@@ -84,17 +84,25 @@ def _make_request_context(*, task_id: str = "task-1", context_id: str = "ctx-1")
 
 
 def _make_context_store(*, load_return: Any = None) -> MagicMock:
-    """Return a MagicMock shaped like ``ContextStore`` with all four
-    async methods (``load``, ``save``, ``load_trace_context``,
-    ``save_trace_context``) as ``AsyncMock``.  The executor awaits all
-    of them, including the trace-context pair added for HITL continuity,
-    so skipping any of them trips ``TypeError: can't await MagicMock``.
+    """Return a MagicMock shaped like ``ContextStore`` with every async
+    method the executor awaits wired as ``AsyncMock``.
+
+    The set grew during the Phase 3 tracing UX pass: pause-state (used
+    on pause for HITL continuity) now also persists ``user_input``,
+    accessed via ``save_pause_state`` / ``load_pause_state``.  The
+    legacy ``save_trace_context`` / ``load_trace_context`` methods are
+    still present on the real class for backwards compatibility and
+    mirrored here — an AsyncMock left unset would trip
+    ``TypeError: can't await MagicMock`` the first time the executor
+    touched it.
     """
     store = MagicMock()
     store.load = AsyncMock(return_value=load_return)
     store.save = AsyncMock()
     store.load_trace_context = AsyncMock(return_value=None)
     store.save_trace_context = AsyncMock()
+    store.load_pause_state = AsyncMock(return_value=None)
+    store.save_pause_state = AsyncMock()
     return store
 
 

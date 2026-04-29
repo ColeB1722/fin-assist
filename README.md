@@ -242,6 +242,7 @@ Context injection via `@`-completion in the input panel: `@file:path.py`, `@git:
 | Input panel + `--edit` | Interactive `fin do`, `--edit` flag, `--agent` flag | Done |
 | `@`-completion | Inline context injection (`@file:`, `@git:`, `@history:`) | Done |
 | `fin list` | CLI capabilities listing (tools, prompts, output-types) | Done |
+| Observability | OTel tracing (hub + CLI), OpenInference/Phoenix bridge, JSONL span sink, HITL trace continuity | Done |
 | 11 | Multiplexer (tmux/zellij) | Planned |
 | 13 | TUI client (Textual) | Planned |
 | 15 | Skills + MCP Integration | Planned |
