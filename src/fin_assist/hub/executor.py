@@ -61,6 +61,7 @@ from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from a2a.server.events import EventQueue
+    from opentelemetry.trace import Span, Tracer
 
     from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.agents.step import StepEvent
@@ -69,7 +70,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _get_tracer() -> Any:
+def _get_tracer() -> Tracer:
     """Return the fin-assist OTel tracer (no-op if tracing is not set up)."""
     from opentelemetry.trace import get_tracer
 
@@ -94,9 +95,9 @@ class _ExecutionContext:
     updater: TaskUpdater
     artifact_id: str
     created_artifacts: set[str] = field(default_factory=set)
-    task_span: Any = None
-    current_step_span: Any = None
-    current_tool_span: Any = None
+    task_span: Span | None = None
+    current_step_span: Span | None = None
+    current_tool_span: Span | None = None
 
 
 class Executor(AgentExecutor):
@@ -144,7 +145,13 @@ class Executor(AgentExecutor):
         self._backend = backend
         self._context_store = context_store
         self._agent_name = agent_name
-        self._tracer = _get_tracer()
+        self._tracer: Tracer | None = None
+
+    @property
+    def _active_tracer(self) -> Tracer:
+        if self._tracer is None:
+            self._tracer = _get_tracer()
+        return self._tracer
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Run one task through its lifecycle.
@@ -169,7 +176,7 @@ class Executor(AgentExecutor):
         if ctx is None:
             return
 
-        task_span = self._tracer.start_span(
+        task_span = self._active_tracer.start_span(
             "fin_assist.task",
             attributes={
                 "gen_ai.agent.name": self._agent_name,
@@ -410,7 +417,7 @@ class Executor(AgentExecutor):
     def _start_step_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         """Start a fin_assist.step span as a child of the task span."""
         parent_context = trace_api.set_span_in_context(ctx.task_span) if ctx.task_span else None
-        ctx.current_step_span = self._tracer.start_span(
+        ctx.current_step_span = self._active_tracer.start_span(
             "fin_assist.step",
             context=parent_context,
             attributes={
@@ -428,7 +435,7 @@ class Executor(AgentExecutor):
         """Start a fin_assist.tool_execution span as a child of the current step span."""
         parent = ctx.current_step_span or ctx.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
-        ctx.current_tool_span = self._tracer.start_span(
+        ctx.current_tool_span = self._active_tracer.start_span(
             "fin_assist.tool_execution",
             context=parent_context,
             attributes={
@@ -466,7 +473,7 @@ class Executor(AgentExecutor):
     async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
         parent = ctx.current_step_span or ctx.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
-        approval_span = self._tracer.start_span(
+        approval_span = self._active_tracer.start_span(
             "fin_assist.approval",
             context=parent_context,
             attributes={
