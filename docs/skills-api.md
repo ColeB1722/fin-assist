@@ -246,7 +246,7 @@ Response:
   task_id: string            # standard A2A task created; client streams updates
 ```
 
-On receipt: hub validates the skill_id against attached + walk-up skills, validates the skill's `serving_modes` matches the request's mode, builds the task with `active_skill_id` set from the start, seeds `entry_prompt` as the first user message if declared.
+On receipt: hub validates the skill_id against attached + walk-up skills, validates the skill's `serving_modes` matches the request's mode, builds the task with `active_skill_id` set from the start, seeds `entry_prompt` as the first user message if declared. Pre-commit tasks start in skill-loaded state, so by the §5 gating rule `load_skill` is never registered for them — the transition already happened at task creation.
 
 ### Persistence across a `talk` session
 
@@ -355,7 +355,7 @@ This ships **before** skills (Phase A), purely as a `ToolDefinition` enhancement
 
 ### Skill-scoped overrides (Phase B)
 
-A skill can declare per-tool approval overrides that apply **while that skill is the active invocation**:
+A skill can declare per-tool approval overrides that apply **while that skill is loaded**:
 
 ```yaml
 fin:
@@ -369,13 +369,13 @@ fin:
 **Semantics:**
 
 - Tool `X` has a base policy defined at registration.
-- When skill `S` is invoked and declares overrides for tool `X`, those overrides are **prepended** to `X`'s rule list for the duration of `S`'s invocation.
+- When skill `S` is loaded and declares overrides for tool `X`, those overrides are **prepended** to `X`'s rule list for the duration of `S`'s load.
 - Rule resolution remains first-match-wins. Override rules match first; fall through to base policy.
-- When no skill is active (unstructured invocation), only base policies apply.
+- In general state (no skill loaded), only base policies apply.
 
 **Why skill-scoped rather than agent-scoped merge:**
 
-Merging all skills' overrides into a single agent-wide policy would mean the `pr` skill's loosened `git push` rule applies even during a `commit` skill invocation. That breaks scope discipline. Per-invocation context keeps each skill's safety model local to its task.
+Merging all skills' overrides into a single agent-wide policy would mean the `pr` skill's loosened `git push` rule applies even while `commit` is loaded. That breaks scope discipline. Per-skill context keeps each skill's safety model local to the window in which that skill is active.
 
 **Implementation plumbing:**
 
@@ -413,10 +413,6 @@ fin:
 ```
 
 This keeps tightening visible at the skill level — a reviewer never has to wonder whether a skill tightens anything, they just check for the flag. Much better than silently relaxing the validation for all skills.
-
-### To be decided during implementation
-
-- How to surface the active skill in `StepEvent` / tracing spans (Phase D Phoenix integration). Likely a span attribute `skill.id`.
 
 ## 7. `@`-completion stays CLI-only
 
