@@ -74,6 +74,11 @@ class TracingSettings(BaseModel):
       by default so Phoenix's chat viewer has something to show; turn
       off for shared or regulated deployments and the bridge will emit
       only counts/roles.
+    * ``file_path`` — optional JSONL sink that writes every span as a
+      line of OTLP/JSON.  Runs alongside the OTLP exporter (or alone,
+      if no endpoint is configured) so traces survive when the remote
+      collector is offline and can be grep'd/jq'd directly.  Absent =
+      disabled; relative paths are resolved against the CWD.
     """
 
     enabled: bool = False
@@ -84,6 +89,7 @@ class TracingSettings(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     event_mode: Literal["attributes", "logs"] = "attributes"
     include_content: bool = True
+    file_path: str | None = None
 
 
 class ServerSettings(BaseModel):

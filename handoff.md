@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-29)**: 837 tests passing, `just ci` green (format, lint, typecheck, test). Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). **Telemetry Hardening Phase 2 complete**: Phoenix-friendly attributes, HITL two-span trace continuity, OpenInference bridge, vendor-agnostic `setup_tracing`. Follow-ups filed as [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109). Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Telemetry Hardening — Phase 2" below for architecture.
+**Current state (2026-04-29)**: 849 tests passing, `just ci` green (format, lint, typecheck, test). Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). **Telemetry Hardening Phase 2 complete**: Phoenix-friendly attributes, HITL two-span trace continuity, OpenInference bridge, vendor-agnostic `setup_tracing`. **JSONL file exporter shipped ([#105](https://github.com/ColeB1722/fin-assist/issues/105))** — set `FIN_TRACING__FILE_PATH=./traces.jsonl` and every span lands in a grep/jq-friendly file, standalone or alongside OTLP. Remaining follow-ups: [#104, #106-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+106+107+108+109). Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Telemetry Hardening — Phase 2" below for architecture.
 
 **Core platform status:**
 
@@ -35,9 +35,10 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Recommended picks (in priority order):**
 
-1. **CLI-side OTel propagation** ([#104](https://github.com/ColeB1722/fin-assist/issues/104)) — closes the trace loop. Today a CLI command → hub task chain shows only the hub side. Wire a `TracerProvider` into the CLI process, inject `traceparent` via `HubClient`, watch the CLI command span become the parent of `fin_assist.task`. ~150 LOC, TDD-first. High user-visible value + completes the telemetry story.
-2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" Phase A below.
-3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from the parallel-tool-span refactor in Phase 2.
+1. **CLI-side OTel propagation** ([#104](https://github.com/ColeB1722/fin-assist/issues/104)) — closes the trace loop. Today a CLI command → hub task chain shows only the hub side. Wire a `TracerProvider` into the CLI process, inject `traceparent` via `HubClient`, watch the CLI command span become the parent of `fin_assist.task`. ~150 LOC, TDD-first. High user-visible value + completes the telemetry story. Pairs well with the new JSONL exporter: CLI-side spans land in the same file as hub spans, so `jq` across one file shows the whole trace.
+2. **`fin-assist trace replay <file>`** — small follow-up to the JSONL exporter shipped in this session. HTTP POST loop that re-ships JSONL lines at Phoenix's `/v1/traces` endpoint so a captured trace can be re-rendered in a fresh Phoenix instance. ~50 LOC. Not filed as its own issue yet (was the stretch part of #105).
+3. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" Phase A below.
+4. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from the parallel-tool-span refactor in Phase 2.
 
 ### Sequenced roadmap (why this order)
 
@@ -285,11 +286,36 @@ Point: nothing in the code knows whether you're targeting Phoenix, Tempo, Jaeger
 | # | Topic | Issue |
 |---|-------|-------|
 | 1 | CLI-side OTel + W3C traceparent propagation | [#104](https://github.com/ColeB1722/fin-assist/issues/104) |
-| 2 | `cli.trace` JSONL exporter for offline trace debugging | [#105](https://github.com/ColeB1722/fin-assist/issues/105) |
+| 2 | ~~`cli.trace` JSONL exporter for offline trace debugging~~ | ✅ shipped 2026-04-29 (#105) — see sketch below |
 | 3 | Multi-exporter tracing (Phoenix + OTLP + file at once) | [#106](https://github.com/ColeB1722/fin-assist/issues/106) |
 | 4 | Configurable `event_mode=logs`: plumb OTel LoggerProvider | [#107](https://github.com/ColeB1722/fin-assist/issues/107) |
 | 5 | Retry-aware tool spans (`tool.retry_attempt`) | [#108](https://github.com/ColeB1722/fin-assist/issues/108) |
 | 6 | Generalize `_probe_phoenix`: OTLP connectivity probing | [#109](https://github.com/ColeB1722/fin-assist/issues/109) |
+
+---
+
+### JSONL trace exporter (complete, 2026-04-29, #105)
+
+**Status:** ✅ **Complete**. 12 new tests, 849/849 passing, `just ci` green.
+
+**Why this exists:** OTLP collectors are great for the UI but terrible for the "grep/jq/cat inside an agent loop" workflow we actually use. Phoenix at `localhost:6006` is also frequently down during dev — OTLP-only setups silently drop those spans. The JSONL sink writes every span as a line to a local file so traces (a) survive when Phoenix isn't running and (b) can be inspected with standard text tools by both humans and coding agents.
+
+**Shape:**
+
+| Piece | File | Notes |
+|-------|------|-------|
+| Schema field | `src/fin_assist/config/schema.py` | `TracingSettings.file_path: str \| None = None`. Set via config.toml or `FIN_TRACING__FILE_PATH`. |
+| Exporter | `src/fin_assist/hub/file_exporter.py` | `FileSpanExporter` — append-mode, line-buffered, lock-guarded, `ReadableSpan.to_json(indent=None)` per line. Parent dir auto-created. Idempotent `shutdown`. |
+| Wiring | `src/fin_assist/hub/tracing.py` | File exporter attached as a second `BatchSpanProcessor` on the same provider, wrapped by `_TruncatingSpanProcessor` so large attrs get trimmed in the file too. OTLP exporter is now *skipped* when only `file_path` is set (offline mode). |
+| Truncation bugfix | `_truncate_span_attributes` in `hub/tracing.py` | Mutates `span._attributes` directly instead of calling `span.set_attribute`. Setter was a no-op on ended spans and raised `AttributeError` on the `ReadableSpan` snapshots OTel passes to multi-processor providers — only surfaced once we added a second processor. |
+
+**Config precedence still holds:** `FIN_TRACING__FILE_PATH` (explicit) > config.toml > `None`. No env-var alias like `OTEL_TRACES_EXPORTER=file` — kept single-source so one knob controls one behavior.
+
+**Follow-ups deferred** (not blocking):
+
+- `fin-assist trace replay <file>` subcommand — POST captured JSONL back to Phoenix's `/v1/traces`. Small, ~50 LOC.
+- Rotation (size-based via `RotatingFileHandler` pattern). Current escape hatch: `rm`.
+- Note: issue #105 originally proposed the env var `FIN_TRACING__CLI_TRACE_FILE`; we shipped as `FIN_TRACING__FILE_PATH` because the exporter isn't CLI-specific — the hub writes to it too.
 
 ---
 

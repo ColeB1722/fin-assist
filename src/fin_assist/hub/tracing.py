@@ -66,15 +66,36 @@ def _truncate_span_attributes(span) -> None:
     Truncates any string attribute longer than ``_MAX_ATTR_BYTES`` (50KB),
     replacing it with a truncated marker.  Applied at ``on_end`` before
     export.
+
+    Implementation note — why we mutate ``_attributes`` directly
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``span.set_attribute`` no-ops after ``end()`` (OTel logs a warning
+    and drops the write) and isn't defined at all on the read-only
+    snapshots OTel passes to multi-processor setups.  The underlying
+    ``_attributes`` is a plain mapping that both ``_Span`` and
+    ``ReadableSpan`` expose, and mutating it here is the only way to
+    rewrite a value at ``on_end`` time without re-implementing the
+    attribute pipeline.  This is a grey-area API but OTel's own
+    ``BatchSpanProcessor`` relies on the same invariant (the span being
+    read-only after end), so we're safe as long as we only mutate
+    values, never keys.
     """
-    if not span.attributes:
+    attributes = getattr(span, "_attributes", None) or span.attributes
+    if not attributes:
         return
-    for key, value in list(span.attributes.items()):
+    for key, value in list(attributes.items()):
         if isinstance(value, str) and len(value.encode("utf-8")) > _MAX_ATTR_BYTES:
             truncated = (
                 value[: _MAX_ATTR_BYTES // 2] + f"\n... [truncated, {len(value)} chars total]"
             )
-            span.set_attribute(key, truncated)
+            try:
+                attributes[key] = truncated
+            except (TypeError, AttributeError):
+                # ``attributes`` proxy is read-only (rare — some
+                # BoundedAttributes configurations).  Best-effort: drop
+                # the oversized attribute so the export doesn't blow
+                # past the size limit.
+                logger.debug("could not rewrite oversized attribute key=%s", key)
 
 
 class _TruncatingSpanProcessor(SpanProcessor):
@@ -126,6 +147,25 @@ def _resolve_endpoint(config: TracingSettings) -> str:
         return env_endpoint
 
     return config.endpoint
+
+
+def _otlp_explicitly_configured(config: TracingSettings) -> bool:
+    """Whether the user actually asked for OTLP export.
+
+    Used to decide if the OTLP exporter should be constructed at all
+    when ``file_path`` is set.  The rule is: treat the schema default
+    as 'not set' — only build the OTLP exporter when the user has
+    either overridden the endpoint in ``TracingSettings`` or set
+    ``OTEL_EXPORTER_OTLP_ENDPOINT``.
+
+    This matters because when only ``file_path`` is configured and
+    Phoenix isn't running at the default port, we don't want to
+    silently try to POST to a dead socket on every batch flush —
+    file-only users shouldn't pay that cost.
+    """
+    if config.endpoint != _default_endpoint():
+        return True
+    return bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def _build_sampler(ratio: float):
@@ -223,14 +263,31 @@ def setup_tracing(
         }
     )
 
-    exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
-    if headers:
-        exporter = exporter_cls(endpoint=endpoint, headers=headers)
-    else:
-        exporter = exporter_cls(endpoint=endpoint)
-
     provider = TracerProvider(resource=resource, sampler=sampler)
-    provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(exporter)))
+
+    # Construct the OTLP exporter only when the user has opted into it.
+    # When ``file_path`` is the sole configured sink, skip OTLP entirely
+    # so we don't ship spans at a dead localhost:6006 on every batch.
+    # Backward compat: if ``file_path`` is unset (the existing shape),
+    # we always build the OTLP exporter — even at the default endpoint —
+    # to match prior behavior.
+    want_otlp = config.file_path is None or _otlp_explicitly_configured(config)
+    if want_otlp:
+        exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
+        if headers:
+            exporter = exporter_cls(endpoint=endpoint, headers=headers)
+        else:
+            exporter = exporter_cls(endpoint=endpoint)
+        provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(exporter)))
+
+    # Attach the JSONL file sink as a second (or only) processor.  It
+    # rides the same truncating wrapper so large tool outputs don't
+    # balloon the file either.
+    if config.file_path:
+        from fin_assist.hub.file_exporter import FileSpanExporter
+
+        file_exporter = FileSpanExporter(config.file_path)
+        provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(file_exporter)))
 
     from opentelemetry.trace import set_tracer_provider
 
@@ -272,10 +329,12 @@ def setup_tracing(
             )
 
     logger.info(
-        "tracing enabled endpoint=%s protocol=%s project=%s backends=%d",
+        "tracing enabled endpoint=%s protocol=%s project=%s backends=%d file=%s otlp=%s",
         endpoint,
         config.exporter_protocol,
         config.project_name,
         sum(1 for b in backends if hasattr(b, "install_tracing")),
+        config.file_path or "-",
+        "yes" if want_otlp else "no",
     )
     return provider

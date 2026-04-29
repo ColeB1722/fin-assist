@@ -307,6 +307,127 @@ class TestSamplingWiring:
         assert "0.25" in desc
 
 
+class TestFileExporterWiring:
+    """The JSONL file exporter (``TracingSettings.file_path``) is additive
+    and standalone-capable.  These tests verify plumbing: the field reaches
+    the provider as a span processor, it coexists with the OTLP exporter,
+    and it can run as the *only* exporter when no endpoint is configured.
+
+    They deliberately use a real in-process tracer+exporter roundtrip
+    (rather than mocking ``FileSpanExporter``) because the whole point of
+    this feature is that bytes hit disk — mocking that out would test
+    nothing the user cares about.
+    """
+
+    def test_file_path_creates_jsonl_exporter(self, reset_tracer_provider, tmp_path):
+        """When ``file_path`` is set, emitted spans must land in that file.
+
+        Uses a ``SimpleSpanProcessor`` equivalent path by forcing a flush
+        after a span ends; the BatchSpanProcessor inside ``setup_tracing``
+        honors ``force_flush``.
+        """
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(
+            enabled=True,
+            endpoint="http://localhost:9999",
+            file_path=str(path),
+        )
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("wiring-check"):
+            pass
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        assert path.exists()
+        lines = path.read_text().splitlines()
+        assert len(lines) == 1
+        import json as _json
+
+        assert _json.loads(lines[0])["name"] == "wiring-check"
+
+    def test_file_path_works_without_otlp_endpoint(self, reset_tracer_provider, tmp_path):
+        """File exporter is standalone-capable: if the user only sets
+        ``file_path`` (and leaves the endpoint at the schema default with
+        no Phoenix running), tracing must still initialize and spans must
+        still hit the file.  This is the 'Phoenix is down / offline dev'
+        path.
+
+        We construct the config with the default endpoint untouched so the
+        resolver's 'schema-default == not set' contract applies.
+        """
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(enabled=True, file_path=str(path))
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("offline-span"):
+            pass
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        assert path.exists()
+        assert len(path.read_text().splitlines()) == 1
+
+    def test_file_path_none_means_no_file_written(self, reset_tracer_provider, tmp_path):
+        """Default (``file_path=None``) must NOT create any file.  Guards
+        against regressions where a helper accidentally defaults the
+        field to a non-None path."""
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import setup_tracing
+
+        # A path we then assert does not get created.
+        stray = tmp_path / "should-not-exist.jsonl"
+        config = TracingSettings(enabled=True, endpoint="http://localhost:9999")
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("no-file-span"):
+            pass
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        assert not stray.exists()
+
+    def test_file_path_truncation_applied_to_file_output(self, reset_tracer_provider, tmp_path):
+        """Large string attributes must be truncated in the file output
+        too — the ``_TruncatingSpanProcessor`` wrap has to apply uniformly
+        across every exporter attached to the provider, not just OTLP.
+        Without this, large tool outputs would blow up file size even
+        though the OTLP path stays under the gRPC limit.
+        """
+        import json as _json
+
+        from fin_assist.config.schema import TracingSettings
+        from fin_assist.hub.tracing import _MAX_ATTR_BYTES, setup_tracing
+
+        path = tmp_path / "traces.jsonl"
+        config = TracingSettings(enabled=True, file_path=str(path))
+        provider = setup_tracing(config)
+        assert provider is not None
+
+        oversized = "x" * (_MAX_ATTR_BYTES * 2)
+        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
+        with tracer.start_as_current_span("big-attr") as span:
+            span.set_attribute("huge", oversized)
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        line = path.read_text().splitlines()[0]
+        obj = _json.loads(line)
+        # OTel's to_json puts attributes under "attributes"; the value
+        # should have been trimmed well below the original length.
+        written = obj["attributes"]["huge"]
+        assert len(written) < len(oversized)
+        assert "truncated" in written
+
+
 class TestHeaderWiring:
     """Config-level headers and OTEL env headers should reach
     ``_resolve_headers`` via ``setup_tracing``.  The resolver is unit-

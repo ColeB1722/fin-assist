@@ -78,8 +78,9 @@ This project is intended to run locally for personal use. Dev ergonomics: runtim
 | Sessions | `$FIN_DATA_DIR/sessions/` | `FIN_DATA_DIR` |
 | REPL history | `$FIN_DATA_DIR/history` | `FIN_DATA_DIR` |
 | Credentials | `$FIN_DATA_DIR/credentials.json` | `FIN_DATA_DIR` |
+| Trace JSONL | _opt-in, no default_ | `FIN_TRACING__FILE_PATH` (dev shell sets `./.fin/traces.jsonl`) |
 
-**Dev override** (in `devenv.nix`): `FIN_DATA_DIR = "./.fin"` — all runtime state stays in `.fin/` (git-ignored).
+**Dev override** (in `devenv.nix`): `FIN_DATA_DIR = "./.fin"` — all runtime state stays in `.fin/` (git-ignored). Tracing is enabled (`FIN_TRACING__ENABLED=true`) and spans are written to both Phoenix (if running at `localhost:6006`) and `./.fin/traces.jsonl`.
 
 **When adding a new runtime path:** plumb it through `src/fin_assist/paths.py`, honor `FIN_DATA_DIR`, and update the table above.
 

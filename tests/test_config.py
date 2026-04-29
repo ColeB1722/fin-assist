@@ -174,6 +174,21 @@ class TestTracingSettings:
         settings = TracingSettings(include_content=False)
         assert settings.include_content is False
 
+    def test_file_path_defaults_to_none(self) -> None:
+        """The JSONL file exporter is opt-in.  Leaving ``file_path`` unset
+        means no file is written — only the configured OTLP endpoint (if
+        any) receives spans.  This keeps the default behavior unchanged
+        for existing deployments."""
+        settings = TracingSettings()
+        assert settings.file_path is None
+
+    def test_file_path_accepts_string_path(self) -> None:
+        """``file_path`` is a string so it can be set from config.toml or
+        via ``FIN_TRACING__FILE_PATH``.  Resolution to an absolute path
+        and parent-directory creation happens in the exporter."""
+        settings = TracingSettings(file_path="./traces.jsonl")
+        assert settings.file_path == "./traces.jsonl"
+
 
 class TestProviderConfig:
     """Tests for ProviderConfig."""
