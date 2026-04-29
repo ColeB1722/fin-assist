@@ -36,7 +36,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator, Sequence  # noqa: TC003
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from a2a.types import Part
 from google.protobuf.struct_pb2 import Struct, Value
@@ -66,6 +66,7 @@ _message_ta = TypeAdapter(list[ModelMessage])
 
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import TracerProvider
     from pydantic_ai import Agent
     from pydantic_ai.models import Model
 
@@ -97,6 +98,17 @@ class AgentBackend(Protocol):
     def convert_result_to_part(self, result: Any) -> Part: ...
     def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
     def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any: ...
+
+    # ``install_tracing`` is **optional** — backends that do not wrap an
+    # LLM framework (e.g. test fakes) may omit it entirely.  The hub's
+    # ``setup_tracing`` performs a ``hasattr`` check before calling, so
+    # the Protocol only documents the intended signature without
+    # requiring every conforming type to implement it.
+    #
+    # Backends that wrap a framework should register any framework-
+    # specific SpanProcessors (e.g. OpenInferenceSpanProcessor) on the
+    # provided TracerProvider and flip any framework-global
+    # instrumentation flags (e.g. pydantic-ai's ``Agent.instrument_all``).
 
 
 class _PydanticAIStepHandle:
@@ -239,7 +251,10 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
                 content=event.part,
                 step=step,
                 tool_name=event.part.tool_name,
-                metadata={"args": event.part.args_as_dict()},
+                metadata={
+                    "args": event.part.args_as_dict(),
+                    "tool_call_id": event.part.tool_call_id,
+                },
             )
         case FunctionToolResultEvent():
             return StepEvent(
@@ -247,6 +262,7 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
                 content=_extract_tool_result_text(event.result),
                 step=step,
                 tool_name=event.result.tool_name,
+                metadata={"tool_call_id": event.result.tool_call_id},
             )
         case _:
             return None
@@ -287,6 +303,41 @@ class PydanticAIBackend:
         self._spec = agent_spec
         self._tool_registry = tool_registry
         self._registry: Any = None
+
+    def install_tracing(
+        self,
+        provider: TracerProvider,
+        *,
+        include_content: bool = True,
+        event_mode: Literal["attributes", "logs"] = "attributes",
+    ) -> None:
+        """Attach pydantic-ai → OpenInference tracing to *provider*.
+
+        Called once per backend by ``hub.tracing.setup_tracing`` after
+        the provider is registered globally.  Adds the
+        ``OpenInferenceSpanProcessor`` so pydantic-ai's ``gen_ai.*``
+        attributes are translated to OpenInference ``llm.*`` at span end,
+        and flips pydantic-ai's global instrumentation flag via
+        ``Agent.instrument_all``.
+
+        Args:
+            provider: The hub-built ``TracerProvider``.
+            include_content: Forward to pydantic-ai — include full
+                message bodies in spans (``True``) or only metadata
+                (``False``).
+            event_mode: Forward to pydantic-ai — ``"attributes"`` puts
+                LLM messages on the span, ``"logs"`` uses OTel log
+                events instead.
+
+        Idempotent — see ``pydantic_ai_tracing.install_pydantic_ai_instrumentation``.
+        """
+        from fin_assist.agents.pydantic_ai_tracing import install_pydantic_ai_instrumentation
+
+        install_pydantic_ai_instrumentation(
+            provider,
+            include_content=include_content,
+            event_mode=event_mode,
+        )
 
     def check_credentials(self) -> list[str]:
         return self._spec.check_credentials()

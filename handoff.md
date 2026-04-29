@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-29)**: 750 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Phoenix + OTel Tracing" below for architecture.
+**Current state (2026-04-29)**: 837 tests passing, `just ci` green (format, lint, typecheck, test). Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. OTel tracing shipped (PR #103). **Telemetry Hardening Phase 2 complete**: Phoenix-friendly attributes, HITL two-span trace continuity, OpenInference bridge, vendor-agnostic `setup_tracing`. Follow-ups filed as [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109). Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). See "Design Sketches: Telemetry Hardening — Phase 2" below for architecture.
 
 **Core platform status:**
 
@@ -18,7 +18,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | Remove built-in agents | ✅ Complete — `_DEFAULT_AGENTS = {}`, all from config.toml |
 | Client artifact-merge fix | ✅ Complete — splice in both `stream_agent()` and `_send_and_wait()` |
 | Git agent (#79) | ✅ Complete — scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows (commit/pr/summarize) |
-| Observability / tracing | ✅ Complete (PR #103) — OTel spans for task/step/tool_execution/approval; see "Design Sketches" |
+| Observability / tracing | ✅ Complete (PR #103 + Phase 2 hardening 2026-04-29) — OTel spans, OpenInference bridge, HITL trace continuity; see "Design Sketches: Telemetry Hardening — Phase 2" |
 
 **Remaining tracked items:**
 
@@ -33,15 +33,17 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ## Next Session
 
-**Planned: Skills API Phase A — Subcommand approval rules.**
+**Recommended picks (in priority order):**
 
-Tracing shipped (PR #103). The next slice is Phase A of the Skills API: extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC, TDD-first. See "Design Sketches: Skills API" Phase A below.
+1. **CLI-side OTel propagation** ([#104](https://github.com/ColeB1722/fin-assist/issues/104)) — closes the trace loop. Today a CLI command → hub task chain shows only the hub side. Wire a `TracerProvider` into the CLI process, inject `traceparent` via `HubClient`, watch the CLI command span become the parent of `fin_assist.task`. ~150 LOC, TDD-first. High user-visible value + completes the telemetry story.
+2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" Phase A below.
+3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from the parallel-tool-span refactor in Phase 2.
 
 ### Sequenced roadmap (why this order)
 
 | # | Work | Rationale |
 |---|------|-----------|
-| 1 | **Tracing: Phoenix + OTel** | ✅ Complete (PR #103). OTel spans for task/step/tool_execution/approval. Phoenix health probe. In-memory test fixture. ~450 LOC + 21 tests. See "Design Sketches" below. |
+| 1 | **Tracing: Phoenix + OTel** | ✅ Complete (PR #103 + Phase 2 hardening 2026-04-29). Baseline OTel spans, OpenInference bridge for Phoenix rendering, HITL two-span trace continuity via ContextStore, vendor-agnostic `setup_tracing`. ~900 LOC + 143 tracing tests. Follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109). See "Design Sketches: Telemetry Hardening — Phase 2" below. |
 | 2 | **Eval harness (per-agent, not platform-level)** | Evals are downstream of observability when using Phoenix. Two real agents exist (test + git) — eval criteria are meaningful. Platform stance: evals live at the agent level (`tests/evals/<agent>/`). Closes [#14](https://github.com/ColeB1722/fin-assist/issues/14). Likely surfaces [#80](https://github.com/ColeB1722/fin-assist/issues/80) (AgentBackend simplification). |
 | 3 | **Skills API** | Generalizes the scoped CLI tools + workflow config pattern from the git agent. Per-subcommand approval, context templates, skill auto-discovery. See the Skills API GitHub issue for the full vision. |
 
@@ -98,6 +100,198 @@ Tracing shipped (PR #103). The next slice is Phase A of the Skills API: extend `
 ---
 
 ## Design Sketches
+
+### Telemetry Hardening — Phase 2 (complete, 2026-04-29)
+
+**Status:** ✅ **Complete**. All 9 TDD steps landed; 837/837 tests passing; `just ci` green (format, lint, typecheck, test). 6 follow-up issues filed (#104-#109) for explicitly out-of-scope items.
+
+**Shipped in this phase:**
+
+| Piece | File | Notes |
+|---|---|---|
+| Vendor-agnostic `setup_tracing` | `hub/tracing.py` | Accepts `backends=…`, honors `OTEL_EXPORTER_OTLP_*` env, wires sampler + headers, returns the provider. No Phoenix/Logfire-specific code. |
+| OpenInference semconv constants module | `hub/tracing_attrs.py` (new) | Re-exports `SpanAttributes`, `OpenInferenceSpanKindValues`, `OpenInferenceMimeTypeValues` + platform namespace `FinAssistAttributes` + `SpanNames`. Single source of truth. |
+| pydantic-ai → OpenInference bridge | `agents/pydantic_ai_tracing.py` (new) | `install_pydantic_ai_instrumentation(provider, include_content, event_mode)`; idempotent via WeakSet + `_agent_instrumented` flag; passes `tracer_provider=provider` explicitly to `InstrumentationSettings` to avoid global-provider recursion in tests. |
+| Backend tracing hook | `agents/backend.py` | `PydanticAIBackend.install_tracing(provider, *, include_content, event_mode)`; Protocol documents it as optional (hub uses `hasattr`). |
+| Executor refactor | `hub/executor.py` | Every hand-typed attr swapped for constants; `active_tool_spans: dict[tool_call_id, Span]` for parallel tool safety; `record_exception` on failure paths; canonical `application/json` mime type; two-span HITL model. |
+| HITL two-span flow | `hub/executor.py` + `hub/context_store.py` | At pause: emit `fin_assist.approval_request`, persist SpanContext via `ContextStore.save_trace_context`. At resume: load prior context, attach `Link(prev_ctx, type=resume_from_approval)` to new task span, emit `fin_assist.approval_decided` as first child with decision + Link back to `approval_request`. |
+| ContextStore trace-context table | `hub/context_store.py` | New `trace_contexts` table (SQLite auto-migrates on open); hex-encoded trace/span ids for readability; upsert semantics. |
+| `TracingSettings` schema knobs | `config/schema.py` | `sampling_ratio`, `headers`, `event_mode`, `include_content` — with validators and rich docstring. |
+| CLI wiring | `cli/main.py` | Removed stray `Agent.instrument_all()`; builds backends before `setup_tracing`; passes them into the tracing call and into `create_hub_app` via `backend_factory`. |
+
+**Original pain points, now addressed:**
+
+1. ~~Phoenix breaks when clicking `fin_assist.approval` / `fin_assist.tool_execution` spans~~ → canonical `application/json` mime type; `approval` renamed to `approval_request` with proper attributes.
+2. ~~HITL causes the trace to split into two unrelated traces~~ → two-span model with `Link`s; `ContextStore.save_trace_context` persists the pause context across processes.
+3. ~~LLM span attributes render as raw JSON with `kind: unknown`~~ → `OpenInferenceSpanProcessor` translates `gen_ai.*` → `llm.*` + `openinference.span.kind=LLM` at span end.
+
+**Design principles retained** (from original sketch, still relevant for reviewers):
+
+**Root causes (from survey 2026-04-29):**
+
+- pydantic-ai's `Agent.instrument_all()` emits **OTel GenAI** attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, ...) — not **OpenInference** (`llm.input_messages.0.message.role`, `openinference.span.kind=LLM`, ...). Phoenix only renders LLM spans natively when OpenInference attrs are present ([confirmed in Phoenix #10753](https://github.com/Arize-ai/phoenix/issues/10753)). The two conventions overlap but are not equivalent; the GenAI content blob is what users currently see as "kind: unknown + raw JSON."
+- `executor.py:341` calls `ctx.task_span.end()` before the approval is answered, `ContextStore` never persists trace context, and the CLI doesn't inject W3C `traceparent`. Any one of those kills the trace; all three compound.
+- Hand-typed OpenInference attribute strings (`"openinference.span.kind"`, `"input.value"`, ...) drift silently from the actual spec.
+
+**Guiding principles (from 2026-04-29 discussion):**
+
+1. **Backend-owned instrumentation.** Platform tracing (`hub/tracing.py`, `executor.py`) is pure OTel. LLM-framework → OpenInference translation is the **backend's** job, attached via a new `AgentBackend.install_tracing(provider)` hook at construction. A future `LangChainBackend` brings its own translator the same way.
+2. **Vendor-agnostic core.** No `phoenix.otel.register()`, no `logfire.configure()`, no Phoenix-specific assumptions in the tracing module. Honor standard `OTEL_EXPORTER_OTLP_*` env vars so swapping backends is a config change, not a code change.
+3. **Additive, not substitutive.** The OpenInference bridge *adds* `llm.*` / `openinference.span.kind` attributes on top of `gen_ai.*` — it doesn't remove them. Vanilla OTel consumers still see standard GenAI semconv; Phoenix users get the richer shape.
+4. **All known gaps scoped or issue-filed.** Nothing silently deferred.
+
+---
+
+#### New architecture
+
+```
+┌─────────────────────────── hub/tracing.py (vendor-agnostic) ───────────────────────────┐
+│ setup_tracing(config, backends):                                                       │
+│   1. Build Resource (service.name, openinference.project.name)                         │
+│   2. Build exporter(s): FIN_TRACING__* overrides OTEL_EXPORTER_OTLP_* overrides defaults│
+│   3. Provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(exporter)))│
+│   4. for backend in backends: backend.install_tracing(provider)  ← NEW                 │
+│   5. FastAPIInstrumentor.instrument_app(app) still lives in cli/main.py                │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                            │
+                              install_tracing(provider)
+                                            ▼
+┌────────────── agents/backend.py ───────────────┐   ┌── agents/pydantic_ai_tracing.py ──┐
+│ AgentBackend protocol:                         │   │ (NEW, only pulled in by           │
+│   def install_tracing(self, provider) -> None: │   │  PydanticAIBackend)               │
+│     ... = no-op (default via mixin/base)       │   │                                   │
+│                                                │   │ - Adds OpenInferenceSpanProcessor │
+│ PydanticAIBackend.install_tracing:             │   │   (from openinference-            │
+│   - import openinference.instrumentation.      │──▶│   instrumentation-pydantic-ai)   │
+│     pydantic_ai                                │   │ - Calls Agent.instrument_all(     │
+│   - provider.add_span_processor(...)           │   │     InstrumentationSettings(      │
+│   - Agent.instrument_all(settings)             │   │       include_content=True))      │
+└────────────────────────────────────────────────┘   └───────────────────────────────────┘
+                                            │
+                                            ▼
+┌──────────────────────────── hub/executor.py (pure OTel) ───────────────────────────┐
+│ from fin_assist.hub.tracing_attrs import SpanAttr, SpanKind                        │
+│                                                                                    │
+│ fin_assist.task    (AGENT)                                                         │
+│ fin_assist.step    (CHAIN)                                                         │
+│ fin_assist.tool_execution  (TOOL) — dict keyed by tool_call_id (parallel-safe)     │
+│ fin_assist.approval        (TOOL) — now a DURATION span, ended on resume w/        │
+│                                    decision=approved|denied|overridden            │
+│                                                                                    │
+│ HITL: on pause → save_trace_context in ContextStore                                │
+│       on resume → Link(prev_span_ctx) on new task span                             │
+│ Errors: record_exception + set_status on every span on failure path                │
+└────────────────────────────────────────────────────────────────────────────────────┘
+                                            │
+                                            ▼
+┌──────────────────── hub/context_store.py (schema v2) ────────────────────┐
+│ contexts(context_id PRIMARY KEY, data BLOB NOT NULL,                      │
+│          trace_id TEXT, span_id TEXT, trace_flags INT)       ← NEW cols   │
+│ async save_trace_context(context_id, span_context) -> None                │
+│ async load_trace_context(context_id) -> SpanContext | None                │
+│                                                                           │
+│ Migration: ALTER TABLE on first connect — old rows get NULL trace cols.   │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+**Key invariant:** `hub/executor.py` and `hub/tracing.py` never import from `openinference.instrumentation.*`. Only backends do. The semconv **constants** (`openinference.semconv.trace.SpanAttributes`) are allowed in `executor.py` since they're a pure spec re-export, not an instrumentor — treated the same as `opentelemetry.semconv.resource.ResourceAttributes`.
+
+---
+
+#### Files touched
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Add `openinference-semantic-conventions>=0.1` and `openinference-instrumentation-pydantic-ai>=0.1` as **runtime** deps (both small, no heavy transitive) |
+| `src/fin_assist/hub/tracing_attrs.py` | **NEW** — thin re-export of `SpanAttributes`, `OpenInferenceSpanKindValues`, `OpenInferenceMimeTypeValues`. Everything in executor imports from here. |
+| `src/fin_assist/hub/tracing.py` | Accept `backends: Sequence[AgentBackend] = ()`. Honor `OTEL_EXPORTER_OTLP_ENDPOINT` / `_HEADERS` / `_PROTOCOL` as fallbacks (FIN_TRACING__* wins). Call `backend.install_tracing(provider)` for each. Drop Phoenix-specific `_probe_phoenix` — generalize to `_probe_endpoint` based on config (or remove; see issues). |
+| `src/fin_assist/agents/backend.py` | Add `install_tracing(self, provider) -> None` to `AgentBackend` Protocol (optional — default no-op via `hasattr` check in tracing.py so existing fakes don't need updates). `PydanticAIBackend.install_tracing` delegates to the new module below. |
+| `src/fin_assist/agents/pydantic_ai_tracing.py` | **NEW** — `install_pydantic_ai_instrumentation(provider)` adds `OpenInferenceSpanProcessor` and calls `Agent.instrument_all(InstrumentationSettings(include_content=True))`. Only module that imports `openinference.instrumentation.pydantic_ai` and `pydantic_ai.Agent`. |
+| `src/fin_assist/hub/executor.py` | Switch every hand-typed OpenInference attr key to the semconv constant. Change `current_tool_span: Span \| None` → `active_tool_spans: dict[str, Span]` keyed by `tool_call_id`. Start/end tool spans as context-attached (not just `context=`) so pydantic-ai LLM spans inside the tool become children. Call `record_exception` + `set_status(ERROR)` on every open span in the exception path. Rework `fin_assist.approval` span: start on pause, **don't end it yet** (it's the wall-clock duration of the approval gate), persist its span context, end it on resume with `decision=` set. Resume path: load persisted trace context, create task span with `Link(prev_ctx)`, also ends the approval span (loading it by span_id via context_store). |
+| `src/fin_assist/hub/context_store.py` | Schema migration: add `trace_id`, `span_id`, `trace_flags` columns. New methods `save_trace_context`, `load_trace_context`. |
+| `src/fin_assist/cli/main.py` | Remove the `Agent.instrument_all()` call from `_serve_command` — moved to backend. Still calls `setup_tracing(config.tracing, backends=...)` and `FastAPIInstrumentor.instrument_app(app)`. Order becomes: configure_logging → construct agents → construct backends → setup_tracing(config, backends) → create_hub_app → FastAPIInstrumentor. |
+| `src/fin_assist/hub/factory.py` / `hub/app.py` | Plumb backend instances through so `setup_tracing` can call `install_tracing` on each. Minor: expose a `backends()` accessor on the hub app or collect them before mounting. |
+| `src/fin_assist/config/schema.py` | `TracingSettings`: add `sampling_ratio: float = 1.0`, `headers: dict[str, str] = {}`, `event_mode: Literal["attributes", "logs"] = "attributes"`, `include_content: bool = True`. Document that `OTEL_EXPORTER_OTLP_*` are honored as fallbacks. |
+| `tests/test_hub/test_tracing.py` | Replace string literals with semconv constants. Add test cases for: (a) LLM span translation via OpenInferenceSpanProcessor (fake gen_ai span → verify llm.* attrs added), (b) parallel tool spans don't clobber, (c) exceptions recorded on all open spans, (d) approval span is a duration span, (e) HITL pause persists trace context, (f) HITL resume creates linked task span. |
+| `tests/test_hub/test_context_store.py` | New tests for `save_trace_context` / `load_trace_context` + migration. |
+| `tests/test_agents/test_pydantic_ai_tracing.py` | **NEW** — backend.install_tracing adds the processor and configures Agent. |
+| `tests/conftest.py` | `tracing_setup` fixture unchanged. Add `trace_context_factory` helper for HITL tests. |
+
+**Estimated:** ~3 new source files, ~7 modified, ~2 new test files, ~600 LOC + tests.
+
+---
+
+#### HITL flow (new)
+
+```
+CLIENT (CLI) ──1. send_message "run git push"──▶ HUB
+                                                  │
+                                                  ▼
+                                          fin_assist.task (trace_id=T1)
+                                            ├── fin_assist.step
+                                            └── fin_assist.approval (STARTED, held open)
+                                                  │ persist SpanContext(T1, approval_span_id)
+                                                  │ via context_store.save_trace_context
+                                                  ▼
+                                          requires_input()
+CLIENT ◀──2. task state: paused, approval widget──
+CLIENT ──3. approval_result: approved────────────▶ HUB
+                                                  │
+                                                  │ context_store.load_trace_context → (T1, approval_span_id)
+                                                  ▼
+                                          fin_assist.task (trace_id=T2)
+                                            ├── links = [Link((T1, approval_span_id),
+                                            │            {fin_assist.link.type = "resume_from_approval"})]
+                                            │
+                                            │ ALSO: end the approval span remotely:
+                                            │   — we can't re-enter a span from another process,
+                                            │     but we CAN record a "resume" span event on
+                                            │     it via the exporter? → NO, spans are already
+                                            │     exported by BatchSpanProcessor.
+                                            │
+                                            │ PIVOT: approval span is ended at pause time
+                                            │ (closing the original trace cleanly),
+                                            │ decision is captured as a fin_assist.approval.decided
+                                            │ span on the RESUME trace, linked back to the
+                                            │ paused approval span.
+                                            ▼
+```
+
+**Refined design after tracing semantics check:** OTel spans can't be resumed across processes (spans are written by BatchSpanProcessor at `end()` time). So:
+
+- **At pause:** start `fin_assist.approval_request` span, set `fin_assist.approval.status=pending`, end it immediately but with `span_event("paused")` marker. Persist its SpanContext.
+- **At resume:** start new trace (T2) with the old task-span context as a Link. As its first child, start `fin_assist.approval_decided` span with `fin_assist.approval.decision=approved|denied|overridden`, and a **second Link** back to the paused approval_request span. Phoenix renders both traces side-by-side, clickable links between them.
+
+This mirrors how OTel recommends modeling async boundaries (see OTel [Links in the trace API](https://opentelemetry.io/docs/specs/otel/trace/api/#link)). One trace per HTTP request, explicit semantic link between them.
+
+---
+
+#### Config & env
+
+| Source | Precedence | Example |
+|--------|-----------|---------|
+| init kwargs | highest | (tests) |
+| `FIN_TRACING__*` env | | `FIN_TRACING__ENDPOINT=https://otel.example.com/v1/traces` |
+| `OTEL_EXPORTER_OTLP_*` env | | `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318` |
+| `config.toml` `[tracing]` | | `endpoint = "http://localhost:6006/v1/traces"` |
+| schema defaults | lowest | `http://localhost:6006/v1/traces` |
+
+Point: nothing in the code knows whether you're targeting Phoenix, Tempo, Jaeger, Logfire, or a self-written renderer. Picking one is config only. The `openinference-instrumentation-pydantic-ai` bridge is always on when the PydanticAI backend is loaded — that's independent of the collector endpoint.
+
+---
+
+#### Out of scope (filed as GH issues)
+
+| # | Topic | Issue |
+|---|-------|-------|
+| 1 | CLI-side OTel + W3C traceparent propagation | [#104](https://github.com/ColeB1722/fin-assist/issues/104) |
+| 2 | `cli.trace` JSONL exporter for offline trace debugging | [#105](https://github.com/ColeB1722/fin-assist/issues/105) |
+| 3 | Multi-exporter tracing (Phoenix + OTLP + file at once) | [#106](https://github.com/ColeB1722/fin-assist/issues/106) |
+| 4 | Configurable `event_mode=logs`: plumb OTel LoggerProvider | [#107](https://github.com/ColeB1722/fin-assist/issues/107) |
+| 5 | Retry-aware tool spans (`tool.retry_attempt`) | [#108](https://github.com/ColeB1722/fin-assist/issues/108) |
+| 6 | Generalize `_probe_phoenix`: OTLP connectivity probing | [#109](https://github.com/ColeB1722/fin-assist/issues/109) |
+
+---
 
 ### Phoenix + OTel Tracing
 

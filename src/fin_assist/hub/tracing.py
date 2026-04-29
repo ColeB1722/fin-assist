@@ -1,27 +1,53 @@
-"""OpenTelemetry tracing initialization for the fin-assist hub.
+"""OpenTelemetry tracing bootstrap for the fin-assist hub.
 
-Call ``setup_tracing()`` once at hub startup, after ``configure_logging()``.
-No-op when tracing is disabled (the default).
+Vendor-agnostic by design.  The module knows nothing about Phoenix,
+Logfire, Tempo, Jaeger, or any specific OTel backend — it only knows
+how to build an OTLP exporter, a TracerProvider, and invoke each
+registered backend's ``install_tracing`` hook (which is where backend-
+specific instrumentation like the OpenInference bridge lives).
 
-Uses raw OTel SDK (TracerProvider + OTLPSpanExporter) instead of
-``phoenix.otel.register()`` for portability — works with any OTel
-backend (Phoenix, Jaeger, Tempo, etc.).
+Entry point: ``setup_tracing(config, backends=...)``.  Called once at
+hub startup from ``cli/main.py:_serve_command``.  No-op when tracing is
+disabled.
 
-Default protocol is HTTP/protobuf (port 4318) rather than gRPC (port 4317)
-because gRPC has a default 4MB message size limit.  LLM instrumentation
-can produce large spans (e.g. ``gen_ai.input.messages`` with tool results),
-which exceed the gRPC limit and cause ``RESOURCE_EXHAUSTED`` errors.
-HTTP/protobuf has no such limit.
+Configuration precedence (highest wins)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+1. Explicit non-default value in ``TracingSettings`` (``FIN_TRACING__*``
+   env or config.toml).
+2. Standard OTel env vars: ``OTEL_EXPORTER_OTLP_ENDPOINT``,
+   ``OTEL_EXPORTER_OTLP_HEADERS``, ``OTEL_EXPORTER_OTLP_PROTOCOL``.
+3. Schema default (``http://localhost:6006/v1/traces`` — Phoenix's
+   default OTLP/HTTP port, but nothing else in the code assumes Phoenix).
+
+Why we don't use ``phoenix.otel.register()``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+That helper couples the process to Phoenix's API.  Raw OTel SDK is a
+dozen extra lines and works with any OTLP-compatible backend.  Users
+who want to point at Tempo, Jaeger, Logfire, or their own renderer do
+so via env vars without editing code.
+
+Attribute-size truncation
+~~~~~~~~~~~~~~~~~~~~~~~~~
+LLM instrumentation produces spans whose attribute strings
+(``gen_ai.input.messages`` / ``gen_ai.output.messages``) can exceed
+gRPC's default 4MB message limit when tool outputs are large.  The
+``_TruncatingSpanProcessor`` wraps the export pipeline and trims any
+string attribute longer than ``_MAX_ATTR_BYTES`` before export.  This
+keeps the gRPC path usable and the UI snappy without changing span
+semantics.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from opentelemetry.sdk.trace import SpanProcessor
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from fin_assist.config.schema import TracingSettings
 
 logger = logging.getLogger(__name__)
@@ -37,8 +63,9 @@ def _truncate_span_attributes(span) -> None:
     results can be very large (e.g. ``find . -type f`` returning 70K+ lines),
     producing span attributes that exceed gRPC's 4MB message limit.
 
-    This function truncates any string attribute longer than
-    ``_MAX_ATTR_BYTES`` (50KB), replacing it with a truncated marker.
+    Truncates any string attribute longer than ``_MAX_ATTR_BYTES`` (50KB),
+    replacing it with a truncated marker.  Applied at ``on_end`` before
+    export.
     """
     if not span.attributes:
         return
@@ -51,7 +78,7 @@ def _truncate_span_attributes(span) -> None:
 
 
 class _TruncatingSpanProcessor(SpanProcessor):
-    """SpanProcessor that truncates large attributes before export."""
+    """SpanProcessor that truncates large string attributes before export."""
 
     def __init__(self, delegate: SpanProcessor) -> None:
         self._delegate = delegate
@@ -66,19 +93,111 @@ class _TruncatingSpanProcessor(SpanProcessor):
     def shutdown(self):
         self._delegate.shutdown()
 
-    def force_flush(self, timeout_millis=None):
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
         return self._delegate.force_flush(timeout_millis)
 
 
-def setup_tracing(config: TracingSettings) -> None:
-    """Initialize OTel TracerProvider with OTLP exporter.
+def _default_endpoint() -> str:
+    """The schema default for ``TracingSettings.endpoint``.
 
-    Called once at hub startup, after ``configure_logging()``.
-    No-op if tracing is disabled.
+    Kept as a helper so ``_resolve_endpoint`` can distinguish "user left
+    the schema default" from "user explicitly set this value to the
+    default."  Pydantic doesn't preserve that distinction, but in
+    practice the default is only ever set by schema-default, so
+    equality-with-default is a safe proxy.
+    """
+    from fin_assist.config.schema import TracingSettings
+
+    return TracingSettings.model_fields["endpoint"].default
+
+
+def _resolve_endpoint(config: TracingSettings) -> str:
+    """Resolve the effective OTLP endpoint: explicit config > env > default.
+
+    ``TracingSettings.endpoint`` defaults to Phoenix's local HTTP port.
+    When it equals the default we treat it as unset and fall back to
+    ``OTEL_EXPORTER_OTLP_ENDPOINT`` (standard OTel env var).
+    """
+    if config.endpoint != _default_endpoint():
+        return config.endpoint
+
+    env_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if env_endpoint:
+        return env_endpoint
+
+    return config.endpoint
+
+
+def _build_sampler(ratio: float):
+    """Translate ``TracingSettings.sampling_ratio`` into an OTel Sampler.
+
+    Uses the cheap ALWAYS_ON / ALWAYS_OFF samplers for the edge cases so
+    they skip the per-span ratio computation, and falls back to
+    ``TraceIdRatioBased`` for fractional values.  ``TraceIdRatioBased``
+    is deterministic per trace-id, so a sampled trace stays fully
+    sampled across all its spans — important for debuggability.
+    """
+    from opentelemetry.sdk.trace.sampling import (
+        ALWAYS_OFF,
+        ALWAYS_ON,
+        TraceIdRatioBased,
+    )
+
+    if ratio >= 1.0:
+        return ALWAYS_ON
+    if ratio <= 0.0:
+        return ALWAYS_OFF
+    return TraceIdRatioBased(ratio)
+
+
+def _resolve_headers(config_headers: dict[str, str]) -> dict[str, str]:
+    """Resolve OTLP exporter headers: explicit config > OTEL env > empty.
+
+    Parses ``OTEL_EXPORTER_OTLP_HEADERS`` per the OTel spec (comma-
+    separated ``key=value`` pairs).  Config-level headers always win
+    (per-key).  Malformed env pairs are skipped with a warning so a
+    typo doesn't bring down the hub.
+    """
+    if config_headers:
+        return dict(config_headers)
+
+    env = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
+    if not env:
+        return {}
+
+    parsed: dict[str, str] = {}
+    for pair in env.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            logger.warning("malformed OTEL_EXPORTER_OTLP_HEADERS pair (no '='): %r", pair)
+            continue
+        key, _, value = pair.partition("=")
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def setup_tracing(
+    config: TracingSettings,
+    backends: Sequence[object] = (),
+) -> object | None:
+    """Initialize the OTel TracerProvider and invoke backend tracing hooks.
+
+    Called once at hub startup, after ``configure_logging()``.  No-op if
+    tracing is disabled in config.
+
+    Args:
+        config: Resolved ``TracingSettings`` (from ``config.tracing``).
+        backends: Sequence of ``AgentBackend`` instances.  For each backend
+            that exposes an ``install_tracing(provider)`` method, we invoke
+            it after the provider is globally installed.  Backends without
+            the method are silently skipped so minimal test fakes and
+            future non-LLM backends don't have to implement it.
     """
     if not config.enabled:
         logger.debug("tracing disabled")
-        return
+        return None
 
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
         OTLPSpanExporter as GRPCSpanExporter,
@@ -89,68 +208,74 @@ def setup_tracing(config: TracingSettings) -> None:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from opentelemetry.semconv.resource import ResourceAttributes
+    from opentelemetry.semconv.attributes.service_attributes import SERVICE_NAME
+
+    endpoint = _resolve_endpoint(config)
+    headers = _resolve_headers(dict(config.headers))
+    sampler = _build_sampler(config.sampling_ratio)
 
     resource = Resource.create(
         {
-            ResourceAttributes.SERVICE_NAME: config.project_name,
+            SERVICE_NAME: config.project_name,
+            # Phoenix-only attribute, but it's a resource attribute, not an
+            # API call — keeping it here does not couple us to Phoenix.
             "openinference.project.name": config.project_name,
         }
     )
 
     exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
-    exporter = exporter_cls(endpoint=config.endpoint)
+    if headers:
+        exporter = exporter_cls(endpoint=endpoint, headers=headers)
+    else:
+        exporter = exporter_cls(endpoint=endpoint)
 
-    provider = TracerProvider(resource=resource)
+    provider = TracerProvider(resource=resource, sampler=sampler)
     provider.add_span_processor(_TruncatingSpanProcessor(BatchSpanProcessor(exporter)))
 
     from opentelemetry.trace import set_tracer_provider
 
     set_tracer_provider(provider)
 
-    _probe_phoenix(config)
+    # Give each backend a chance to attach framework-specific
+    # instrumentation (e.g. OpenInferenceSpanProcessor for pydantic-ai).
+    # The hook is optional — skip backends that don't expose it.
+    #
+    # Forward the content/event-mode knobs through as kwargs so backends
+    # can honor the operator's privacy and rendering preferences.  A
+    # backend is free to ignore either (it's informational — the hub
+    # makes no assumptions about what each framework supports).
+    for backend in backends:
+        install = getattr(backend, "install_tracing", None)
+        if install is None:
+            continue
+        try:
+            install(
+                provider,
+                include_content=config.include_content,
+                event_mode=config.event_mode,
+            )
+        except TypeError:
+            # Older / minimal backends may not accept the kwargs.  Fall
+            # back to the minimal signature so we don't lock users out of
+            # custom backends mid-refactor.
+            try:
+                install(provider)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "backend.install_tracing failed backend=%s",
+                    type(backend).__name__,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "backend.install_tracing failed backend=%s",
+                type(backend).__name__,
+            )
 
     logger.info(
-        "tracing enabled endpoint=%s protocol=%s project=%s",
-        config.endpoint,
+        "tracing enabled endpoint=%s protocol=%s project=%s backends=%d",
+        endpoint,
         config.exporter_protocol,
         config.project_name,
+        sum(1 for b in backends if hasattr(b, "install_tracing")),
     )
-
-
-def _probe_phoenix(config: TracingSettings) -> None:
-    """One-time startup probe: check if the OTLP backend is reachable.
-
-    Logs the result but does not block or raise — BatchSpanProcessor
-    handles unreachable endpoints gracefully by silently dropping spans.
-    """
-    import httpx
-
-    base = config.endpoint.rstrip("/")
-    # Phoenix exposes /healthz on its HTTP port (default 6006).
-    # Derive the health check URL from the OTLP endpoint.
-    try:
-        if ":4317" in base and config.exporter_protocol == "grpc":
-            health_url = base.replace(":4317", ":6006") + "/healthz"
-        elif ":6006" in base:
-            health_url = base.split(":6006")[0] + ":6006/healthz"
-        else:
-            health_url = None
-
-        if health_url:
-            resp = httpx.get(health_url, timeout=2)
-            if resp.status_code == 200:
-                logger.info("phoenix health check: reachable at %s", health_url)
-            else:
-                logger.warning(
-                    "phoenix health check: unexpected status %d at %s",
-                    resp.status_code,
-                    health_url,
-                )
-        else:
-            logger.debug("skipping phoenix health check (non-default endpoint)")
-    except Exception:
-        logger.warning(
-            "phoenix health check: unreachable — traces will be dropped until backend is available",
-            exc_info=True,
-        )
+    return provider

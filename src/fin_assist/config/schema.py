@@ -55,12 +55,35 @@ class ProviderConfig(BaseModel):
 
 
 class TracingSettings(BaseModel):
-    """OpenTelemetry tracing configuration."""
+    """OpenTelemetry tracing configuration.
+
+    The non-obvious knobs:
+
+    * ``sampling_ratio`` — ``1.0`` in dev so every trace lands in
+      Phoenix; production can dial it down (``0.1`` = 10% sampled)
+      without code changes.
+    * ``headers`` — injected into the OTLP exporter for auth on hosted
+      backends (Logfire ``authorization: Bearer ...``, Honeycomb
+      ``x-honeycomb-team: ...``).  Resolution precedence is
+      config-headers > ``OTEL_EXPORTER_OTLP_HEADERS`` > empty.
+    * ``event_mode`` — pydantic-ai can emit LLM messages either inline
+      as span attributes or as OTel log events.  Phoenix renders the
+      attribute form, so that's the default; native-OTel backends can
+      flip to ``logs``.
+    * ``include_content`` — whether to record full message bodies.  On
+      by default so Phoenix's chat viewer has something to show; turn
+      off for shared or regulated deployments and the bridge will emit
+      only counts/roles.
+    """
 
     enabled: bool = False
     endpoint: str = "http://localhost:6006/v1/traces"
     exporter_protocol: Literal["grpc", "http"] = "http"
     project_name: str = "fin-assist"
+    sampling_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    headers: dict[str, str] = Field(default_factory=dict)
+    event_mode: Literal["attributes", "logs"] = "attributes"
+    include_content: bool = True
 
 
 class ServerSettings(BaseModel):

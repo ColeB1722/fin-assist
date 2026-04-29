@@ -10,6 +10,18 @@ envelope helpers in ``fin_assist.agents.serialization`` before saving
 and unwrap after loading.  A2A task storage is handled separately by
 ``a2a-sdk``'s ``InMemoryTaskStore``; this module owns the opaque blobs
 that persist across tasks within a conversation.
+
+Trace context persistence
+~~~~~~~~~~~~~~~~~~~~~~~~~
+When a task pauses for human approval the resume may land in a *different
+process* (hub restart, multi-worker deployment).  OTel spans cannot be
+reopened across processes, so to keep the Phoenix trace continuous the
+executor saves the paused ``approval_request`` span's SpanContext
+(``trace_id``, ``span_id``, ``trace_flags``) here at pause time, and
+loads it at resume to seed a span ``Link`` on the new task span.  The
+trace-context row is independent of the opaque ``data`` blob so history
+serialization stays backend-owned while trace plumbing stays platform-
+owned.
 """
 
 from __future__ import annotations
@@ -42,6 +54,21 @@ class ContextStore:
                 )
                 """
             )
+            # Trace-context table is separate so backends' history blob
+            # and platform's trace plumbing have independent lifetimes.
+            # A bare ``CREATE TABLE IF NOT EXISTS`` doubles as the
+            # migration: existing DBs pick up the new table on next
+            # open; rows only appear when a task pauses for approval.
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trace_contexts (
+                    context_id  TEXT PRIMARY KEY,
+                    trace_id    TEXT NOT NULL,
+                    span_id     TEXT NOT NULL,
+                    trace_flags INTEGER NOT NULL
+                )
+                """
+            )
             self._conn.commit()
         return self._conn
 
@@ -71,3 +98,57 @@ class ContextStore:
             (context_id, data),
         )
         conn.commit()
+
+    async def save_trace_context(
+        self,
+        context_id: str,
+        trace_id: int,
+        span_id: int,
+        trace_flags: int,
+    ) -> None:
+        """Persist the SpanContext of a paused ``approval_request`` span.
+
+        IDs are stored as hex strings (32 chars for trace, 16 for span) so
+        the values round-trip through any SQLite client and are readable
+        when debugging by hand.  ``trace_flags`` is a small int (the OTel
+        spec only defines the ``SAMPLED`` bit today) and stored as
+        ``INTEGER``.
+
+        Upserts: a subsequent pause on the same ``context_id`` replaces
+        the earlier entry.  Only the most-recent paused approval matters
+        for the resume Link.
+        """
+        conn = self._get_conn()
+        conn.execute(
+            """
+            INSERT INTO trace_contexts (context_id, trace_id, span_id, trace_flags)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(context_id) DO UPDATE SET
+                trace_id    = excluded.trace_id,
+                span_id     = excluded.span_id,
+                trace_flags = excluded.trace_flags
+            """,
+            (context_id, f"{trace_id:032x}", f"{span_id:016x}", trace_flags),
+        )
+        conn.commit()
+
+    async def load_trace_context(self, context_id: str) -> tuple[int, int, int] | None:
+        """Return the paused SpanContext tuple or ``None`` if no pause is
+        recorded for this ``context_id``.
+
+        Reverses the hex-encoding done in ``save_trace_context``.
+        Returning ``None`` lets the caller treat a missing entry as "this
+        is a fresh conversation, no link to attach."
+        """
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT trace_id, span_id, trace_flags FROM trace_contexts WHERE context_id = ?",
+            (context_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            int(row["trace_id"], 16),
+            int(row["span_id"], 16),
+            int(row["trace_flags"]),
+        )

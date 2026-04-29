@@ -201,15 +201,6 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     credentials = CredentialStore()
     configure_logging(log_file=log_path)
 
-    from fin_assist.hub.tracing import setup_tracing
-
-    setup_tracing(config.tracing)
-
-    if config.tracing.enabled:
-        from pydantic_ai import Agent
-
-        Agent.instrument_all()
-
     pid_file = Path(args.pid_file) if args.pid_file else PID_FILE
     acquire_pidfile(pid_file)
 
@@ -219,11 +210,30 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         for name, ac in config.agents.items()
         if ac.enabled
     ]
+
+    # Build backends *before* tracing setup so we can hand them to
+    # ``setup_tracing`` for framework-specific instrumentation.  Each
+    # backend owns its own ``install_tracing`` hook (see
+    # ``AgentBackend`` protocol) which attaches framework-level
+    # processors (e.g. OpenInferenceSpanProcessor for pydantic-ai) and
+    # flips framework globals (e.g. ``Agent.instrument_all``) — keeping
+    # the hub itself vendor-neutral.
+    from fin_assist.agents.backend import PydanticAIBackend
+    from fin_assist.agents.tools import create_default_registry
+    from fin_assist.hub.tracing import setup_tracing
+
+    tool_registry = create_default_registry(config.context)
+    backends_by_spec = {
+        spec: PydanticAIBackend(agent_spec=spec, tool_registry=tool_registry) for spec in agents
+    }
+    setup_tracing(config.tracing, backends=list(backends_by_spec.values()))
+
     app = create_hub_app(
         agents=agents,
         db_path=db_path,
         base_url=f"http://{host}:{port}",
         context_settings=config.context,
+        backend_factory=lambda spec: backends_by_spec[spec],
     )
 
     if config.tracing.enabled:

@@ -1,0 +1,117 @@
+"""Central attribute names and values for fin-assist OTel spans.
+
+Two layers:
+
+1. **OpenInference semantic conventions** — re-exported verbatim from
+   ``openinference.semconv.trace``.  Every OpenInference attribute used
+   in fin-assist code should come through this module rather than being
+   hand-typed as a string.  Rationale: hand-typed strings drift silently
+   (e.g. ``"input.mime_type" = "json"`` vs the canonical
+   ``"application/json"`` that Phoenix's LLM renderer expects, a bug
+   fixed by this refactor).
+
+2. **fin-assist platform attributes** — our own ``fin_assist.*`` namespace
+   for things that OpenInference does not model (task/context IDs, the
+   approval flow, step counters).  Collected on ``FinAssistAttributes``
+   so there is a single discoverable source of truth.
+
+Span **names** are also centralized on ``SpanNames`` so renames happen in
+one place.  This is especially useful for the two-span HITL flow
+(``approval_request`` at pause, ``approval_decided`` at resume) — the
+naming is load-bearing for Phoenix's span-filter UX.
+
+Attribute precedence in executor.py and backends is:
+
+- Use ``SpanAttributes.*`` / ``OpenInferenceSpanKindValues.*.value`` /
+  ``OpenInferenceMimeTypeValues.*.value`` where OpenInference has a
+  convention for the concept.
+- Use ``FinAssistAttributes.*`` for platform-specific additions.
+- Use ``SpanNames.*`` for span names.
+"""
+
+from __future__ import annotations
+
+from openinference.semconv.trace import (
+    OpenInferenceMimeTypeValues,
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
+
+__all__ = [
+    "FinAssistAttributes",
+    "OpenInferenceMimeTypeValues",
+    "OpenInferenceSpanKindValues",
+    "SpanAttributes",
+    "SpanNames",
+]
+
+
+class FinAssistAttributes:
+    """fin-assist-specific span attributes.
+
+    These live alongside the OpenInference re-exports so there is one
+    import point for "what attributes does fin-assist set on its spans."
+    """
+
+    TASK_ID = "fin_assist.task.id"
+    """A2A task id (UUID).  Unique per request even for the same context."""
+
+    CONTEXT_ID = "fin_assist.context.id"
+    """A2A context id (conversation thread).  Stable across a conversation;
+    doubles as the OpenInference ``session.id``."""
+
+    STEP_NUMBER = "fin_assist.step.number"
+    """0-indexed step counter inside a task."""
+
+    TASK_RESULT_TYPE = "fin_assist.task.result_type"
+    """Python type name of the task result (e.g. ``"str"`` or a pydantic
+    model name for structured output)."""
+
+    TASK_PAUSED_FOR_APPROVAL = "fin_assist.task.paused_for_approval"
+    """Boolean set on the task span when the task pauses for HITL."""
+
+    TOOL_NAME = "fin_assist.tool.name"
+    """fin-assist's own tool-name attribute, parallel to the OpenInference
+    ``tool.name``.  Both are set so queries against either work."""
+
+    TOOL_CALL_ID = "fin_assist.tool.call_id"
+    """Unique id for a single tool invocation — used as the dict key for
+    ``active_tool_spans`` so parallel tool calls within one step don't
+    clobber each other."""
+
+    TOOL_ARGS = "fin_assist.tool.args"
+    """JSON-encoded tool arguments."""
+
+    APPROVAL_STATUS = "fin_assist.approval.status"
+    """Status of the approval request span: ``"pending"`` at start,
+    ``"paused"`` after end.  Distinct from the decision, which lives on
+    the ``approval_decided`` span."""
+
+    APPROVAL_DECISION = "fin_assist.approval.decision"
+    """One of ``"approved"``, ``"denied"``, ``"overridden"``.  Set only on
+    the ``approval_decided`` span (created at resume)."""
+
+    APPROVAL_REASON = "fin_assist.approval.reason"
+    """Human-readable reason — either the tool's approval policy reason
+    (on the request span) or the user's denial reason (on the decided span)."""
+
+    LINK_TYPE = "fin_assist.link.type"
+    """Describes the semantic relationship of a span Link.  Known values:
+    ``"resume_from_approval"`` (task span → paused approval_request span),
+    ``"approval_for"`` (approval_decided → approval_request)."""
+
+
+class SpanNames:
+    """Canonical span names.  Centralized so renames are a single edit."""
+
+    TASK = "fin_assist.task"
+    STEP = "fin_assist.step"
+    TOOL_EXECUTION = "fin_assist.tool_execution"
+    APPROVAL_REQUEST = "fin_assist.approval_request"
+    """Emitted at pause time: the tool call that required approval.
+    Started + ended at pause (spans cannot be reopened across processes);
+    the wait-for-user duration is implicit in the time-gap between this
+    span's end and the next trace's start."""
+    APPROVAL_DECIDED = "fin_assist.approval_decided"
+    """Emitted at resume time as the first child of the resumed task span.
+    Carries the decision and a Link back to the ``approval_request`` span."""
