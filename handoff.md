@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-27)**: 729 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
+**Current state (2026-04-29)**: 729 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). Tracing design sketch resolved — see "Design Sketches: Phoenix + OTel Tracing" below.
 
 **Core platform status:**
 
@@ -18,7 +18,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | Remove built-in agents | ✅ Complete — `_DEFAULT_AGENTS = {}`, all from config.toml |
 | Client artifact-merge fix | ✅ Complete — splice in both `stream_agent()` and `_send_and_wait()` |
 | Git agent (#79) | ✅ Complete — scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows (commit/pr/summarize) |
-| Observability / tracing | 📐 Design resolved (Phoenix + OTel); queued as next session — see "Sequenced roadmap" |
+| Observability / tracing | 📐 Design sketch resolved (Phoenix + OTel); implementation this session — see "Design Sketches" |
 
 **Remaining tracked items:**
 
@@ -33,19 +33,19 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ## Next Session
 
-**Planned: Tracing — Phoenix + OTel.**
+**Planned: Skills API Phase A — Subcommand approval rules.**
 
-Design is resolved (see architecture.md and handoff.md historical notes). Now that the git agent provides real multi-step tool-call + deferred-approval flows to observe, the tracing signal will be meaningful. Wire OTel spans to `StepEvent`/`StepHandle` boundaries from PR #87, ship Phoenix as the observability backend.
+Tracing is shipped (or in progress). The next slice is Phase A of the Skills API: extend `ApprovalPolicy` with per-subcommand rules, update scoped CLI callables to evaluate policy per call, update backend adapter. `git diff` stops prompting; `git push` still asks. ~200 LOC, TDD-first. See "Design Sketches: Skills API" Phase A below.
 
 ### Sequenced roadmap (why this order)
 
 | # | Work | Rationale |
 |---|------|-----------|
-| 1 | **Tracing: Phoenix + OTel** (next session) | Design resolved but zero code in `src/`. Git agent provides real multi-step tool-call + deferred-approval flows to observe. `StepEvent`/`StepHandle` boundaries from PR #87 are fresh — cheapest time to wire instrumentation. Phoenix gives us an eval UI for free once traces are clean. |
+| 1 | **Tracing: Phoenix + OTel** (this session) | Design sketch resolved. Wire OTel spans to `StepEvent`/`StepHandle` boundaries. `Agent.instrument_all()` for framework-layer spans. FastAPI auto-instrumentation for HTTP transport. Phoenix as standalone dev backend. ~350 LOC + tests. See "Design Sketches: Phoenix + OTel Tracing" below. |
 | 2 | **Eval harness (per-agent, not platform-level)** | Evals are downstream of observability when using Phoenix. Two real agents exist (test + git) — eval criteria are meaningful. Platform stance: evals live at the agent level (`tests/evals/<agent>/`). Closes [#14](https://github.com/ColeB1722/fin-assist/issues/14). Likely surfaces [#80](https://github.com/ColeB1722/fin-assist/issues/80) (AgentBackend simplification). |
 | 3 | **Skills API** | Generalizes the scoped CLI tools + workflow config pattern from the git agent. Per-subcommand approval, context templates, skill auto-discovery. See the Skills API GitHub issue for the full vision. |
 
-**Why not tracing first:** tracing one agent (the `test` agent) gives ~10% of the learnings of tracing a real agent with non-trivial tool calls. The scaffolding would ship but the signal wouldn't.
+**Why tracing before skills:** `step_start`/`step_end` are currently no-ops in `executor.py:360`. Skills Phase A adds per-call approval evaluation; Phase B adds skill-loaded tool-surface swapping. Each new feature makes the instrumentation surface more complex. Wire it now while the boundary is clean.
 
 **Why not evals first:** without tracing, eval failures are opaque — you know an eval failed but not why the agent went wrong in the middle of a 3-step tool loop. Phoenix eval primitives specifically consume OTel traces, so doing them in the other order duplicates work.
 
@@ -87,17 +87,295 @@ Design is resolved (see architecture.md and handoff.md historical notes). Now th
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client (A2A) | ⬜ Not Started |
-| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing — see "Sequenced roadmap" in Next Session |
+| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing ships — see "Sequenced roadmap" in Next Session |
 | 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); sequenced Phase A/B/C sketch resolved 2026-04-27 — see "Design Sketches" below |
 | 16 | Additional Agents | 🔄 Git agent shipped; SDD/TDD/code review pending |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
-| — | Phoenix/OTel tracing | 📐 Design resolved; queued as next session |
+| — | Phoenix/OTel tracing | 📐 Design sketch resolved 2026-04-29; implementation next — see "Design Sketches" |
 | — | Nix/Home Manager packaging | 📐 Sketched |
 
 ---
 
 ## Design Sketches
+
+### Phoenix + OTel Tracing
+
+**Status:** Sketch resolved 2026-04-29. Ready for implementation.
+
+**Why this exists:** `step_start`/`step_end` are currently no-ops in `executor.py:360`. The git agent provides real multi-step tool-call + deferred-approval flows to observe. `Agent.instrument_all()` gives us pydantic-ai framework-layer spans for free. FastAPI auto-instrumentation provides the HTTP transport layer. Now is the cheapest time to wire instrumentation — before Skills Phase A/B adds per-call approval and tool-surface swapping.
+
+**Grounding citations:**
+
+- `step_start`/`step_end` no-ops: `src/fin_assist/hub/executor.py:360`
+- `StepEvent` kinds and `content` contract: `src/fin_assist/agents/step.py:22-54`
+- `_PydanticAIStepHandle.__aiter__()` emits step boundaries: `src/fin_assist/agents/backend.py:135-198`
+- `ApprovalPolicy` (two-mode, no rules): `src/fin_assist/agents/tools.py:40-60`
+- Hub app factory (init order): `src/fin_assist/hub/app.py:45-107`
+- Agent card + extension: `src/fin_assist/hub/factory.py:95-125`
+
+---
+
+#### Two-layer instrumentation
+
+pydantic-ai has built-in `Agent.instrument_all()` that emits OTel spans for model requests, tool calls, and token usage. We get the LLM-layer for free. Our platform layer adds spans the framework can't know about — task lifecycle, approval gates, step boundaries, and agent identity.
+
+| Layer | What it traces | Mechanism |
+|-------|---------------|-----------|
+| **HTTP transport** (FastAPI) | Every request to the hub: method, route, status code, duration | `opentelemetry-instrumentation-fastapi` auto-instrumentation |
+| **Framework** (pydantic-ai) | Model requests, token usage, tool invocations | `Agent.instrument_all()` — emits spans under `pydantic_ai.*` |
+| **Platform** (fin-assist) | Task lifecycle, step boundaries, approval decisions, agent identity | Manual OTel spans in Executor — emits spans under `fin_assist.*` |
+
+Each layer is a child of the one above. In Phoenix, a trace looks like:
+
+```
+HTTP POST /agents/git/ (FastAPI auto-instrumentation)
+  └── fin_assist.task (agent=git, task_id=abc, context_id=xyz)
+        ├── fin_assist.step (step=0, kind=model_request)
+        │     └── pydantic_ai.model_request (model=claude-sonnet-4-6, tokens=...)
+        ├── fin_assist.step (step=1, kind=tool_call)
+        │     ├── pydantic_ai.tool_call (tool=git, args="diff")
+        │     └── fin_assist.tool_execution (tool=git, args="diff", exit_code=0, duration_ms=120)
+        ├── fin_assist.step (step=2, kind=deferred)
+        │     └── fin_assist.approval (tool=git, args="push", decision=pending)
+        └── fin_assist.task_result (output_type=str, steps=3)
+```
+
+#### Span hierarchy
+
+| Span name | Kind | Parent | Key attributes |
+|-----------|------|--------|----------------|
+| `HTTP {method} {route}` | SERVER | (root) | Auto-generated by FastAPI instrumentation |
+| `fin_assist.task` | INTERNAL | HTTP span | `agent.name`, `task.id`, `context.id`, `model.name`, `serving_mode` |
+| `fin_assist.step` | INTERNAL | `fin_assist.task` | `step.number`, `step.kind` |
+| `fin_assist.tool_execution` | INTERNAL | `fin_assist.step` (kind=tool_call) | `tool.name`, `tool.args`, `tool.exit_code`, `tool.duration_ms`, `tool.timed_out` |
+| `fin_assist.approval` | INTERNAL | `fin_assist.step` (kind=deferred) | `tool.name`, `tool.args`, `approval.decision`, `approval.reason` |
+
+#### Where spans are created
+
+**Executor (`hub/executor.py`)** — owns the platform span layer:
+
+- `_setup_task()` → start `fin_assist.task` span, set `agent.name`, `task.id`, `context.id`
+- `_consume_events()` → dispatch:
+  - `step_start` → start `fin_assist.step` child span
+  - `step_end` → end current `fin_assist.step` span
+  - `tool_call` → start `fin_assist.tool_execution` child span
+  - `tool_result` → end `fin_assist.tool_execution` span, set exit/duration attrs
+  - `deferred` → start `fin_assist.approval` child span, set attributes, end span
+  - `text_delta`/`thinking_delta` → no span (content within step span)
+- `_finalize()` → end `fin_assist.task` span, set `task.result_type`, `task.step_count`
+- `_pause_for_approval()` → end `fin_assist.task` span, tag with `task.paused_for_approval=true`
+
+**Backend (`agents/backend.py`)** — sets span context the Executor can't see:
+
+- `PydanticAIBackend._build_model()` → set `model.name`, `model.provider` on the current span
+- `_PydanticAIStepHandle.__aiter__()` → no change; pydantic-ai's `instrument_all()` picks up the current span via OTel context automatically
+
+**No span creation in `agents/` package.** Platform types (`StepEvent`, `StepHandle`, `ApprovalPolicy`) remain framework-agnostic with zero OTel imports. The Executor (in `hub/`) is the instrumentation boundary.
+
+#### OTel context propagation
+
+OTel Python uses `contextvars.ContextVar` for context storage — automatic isolation across asyncio tasks. When the Executor creates a span with `tracer.start_as_current_span()`, the span becomes current in the async context. All downstream code (including pydantic-ai's `instrument_all()`) reads it via `trace.get_current_span()`. No manual propagation needed.
+
+Key: `_PydanticAIStepHandle.__aiter__()` runs inside the executor's async context. When pydantic-ai emits a `model_request` span during `node.stream(run.ctx)`, it automatically becomes a child of our `fin_assist.step` span.
+
+#### OTel initialization
+
+New module: `src/fin_assist/hub/tracing.py`
+
+```python
+def setup_tracing(config: TracingSettings) -> None:
+    """Initialize OTel TracerProvider with OTLP exporter.
+    
+    Called once at hub startup, after configure_logging().
+    No-op if tracing is disabled.
+    """
+```
+
+Initialization order in `fin serve`:
+1. `configure_logging()` (existing)
+2. `setup_tracing(config.tracing)` (new)
+3. `Agent.instrument_all()` (new — enables pydantic-ai framework spans)
+4. `FastAPIInstrumentor.instrument_app(app)` (new — enables HTTP transport spans)
+5. `create_hub_app()` (existing)
+
+**Raw OTel setup, not `phoenix.otel.register()`.** The convenience wrapper couples us to Phoenix's API. Raw `TracerProvider` + `OTLPSpanExporter` is ~10 lines, works with any OTel backend, and future-proofs for Jaeger/Tempo/etc.
+
+#### Configuration
+
+**Config schema addition:**
+
+```python
+class TracingSettings(BaseModel):
+    """OpenTelemetry tracing configuration."""
+    enabled: bool = False
+    endpoint: str = "http://localhost:4317"  # OTLP gRPC (Phoenix default)
+    exporter_protocol: Literal["grpc", "http"] = "grpc"
+    project_name: str = "fin-assist"
+```
+
+**Config TOML:**
+
+```toml
+[tracing]
+enabled = true
+endpoint = "http://localhost:4317"
+```
+
+**Env overrides (pydantic-settings, double-underscore):**
+
+- `FIN_TRACING__ENABLED=true`
+- `FIN_TRACING__ENDPOINT=http://localhost:4317`
+- `FIN_TRACING__EXPORTER_PROTOCOL=grpc`
+
+Tracing config is only needed at hub startup, after pydantic loads, so no bootstrap env var is needed.
+
+#### Phoenix integration
+
+**Launch model: standalone, not embedded.** Phoenix runs as its own process on port 6006 (UI) + 4317 (gRPC). It's a data-plane dependency, not a code dependency.
+
+**Graceful degradation when Phoenix isn't running:** `BatchSpanProcessor` handles this — non-blocking, background thread, silently drops spans if the OTLP endpoint is unreachable. Only downside is noisy warning logs. Mitigation:
+
+1. One-time startup probe: `httpx.get("http://localhost:6006/healthz", timeout=2)` at init, log the result (reachable/unreachable), but continue regardless.
+2. Optionally suppress OTel's noisy per-batch logging: `logging.getLogger("opentelemetry").setLevel(logging.CRITICAL)`.
+
+If Phoenix comes up after the hub, traces start flowing on the next export cycle. No restart needed.
+
+**Dev workflow:**
+
+1. `phoenix serve` (or `devenv up` with a `processes.phoenix.exec = "phoenix serve"` entry)
+2. `FIN_TRACING__ENABLED=true` (or `[tracing] enabled = true` in config.toml)
+3. `fin serve` → traces flow to Phoenix
+
+#### Dependencies
+
+```toml
+[project]
+dependencies = [
+    # ... existing ...
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp>=1.20",
+]
+
+[dependency-groups]
+dev = [
+    # ... existing ...
+    "arize-phoenix>=8.0",                          # local Phoenix server
+    "opentelemetry-instrumentation-fastapi>=0.62b1", # HTTP transport spans
+]
+```
+
+**Not added:** `logfire` (raw OTel is more portable), `arize-phoenix-otel` (convenience wrapper we don't need).
+
+#### Span attributes
+
+Follow OTel semantic conventions where they exist; use `fin_assist.*` namespace for platform-specific attributes.
+
+| Attribute | Source | Notes |
+|-----------|--------|-------|
+| `gen_ai.agent.name` | OTel semconv | Agent name (e.g., "git") |
+| `gen_ai.operation.name` | OTel semconv | "invoke_agent" for task span |
+| `gen_ai.request.model` | OTel semconv | From pydantic-ai `InstrumentedModel` |
+| `gen_ai.usage.input_tokens` | OTel semconv | From pydantic-ai `InstrumentedModel` |
+| `gen_ai.usage.output_tokens` | OTel semconv | From pydantic-ai `InstrumentedModel` |
+| `fin_assist.task.id` | Platform | A2A task ID |
+| `fin_assist.context.id` | Platform | A2A context ID (conversation thread) |
+| `fin_assist.step.number` | Platform | 0-indexed step counter |
+| `fin_assist.step.kind` | Platform | "model_request", "tool_call", "tool_result", "deferred" |
+| `fin_assist.tool.name` | Platform | Tool name (e.g., "git", "read_file") |
+| `fin_assist.tool.args` | Platform | Tool call arguments (string) |
+| `fin_assist.tool.exit_code` | Platform | Exit code for CLI tools |
+| `fin_assist.tool.duration_ms` | Platform | Wall-clock duration for tool execution |
+| `fin_assist.tool.timed_out` | Platform | Boolean for timeout |
+| `fin_assist.approval.decision` | Platform | "approved", "denied", "pending" |
+| `fin_assist.approval.reason` | Platform | Human-readable reason string |
+| `fin_assist.serving_mode` | Platform | "do" or "talk" |
+
+**Sensitive data:** `fin_assist.tool.args` could contain file contents or command arguments. Initially included (local-only, Phoenix is localhost). If concern arises, add `tracing.include_tool_args: bool = True` config toggle. No user prompts or model outputs set as attributes — those stay in pydantic-ai framework spans (also localhost-only).
+
+#### Step boundaries for CallToolsNode
+
+Currently `_PydanticAIStepHandle.__aiter__()` only emits `step_start`/`step_end` for `ModelRequestNode`. `CallToolsNode` events (`tool_call`, `tool_result`) arrive between step boundaries. **Change:** emit `step_start`/`step_end` for `CallToolsNode` too. Steps alternate: model → tools → model → tools → ...
+
+Step counter increments for both node types:
+- step 0: ModelRequestNode (model generates response)
+- step 1: CallToolsNode (tool calls + results)
+- step 2: ModelRequestNode (model processes tool results)
+- etc.
+
+#### Tool duration timing
+
+The Executor sees `tool_call` and `tool_result` as separate StepEvents. Track wall-clock time between them: store `time.monotonic()` on `_ExecutionContext` when `tool_call` arrives, compute delta when `tool_result` arrives. Keyed by `tool_name` (tools run sequentially within a step).
+
+#### Approval span lifecycle
+
+The `fin_assist.approval` span is created at `deferred` event time with `decision="pending"`. When the user approves/denies and the task resumes, add a span event (`span.add_event("approval_decision", {decision, reason})`) to the approval span. This keeps the approval in the original trace rather than splitting it across two traces.
+
+For the resumed task, start a new `fin_assist.task` span with `fin_assist.task.resumed_from = <original_task_id>` as a link attribute. Each trace is self-contained; the link attribute connects them.
+
+#### Testing strategy
+
+**New test file:** `tests/test_hub/test_tracing.py`
+
+Tests use `InMemorySpanExporter` from `opentelemetry-sdk` instead of OTLP:
+
+```python
+from opentelemetry.sdk.trace.export import InMemorySpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+```
+
+**Test cases:**
+
+1. **Tracing disabled** — no spans emitted when `TracingSettings(enabled=False)`
+2. **Task span lifecycle** — `fin_assist.task` span created and ended, correct attributes
+3. **Step span lifecycle** — `fin_assist.step` spans for each step boundary, parent is task span
+4. **Tool execution span** — `fin_assist.tool_execution` span with name, args, exit_code, duration
+5. **Approval span** — `fin_assist.approval` span for deferred events
+6. **Span hierarchy** — all platform spans have correct parent-child relationships
+7. **pydantic-ai integration** — when `instrument=True`, framework spans appear as children of platform step spans (integration test with `FakeBackend`)
+8. **FastAPI instrumentation** — HTTP span is root, task span is child
+9. **Phoenix unreachable** — `BatchSpanProcessor` doesn't block or raise when OTLP endpoint is down
+
+**Test infrastructure:** `conftest.py` fixture that sets up a `TracerProvider` with `InMemorySpanExporter`, runs a task via `FakeBackend`, and returns collected spans for assertion.
+
+#### Files touched
+
+| File | Change |
+|------|--------|
+| `pyproject.toml` | Add `opentelemetry-sdk`, `opentelemetry-exporter-otlp` to deps; `arize-phoenix`, `opentelemetry-instrumentation-fastapi` to dev deps |
+| `src/fin_assist/config/schema.py` | Add `TracingSettings`, add `tracing` field to `Config` |
+| `src/fin_assist/hub/tracing.py` | **New** — `setup_tracing()`, TracerProvider + OTLP exporter init, startup probe |
+| `src/fin_assist/hub/executor.py` | Add span creation to `_setup_task`, `_consume_events`, `_finalize`, `_pause_for_approval` |
+| `src/fin_assist/hub/app.py` | Call `setup_tracing()` + `Agent.instrument_all()` + `FastAPIInstrumentor.instrument_app()` |
+| `src/fin_assist/agents/backend.py` | Set model/provider attributes on current span in `_build_model()`; add `step_start`/`step_end` for `CallToolsNode` |
+| `tests/test_hub/test_tracing.py` | **New** — span emission tests |
+| `tests/conftest.py` | Add tracing fixture (InMemorySpanExporter + TracerProvider) |
+| `handoff.md` | This design sketch; update progress |
+
+**Estimated:** ~5 source files modified/created, ~2 new test files, ~350 LOC + tests.
+
+#### Resolved design decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Instrumentation approach | Two-layer: platform spans + `Agent.instrument_all()` | Framework spans for free; platform spans for domain logic |
+| FastAPI auto-instrumentation | Include in dev deps | Low noise (3-5 spans/request); provides HTTP transport root; aids debugging A2A protocol issues |
+| Phoenix launch model | Standalone, not embedded | Phoenix is a dev tool; no runtime coupling; `devenv processes` for dev workflow |
+| Phoenix unreachable behavior | BatchSpanProcessor silently drops; startup probe logs status | No blocking, no crashes; one-time log for awareness |
+| OTel setup method | Raw `TracerProvider` + `OTLPSpanExporter` | More portable than `phoenix.otel.register()`; ~10 lines; works with any OTel backend |
+| Context propagation | Standard `contextvars` via `start_as_current_span()` | Automatic in asyncio; no manual wiring; pydantic-ai picks it up |
+| Span for CallToolsNode | Add `step_start`/`step_end` | Steps alternate model→tools→model→tools; each node type gets a step span |
+| `arize-phoenix` dependency tier | Dev-only (`[dependency-groups] dev`) | Heavy (scipy, sklearn, pyarrow); server is dev infrastructure; runtime only needs OTel SDK |
+| Logfire | Not used | Raw OTel is more portable; no Logfire-specific API lock-in |
+
+#### Open questions for implementation
+
+1. **OTel log suppression granularity.** Suppress at `opentelemetry` logger level entirely, or only `opentelemetry.exporter`? The exporter logs are the noisy ones when Phoenix is down; the SDK logs are useful for debugging. Decide during implementation.
+2. **FastAPI instrumentation scope.** Instrument the parent app only, or parent + sub-apps? Parent-only may miss per-agent route detail; sub-app instrumentation may produce duplicate spans. Test during implementation.
+3. **`Agent.instrument_all()` timing.** Must be called before any `Agent` instance is created. Currently `_build_pydantic_agent()` is called lazily on first task. If `instrument_all()` is called at hub startup (before any task), all agents are covered. Verify timing during implementation.
+4. **Devenv processes entry.** Should `phoenix serve` be in `devenv.nix` by default, or documented as optional? Lean: documented, not default. Adding it to devenv means every `devenv up` launches Phoenix even when not tracing.
+
+---
 
 ### Skills API: sequenced refactor (Phase 15 breakdown)
 
@@ -340,7 +618,7 @@ Unified five structural gaps into one coherent abstraction: executor loop (multi
 
 **Phase C (HITL / Approval) shipped.** `ApprovalPolicy` on `ToolDefinition`; deferred tool flow end-to-end; `DeferredToolCall` dataclass; `run_approval_widget` in CLI.
 
-**Phase D (Observability).** Design only — Phoenix + OTel via `Agent.instrument_all()` aligned to step boundaries. Not yet implemented.
+**Phase D (Observability).** Design sketch resolved 2026-04-29 — two-layer instrumentation (platform + `Agent.instrument_all()`), FastAPI auto-instrumentation, Phoenix as standalone dev backend. See "Design Sketches: Phoenix + OTel Tracing".
 
 ### PR #87 Self-Review Triage (2026-04-26)
 

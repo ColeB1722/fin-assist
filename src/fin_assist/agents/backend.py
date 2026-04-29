@@ -154,11 +154,14 @@ class _PydanticAIStepHandle:
                     step += 1
 
                 elif Agent.is_call_tools_node(node):
+                    yield StepEvent(kind="step_start", content=None, step=step)
                     async with node.stream(run.ctx) as tool_stream:
                         async for tool_event in tool_stream:
                             te = _tool_event_to_step_event(tool_event, step)
                             if te is not None:
                                 yield te
+                    yield StepEvent(kind="step_end", content=None, step=step)
+                    step += 1
 
             final = run.result
             if final is None:

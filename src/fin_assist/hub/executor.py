@@ -20,7 +20,7 @@ The Executor iterates a ``StepHandle`` and dispatches based on
 - ``text_delta`` / ``thinking_delta`` → streaming artifacts
 - ``tool_call`` → tool call artifact
 - ``tool_result`` → tool result artifact
-- ``step_start`` / ``step_end`` → step boundary markers (future: OTel spans)
+- ``step_start`` / ``step_end`` → step boundary markers, create/end OTel step spans
 - ``deferred`` → task pauses for human approval via ``requires_input()``
 
 Deferred tool approval
@@ -51,6 +51,9 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from google.protobuf.struct_pb2 import Struct
+from opentelemetry import trace as trace_api
+from opentelemetry.trace import StatusCode
+from opentelemetry.trace.status import Status
 
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.tools import ApprovalDecision
@@ -66,6 +69,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _get_tracer() -> Any:
+    """Return the fin-assist OTel tracer (no-op if tracing is not set up)."""
+    from opentelemetry.trace import get_tracer
+
+    return get_tracer("fin_assist")
+
+
+class _NoopSpan:
+    """Sentinel that accepts any attribute/enter/exit call without error."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def set_attribute(self, *args):
+        pass
+
+    def end(self):
+        pass
+
+    def add_event(self, *args, **kwargs):
+        pass
+
+
+_NOOP_SPAN = _NoopSpan()
+
+
 @dataclass
 class _ExecutionContext:
     """Mutable state carried between Executor helper methods for one task.
@@ -73,6 +105,10 @@ class _ExecutionContext:
     Avoids a long parameter list on each helper.  The ``task_id`` and
     ``raw_context_id`` are captured once from the request and used for
     logging and context-store persistence throughout the task lifecycle.
+
+    OTel span fields (``task_span``, ``current_step_span``,
+    ``current_tool_span``) track the live span hierarchy so that child
+    spans are correctly parented and ended at the right time.
     """
 
     task_id: str
@@ -80,6 +116,9 @@ class _ExecutionContext:
     updater: TaskUpdater
     artifact_id: str
     created_artifacts: set[str] = field(default_factory=set)
+    task_span: Any = None
+    current_step_span: Any = None
+    current_tool_span: Any = None
 
 
 class Executor(AgentExecutor):
@@ -122,9 +161,12 @@ class Executor(AgentExecutor):
         *,
         backend: AgentBackend,
         context_store: ContextStore,
+        agent_name: str = "",
     ) -> None:
         self._backend = backend
         self._context_store = context_store
+        self._agent_name = agent_name
+        self._tracer = _get_tracer()
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Run one task through its lifecycle.
@@ -148,6 +190,17 @@ class Executor(AgentExecutor):
         ctx = await self._setup_task(context, event_queue)
         if ctx is None:
             return
+
+        task_span = self._tracer.start_span(
+            "fin_assist.task",
+            attributes={
+                "gen_ai.agent.name": self._agent_name,
+                "fin_assist.task.id": ctx.task_id,
+                "fin_assist.context.id": ctx.raw_context_id or "",
+            },
+        )
+        ctx.task_span = task_span
+
         try:
             message_history = await self._load_history(ctx)
             deferred_results = self._extract_approval_results(context.message)
@@ -159,6 +212,8 @@ class Executor(AgentExecutor):
             result: RunResult = await handle.result()
         except Exception:
             logger.exception("execute failed task_id=%s", ctx.task_id)
+            task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
+            task_span.end()
             await ctx.updater.failed()
             raise
 
@@ -263,6 +318,10 @@ class Executor(AgentExecutor):
         result: RunResult,
     ) -> None:
         """Save history and move the task to ``requires_input``."""
+        if ctx.task_span is not None and ctx.task_span is not _NOOP_SPAN:
+            ctx.task_span.set_attribute("fin_assist.task.paused_for_approval", True)
+            ctx.task_span.end()
+
         if ctx.raw_context_id:
             await self._context_store.save(ctx.raw_context_id, result.serialized_history)
         logger.info("paused for approval task_id=%s", ctx.task_id)
@@ -298,6 +357,10 @@ class Executor(AgentExecutor):
                 ctx.created_artifacts,
             )
 
+        if ctx.task_span is not None and ctx.task_span is not _NOOP_SPAN:
+            ctx.task_span.set_attribute("fin_assist.task.result_type", type(result.output).__name__)
+            ctx.task_span.end()
+
         logger.info("execute complete task_id=%s", ctx.task_id)
         await ctx.updater.complete()
 
@@ -323,6 +386,7 @@ class Executor(AgentExecutor):
                     last_chunk=False,
                 )
             case "tool_call":
+                self._start_tool_span(event, ctx)
                 tool_meta = Struct()
                 tool_meta.update(
                     {
@@ -339,6 +403,7 @@ class Executor(AgentExecutor):
                     last_chunk=False,
                 )
             case "tool_result":
+                self._end_tool_span(event, ctx)
                 result_meta = Struct()
                 result_meta.update(
                     {
@@ -357,10 +422,48 @@ class Executor(AgentExecutor):
                     ctx.created_artifacts,
                     last_chunk=False,
                 )
-            case "step_start" | "step_end":
-                pass
+            case "step_start":
+                self._start_step_span(event, ctx)
+            case "step_end":
+                self._end_step_span(ctx)
             case "deferred":
                 await self._handle_deferred_event(event, ctx)
+
+    def _start_step_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
+        """Start a fin_assist.step span as a child of the task span."""
+        parent_context = trace_api.set_span_in_context(ctx.task_span) if ctx.task_span else None
+        ctx.current_step_span = self._tracer.start_span(
+            "fin_assist.step",
+            context=parent_context,
+            attributes={
+                "fin_assist.step.number": event.step,
+            },
+        )
+
+    def _end_step_span(self, ctx: _ExecutionContext) -> None:
+        """End the current step span."""
+        if ctx.current_step_span is not None and ctx.current_step_span is not _NOOP_SPAN:
+            ctx.current_step_span.end()
+        ctx.current_step_span = None
+
+    def _start_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
+        """Start a fin_assist.tool_execution span as a child of the current step span."""
+        parent = ctx.current_step_span or ctx.task_span
+        parent_context = trace_api.set_span_in_context(parent) if parent else None
+        ctx.current_tool_span = self._tracer.start_span(
+            "fin_assist.tool_execution",
+            context=parent_context,
+            attributes={
+                "fin_assist.tool.name": event.tool_name or "",
+                "fin_assist.tool.args": str(event.metadata.get("args", "")),
+            },
+        )
+
+    def _end_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
+        """End the current tool execution span, recording result attributes."""
+        if ctx.current_tool_span is not None and ctx.current_tool_span is not _NOOP_SPAN:
+            ctx.current_tool_span.end()
+        ctx.current_tool_span = None
 
     async def _emit_artifact(
         self,
@@ -383,6 +486,17 @@ class Executor(AgentExecutor):
         created_artifacts.add(artifact_id)
 
     async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
+        parent_context = trace_api.set_span_in_context(ctx.task_span) if ctx.task_span else None
+        approval_span = self._tracer.start_span(
+            "fin_assist.approval",
+            context=parent_context,
+            attributes={
+                "fin_assist.tool.name": event.tool_name or "",
+                "fin_assist.approval.decision": "pending",
+            },
+        )
+        approval_span.end()
+
         deferred_meta = Struct()
         deferred_content = event.content
         deferred_meta.update(

@@ -201,6 +201,15 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     credentials = CredentialStore()
     configure_logging(log_file=log_path)
 
+    from fin_assist.hub.tracing import setup_tracing
+
+    setup_tracing(config.tracing)
+
+    if config.tracing.enabled:
+        from pydantic_ai import Agent
+
+        Agent.instrument_all()
+
     pid_file = Path(args.pid_file) if args.pid_file else PID_FILE
     acquire_pidfile(pid_file)
 
@@ -216,6 +225,17 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         base_url=f"http://{host}:{port}",
         context_settings=config.context,
     )
+
+    if config.tracing.enabled:
+        try:
+            from opentelemetry.instrumentation.fastapi import (
+                FastAPIInstrumentor,  # type: ignore[import-untyped]
+            )
+
+            FastAPIInstrumentor.instrument_app(app)
+        except ImportError:
+            pass
+
     uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(uvicorn_config)
     asyncio.run(server.serve(sockets=[sock]))

@@ -54,6 +54,15 @@ class ProviderConfig(BaseModel):
     default_model: str | None = None
 
 
+class TracingSettings(BaseModel):
+    """OpenTelemetry tracing configuration."""
+
+    enabled: bool = False
+    endpoint: str = "http://localhost:4317"
+    exporter_protocol: Literal["grpc", "http"] = "grpc"
+    project_name: str = "fin-assist"
+
+
 class ServerSettings(BaseModel):
     """Agent Hub server settings."""
 
@@ -121,6 +130,7 @@ class Config(BaseSettings):
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()
     server: ServerSettings = ServerSettings()
+    tracing: TracingSettings = TracingSettings()
     providers: dict[str, ProviderConfig] = {}
     agents: dict[str, AgentConfig] = Field(default_factory=lambda: _DEFAULT_AGENTS)
 
