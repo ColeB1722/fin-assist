@@ -1027,6 +1027,7 @@ dependencies = [
     { name = "httpx" },
     { name = "keyring" },
     { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-instrumentation-fastapi" },
     { name = "opentelemetry-sdk" },
     { name = "pathspec" },
     { name = "prompt-toolkit" },
@@ -1039,7 +1040,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "arize-phoenix" },
-    { name = "opentelemetry-instrumentation-fastapi" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -1055,6 +1055,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "keyring", specifier = ">=25.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.20,<1.42" },
+    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.40b1,<0.60b1" },
     { name = "opentelemetry-sdk", specifier = ">=1.20,<1.42" },
     { name = "pathspec", specifier = ">=0.12" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
@@ -1067,7 +1068,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "arize-phoenix", specifier = ">=8.0" },
-    { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.40b1,<0.60b1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-cov", specifier = ">=6.0" },

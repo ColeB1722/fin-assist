@@ -18,6 +18,7 @@ dependencies = [
     "pathspec>=0.12",
     "opentelemetry-sdk>=1.20,<1.42",
     "opentelemetry-exporter-otlp>=1.20,<1.42",
+    "opentelemetry-instrumentation-fastapi>=0.40b1,<0.60b1",
 ]
 
 [dependency-groups]
@@ -28,7 +29,6 @@ dev = [
     "ruff>=0.9",
     "ty>=0.0.1a1",
     "arize-phoenix>=8.0",
-    "opentelemetry-instrumentation-fastapi>=0.40b1,<0.60b1",
 ]
 
 [project.scripts]
