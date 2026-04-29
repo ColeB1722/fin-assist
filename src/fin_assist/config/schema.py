@@ -58,8 +58,8 @@ class TracingSettings(BaseModel):
     """OpenTelemetry tracing configuration."""
 
     enabled: bool = False
-    endpoint: str = "http://localhost:4317"
-    exporter_protocol: Literal["grpc", "http"] = "grpc"
+    endpoint: str = "http://localhost:6006/v1/traces"
+    exporter_protocol: Literal["grpc", "http"] = "http"
     project_name: str = "fin-assist"
 
 

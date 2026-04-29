@@ -135,7 +135,24 @@ class TestSetupTracing:
             enabled=True,
             endpoint="http://localhost:9999",
         )
-        assert setup_tracing(config) is None
+        try:
+            assert setup_tracing(config) is None
+        finally:
+            from opentelemetry.trace import get_tracer_provider
+
+            provider = get_tracer_provider()
+            for method in ("force_flush", "shutdown"):
+                fn = getattr(provider, method, None)
+                if fn:
+                    try:
+                        fn(1) if method == "force_flush" else fn()
+                    except Exception:
+                        pass
+            from opentelemetry.trace import ProxyTracerProvider
+
+            import opentelemetry.trace as _trace_mod
+
+            _trace_mod._TRACER_PROVIDER = ProxyTracerProvider()
 
 
 class TestTaskSpanLifecycle:
