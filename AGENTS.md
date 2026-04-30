@@ -78,7 +78,7 @@ This project is intended to run locally for personal use. Dev ergonomics: runtim
 | Sessions | `$FIN_DATA_DIR/sessions/` | `FIN_DATA_DIR` |
 | REPL history | `$FIN_DATA_DIR/history` | `FIN_DATA_DIR` |
 | Credentials | `$FIN_DATA_DIR/credentials.json` | `FIN_DATA_DIR` |
-| Trace JSONL | `$FIN_DATA_DIR/traces.jsonl` | `FIN_DATA_DIR` (or `FIN_TRACING__FILE_PATH`) |
+| Trace JSONL | `$FIN_DATA_DIR/traces.jsonl` | `FIN_DATA_DIR` (always active when tracing enabled) |
 
 **Dev override** (in `devenv.nix`): `FIN_DATA_DIR = "./.fin"` — all runtime state stays in `.fin/` (git-ignored). Tracing is enabled (`FIN_TRACING__ENABLED=true`) and spans are written to both Phoenix (if running at `localhost:6006`) and `./.fin/traces.jsonl`.
 

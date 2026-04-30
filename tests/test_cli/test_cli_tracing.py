@@ -9,7 +9,7 @@ These tests pin the contract:
 
 1. ``setup_cli_tracing`` is a no-op when tracing is disabled.
 2. When enabled, it installs a TracerProvider that writes to
-   ``TracingSettings.file_path`` and enables ``HTTPXClientInstrumentor``
+   ``paths.TRACES_PATH`` and enables ``HTTPXClientInstrumentor``
    so outgoing httpx requests carry a ``traceparent`` header.
 3. ``cli_root_span(command, agent, ...)`` opens the root
    ``cli.<command>`` span with an ``fin_assist.cli.invocation_id``
@@ -17,7 +17,7 @@ These tests pin the contract:
 4. ``approval_wait_span()`` wraps the y/N prompt in a child so the
    hub's trace-duration dashboards can subtract human think-time.
 5. The invocation_id attribute shape is stable (``fin_assist.cli.*``)
-   so both Phoenix queries and tests key on the same names.
+   so both OTLP queries and tests key on the same names.
 
 The tests intentionally do NOT assert on traceparent header bytes —
 that's the ``HTTPXClientInstrumentor``'s contract, not ours.  We only
@@ -74,25 +74,25 @@ def reset_tracer_provider():
 class TestSetupCLITracing:
     def test_no_op_when_disabled(self, reset_tracer_provider):
         """Disabled config must not construct a provider, touch env
-        vars, or install any instrumentor — callers should feel no
-        overhead from tracing in the off-path."""
+        vars, or install any instrumentor."""
         from fin_assist.cli.tracing import setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
         assert setup_cli_tracing(TracingSettings(enabled=False)) is None
 
-    def test_writes_spans_to_configured_file(self, reset_tracer_provider, tmp_path):
-        """When ``file_path`` is set and tracing enabled, spans emitted
-        via a returned tracer must land in that JSONL file.  Mirrors the
-        hub's file-exporter contract."""
+    def test_writes_spans_to_jsonl_file(self, reset_tracer_provider, tmp_path):
+        """When tracing is enabled, spans emitted via a returned tracer
+        must land in the JSONL file."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "cli.jsonl"
-        config = TracingSettings(enabled=True, file_path=str(path))
-        provider = setup_cli_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -106,15 +106,16 @@ class TestSetupCLITracing:
 
     def test_httpx_instrumented(self, reset_tracer_provider, tmp_path):
         """``setup_cli_tracing`` must call ``HTTPXClientInstrumentor``
-        so outgoing hub HTTP calls carry W3C ``traceparent``.  We assert
-        on the instrumentor's ``is_instrumented_by_opentelemetry`` flag
-        — the public probe for instrumentation state.
-        """
+        so outgoing hub HTTP calls carry W3C ``traceparent``."""
+        from unittest.mock import patch
+
         from fin_assist.cli.tracing import setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
-        config = TracingSettings(enabled=True, file_path=str(tmp_path / "x.jsonl"))
-        setup_cli_tracing(config)
+        path = tmp_path / "x.jsonl"
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            setup_cli_tracing(config)
 
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
@@ -127,15 +128,17 @@ class TestCLIRootSpan:
     """
 
     def test_emits_cli_command_span(self, reset_tracer_provider, tmp_path):
-        """The span name must be ``cli.<command>`` (matches the plan:
-        ``cli.do``, ``cli.talk``, ``cli.serve``, etc.)."""
+        """The span name must be ``cli.<command>``."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "c.jsonl"
-        provider = setup_cli_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         with cli_root_span("do", agent="test"):
@@ -147,15 +150,17 @@ class TestCLIRootSpan:
 
     def test_span_has_invocation_id_attribute(self, reset_tracer_provider, tmp_path):
         """The span must carry ``fin_assist.cli.invocation_id``.  This
-        is the join key between the CLI trace and the hub task span
-        (baggage-propagated)."""
+        is the join key between the CLI trace and the hub task span."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "c.jsonl"
-        provider = setup_cli_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         with cli_root_span("do", agent="test"):
@@ -173,17 +178,17 @@ class TestCLIRootSpan:
         assert attrs["fin_assist.cli.agent"] == "test"
 
     def test_invocation_id_is_unique_per_call(self, reset_tracer_provider, tmp_path):
-        """Two CLI invocations (two ``with cli_root_span(...)`` blocks)
-        must produce distinct invocation_ids — otherwise the hub can't
-        tell two concurrent ``fin do`` runs apart when they write to
-        the same traces.jsonl."""
+        """Two CLI invocations must produce distinct invocation_ids."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "c.jsonl"
-        provider = setup_cli_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         with cli_root_span("do", agent="a"):
@@ -202,12 +207,17 @@ class TestCLIRootSpan:
         """Inside the ``cli_root_span`` context, the baggage must carry
         ``fin_assist.cli.invocation_id`` so ``HTTPXClientInstrumentor``
         propagates it via ``baggage`` header on outgoing requests."""
+        from unittest.mock import patch
+
         from opentelemetry import baggage
 
         from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
         from fin_assist.config.schema import TracingSettings
 
-        setup_cli_tracing(TracingSettings(enabled=True, file_path=str(tmp_path / "b.jsonl")))
+        path = tmp_path / "b.jsonl"
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            setup_cli_tracing(config)
 
         with cli_root_span("do", agent="test"):
             value = baggage.get_baggage("fin_assist.cli.invocation_id")
@@ -217,14 +227,9 @@ class TestCLIRootSpan:
 
     def test_disabled_tracing_yields_no_op(self, reset_tracer_provider):
         """With tracing disabled, ``cli_root_span`` must still be a
-        usable context manager (no crash) but produces no real span —
-        important because the CLI wraps every command in it
-        unconditionally.
-        """
+        usable context manager (no crash) but produces no real span."""
         from fin_assist.cli.tracing import cli_root_span
 
-        # No setup_cli_tracing call → no provider.  The context manager
-        # must swallow this gracefully.
         with cli_root_span("do", agent="test"):
             pass
 
@@ -237,6 +242,7 @@ class TestApprovalWaitSpan:
 
     def test_emits_cli_approval_wait_span(self, reset_tracer_provider, tmp_path):
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import (
             approval_wait_span,
@@ -246,7 +252,9 @@ class TestApprovalWaitSpan:
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "a.jsonl"
-        provider = setup_cli_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         with cli_root_span("do", agent="test"):
@@ -258,9 +266,10 @@ class TestApprovalWaitSpan:
         assert "cli.approval_wait" in names
 
     def test_approval_wait_is_child_of_root(self, reset_tracer_provider, tmp_path):
-        """The wait span must be parented on the CLI root so Phoenix
-        renders them nested, not as siblings."""
+        """The wait span must be parented on the CLI root so backends
+        render them nested, not as siblings."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.cli.tracing import (
             approval_wait_span,
@@ -270,7 +279,9 @@ class TestApprovalWaitSpan:
         from fin_assist.config.schema import TracingSettings
 
         path = tmp_path / "a.jsonl"
-        provider = setup_cli_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
         assert provider is not None
 
         with cli_root_span("do", agent="test"):
@@ -283,6 +294,5 @@ class TestApprovalWaitSpan:
         }
         root = spans["cli.do"]
         wait = spans["cli.approval_wait"]
-        # The OTel JSON export key for the parent is "parent_id" (hex).
         root_span_id = root["context"]["span_id"]
         assert wait["parent_id"] == root_span_id

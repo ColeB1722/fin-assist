@@ -68,18 +68,10 @@ def _make_backend(
 
 
 def _make_context_store() -> MagicMock:
-    """Return a MagicMock shaped like ``ContextStore``.
-
-    Every async method the executor awaits must be ``AsyncMock`` or the
-    first await trips ``TypeError: can't await MagicMock``.  Phase 3
-    added ``load_pause_state`` / ``save_pause_state`` to the set; the
-    legacy ``*_trace_context`` pair stays for backwards compat.
-    """
+    """Return a MagicMock shaped like ``ContextStore``."""
     store = MagicMock()
     store.load = AsyncMock(return_value=None)
     store.save = AsyncMock()
-    store.load_trace_context = AsyncMock(return_value=None)
-    store.save_trace_context = AsyncMock()
     store.load_pause_state = AsyncMock(return_value=None)
     store.save_pause_state = AsyncMock()
     return store
@@ -770,13 +762,15 @@ class TestHITLTraceContinuity:
         event_queue.enqueue_event = AsyncMock()
         await executor.execute(ctx, event_queue)
 
-        persisted = await store.load_trace_context("ctx-hitl")
+        persisted = await store.load_pause_state("ctx-hitl")
         assert persisted is not None, "pause must persist the approval span context"
 
         approval_spans = tracing_setup["get_spans"]("fin_assist.approval_request")
         assert len(approval_spans) == 1
         req_ctx = approval_spans[0].context
-        assert persisted == (req_ctx.trace_id, req_ctx.span_id, req_ctx.trace_flags)
+        assert persisted.trace_id == req_ctx.trace_id
+        assert persisted.span_id == req_ctx.span_id
+        assert persisted.trace_flags == req_ctx.trace_flags
 
     async def test_resume_task_span_has_link_to_paused_approval(self, tracing_setup):
         """A resume creates a new trace; the new task span must carry a

@@ -74,10 +74,6 @@ class FileSpanExporter(SpanExporter):
         if self._closed:
             return SpanExportResult.FAILURE
         try:
-            # Build the payload under the lock to keep any per-span
-            # serialization work outside the critical section... actually
-            # ``to_json`` is cheap; just do it all inside the lock for
-            # simplicity.
             with self._lock:
                 for span in spans:
                     # ``indent=None`` produces a single-line JSON object.

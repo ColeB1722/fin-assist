@@ -5,20 +5,15 @@ Three deltas from the pre-Phase-3 executor behavior:
 1. **``fin_assist.task.state`` attribute** (finite enum) is the one
    source of truth for task lifecycle on the ``fin_assist.task``
    span.  Distinguishes ``running`` / ``paused_for_approval`` /
-   ``resumed_from_approval`` / ``completed`` / ``failed`` — so a
-   single Phoenix filter can find all tasks in any interesting state.
-   Replaced a short-lived ``fin_assist.task.paused_for_approval``
-   boolean that never shipped outside this branch.
-2. **``ContextStore.save_pause_state``** extends ``save_trace_context``
-   by also persisting the original user_input.  Without this, a resume
-   sees ``context.message == ""`` and the hub trace's
-   ``input.value`` attribute is empty, breaking Phoenix's "what was
-   this task doing" UX.
+   ``resumed_from_approval`` / ``completed`` / ``failed``.
+2. **``ContextStore.save_pause_state``** persists the original
+   user_input alongside trace context.  Without this, a resume sees
+   ``context.message == ""`` and the hub trace's ``input.value``
+   attribute is empty.
 3. **``fin_assist.cli.invocation_id`` from baggage** — the executor
    reads OTel baggage in ``_setup_task`` and stamps the id on the
    ``fin_assist.task`` span so CLI and hub traces join via that one
-   attribute (same trace_id is impossible across HTTP boundaries
-   already, and impossible across pause/resume anyway).
+   attribute.
 """
 
 from __future__ import annotations
@@ -67,8 +62,6 @@ def _make_context_store():
     store = MagicMock()
     store.load = AsyncMock(return_value=None)
     store.save = AsyncMock()
-    store.load_trace_context = AsyncMock(return_value=None)
-    store.save_trace_context = AsyncMock()
     store.save_pause_state = AsyncMock()
     store.load_pause_state = AsyncMock(return_value=None)
     return store

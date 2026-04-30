@@ -311,10 +311,11 @@ class TestSamplingWiring:
 
 
 class TestFileExporterWiring:
-    """The JSONL file exporter (``TracingSettings.file_path``) is additive
-    and standalone-capable.  These tests verify plumbing: the field reaches
-    the provider as a span processor, it coexists with the OTLP exporter,
-    and it can run as the *only* exporter when no endpoint is configured.
+    """The JSONL file exporter is always active when tracing is enabled,
+    writing to ``paths.TRACES_PATH``.  These tests verify plumbing: the
+    file exporter reaches the provider as a span processor, it coexists
+    with the OTLP exporter, and it can run as the *only* exporter when
+    no endpoint is configured.
 
     They deliberately use a real in-process tracer+exporter roundtrip
     (rather than mocking ``FileSpanExporter``) because the whole point of
@@ -322,23 +323,17 @@ class TestFileExporterWiring:
     nothing the user cares about.
     """
 
-    def test_file_path_creates_jsonl_exporter(self, reset_tracer_provider, tmp_path):
-        """When ``file_path`` is set, emitted spans must land in that file.
+    def test_jsonl_file_created_when_tracing_enabled(self, reset_tracer_provider, tmp_path):
+        """When tracing is enabled, emitted spans must land in the JSONL file."""
+        from unittest.mock import patch
 
-        Uses a ``SimpleSpanProcessor`` equivalent path by forcing a flush
-        after a span ends; the BatchSpanProcessor inside ``setup_tracing``
-        honors ``force_flush``.
-        """
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(
-            enabled=True,
-            endpoint="http://localhost:9999",
-            file_path=str(path),
-        )
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, endpoint="http://localhost:9999")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -353,25 +348,19 @@ class TestFileExporterWiring:
 
         assert _json.loads(lines[0])["name"] == "wiring-check"
 
-    def test_file_path_works_without_otlp_endpoint(self, reset_tracer_provider, tmp_path):
-        """File exporter is standalone-capable: if the user only sets
-        ``file_path`` (and leaves the endpoint at the schema default with
-        no Phoenix running), tracing must still initialize and spans must
-        still hit the file.  This is the 'Phoenix is down / offline dev'
-        path.
+    def test_jsonl_file_works_without_otlp_endpoint(self, reset_tracer_provider, tmp_path):
+        """File exporter is standalone-capable: with ``provider="none"`` the
+        file sink still works.  This is the 'Phoenix is down / offline dev'
+        path."""
+        from unittest.mock import patch
 
-        Note: with ``otlp_enabled=True`` (the default), the OTLP
-        exporter is also constructed and will log connection errors
-        to the unreachable endpoint.  The file sink is unaffected.
-        For file-only mode, use ``provider="none"`` or
-        ``otlp_enabled=False``.
-        """
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(enabled=True, file_path=str(path))
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -382,41 +371,20 @@ class TestFileExporterWiring:
         assert path.exists()
         assert len(path.read_text().splitlines()) == 1
 
-    def test_file_path_none_means_no_file_written(self, reset_tracer_provider, tmp_path):
-        """Default (``file_path=None``) must NOT create any file.  Guards
-        against regressions where a helper accidentally defaults the
-        field to a non-None path."""
-        from fin_assist.config.schema import TracingSettings
-        from fin_assist.hub.tracing import setup_tracing
-
-        # A path we then assert does not get created.
-        stray = tmp_path / "should-not-exist.jsonl"
-        config = TracingSettings(enabled=True, endpoint="http://localhost:9999")
-        provider = setup_tracing(config)
-        assert provider is not None
-
-        tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
-        with tracer.start_as_current_span("no-file-span"):
-            pass
-        provider.force_flush(5000)  # type: ignore[attr-defined]
-
-        assert not stray.exists()
-
-    def test_file_path_truncation_applied_to_file_output(self, reset_tracer_provider, tmp_path):
+    def test_truncation_applied_to_file_output(self, reset_tracer_provider, tmp_path):
         """Large string attributes must be truncated in the file output
         too — the ``_TruncatingSpanProcessor`` wrap has to apply uniformly
-        across every exporter attached to the provider, not just OTLP.
-        Without this, large tool outputs would blow up file size even
-        though the OTLP path stays under the gRPC limit.
-        """
+        across every exporter attached to the provider, not just OTLP."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import _MAX_ATTR_BYTES, setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(enabled=True, file_path=str(path))
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         oversized = "x" * (_MAX_ATTR_BYTES * 2)
@@ -427,8 +395,6 @@ class TestFileExporterWiring:
 
         line = path.read_text().splitlines()[0]
         obj = _json.loads(line)
-        # OTel's to_json puts attributes under "attributes"; the value
-        # should have been trimmed well below the original length.
         written = obj["attributes"]["huge"]
         assert len(written) < len(oversized)
         assert "truncated" in written
@@ -522,19 +488,17 @@ class TestNoiseSuppression:
 
     def test_asgi_http_response_body_spans_dropped(self, reset_tracer_provider, tmp_path):
         """ASGI ``http.response.body`` spans (emitted per SSE chunk) must
-        be filtered out before export.  We test this end-to-end via the
-        file exporter: after configuring tracing, synthesizing a span
-        with the ASGI signature, and flushing, the output JSONL must
-        not contain that span.
-        """
+        be filtered out before export."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(enabled=True, file_path=str(path))
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -563,13 +527,15 @@ class TestNoiseSuppression:
         must pass through untouched.
         """
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(enabled=True, file_path=str(path))
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -585,34 +551,23 @@ class TestNoiseSuppression:
 
 
 class TestProviderPreset:
-    """``TracingSettings.provider`` is a human-readable preset that replaces
-    raw OTel env vars for the common case.
+    """``TracingSettings.provider`` is a human-readable preset.
 
     * ``"phoenix"`` — export to Phoenix at the default OTLP/HTTP endpoint.
-      Both OTLP and file sinks are active when ``file_path`` is set.
+      Both OTLP and file sinks are active.
     * ``"none"`` — file-only mode.  No OTLP exporter is constructed, even
       when ``otlp_enabled`` is True.
     * ``None`` (unset) — manual mode, ``otlp_enabled`` controls the decision.
-
-    This class also covers the ``otlp_enabled`` bug fix: before this field
-    existed, setting ``file_path`` without an explicit endpoint silently
-    disabled the OTLP exporter (``otlp=no`` in the hub log).  With
-    ``otlp_enabled=True`` (the default), both sinks are active.
     """
 
     def test_provider_phoenix_builds_otlp_exporter(self, reset_tracer_provider, caplog):
-        """``provider="phoenix"`` must construct the OTLP exporter even when
-        ``file_path`` is set and no explicit endpoint override exists.
-
-        This is the exact scenario that was broken: ``file_path`` set +
-        schema-default endpoint → ``otlp=no`` in the old code.
-        """
+        """``provider="phoenix"`` must construct the OTLP exporter."""
         import logging
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
-        config = TracingSettings(enabled=True, provider="phoenix", file_path="/dev/null")
+        config = TracingSettings(enabled=True, provider="phoenix")
         with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
             setup_tracing(config)
         assert any("otlp=yes" in rec.message for rec in caplog.records)
@@ -630,17 +585,19 @@ class TestProviderPreset:
             setup_tracing(config)
         assert any("otlp=no" in rec.message for rec in caplog.records)
 
-    def test_provider_none_with_file_path_is_file_only(self, reset_tracer_provider, tmp_path):
-        """``provider="none"`` + ``file_path`` = pure file-only tracing.
+    def test_provider_none_is_file_only(self, reset_tracer_provider, tmp_path):
+        """``provider="none"`` = pure file-only tracing.
         Spans must still land in the file."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "traces.jsonl"
-        config = TracingSettings(enabled=True, provider="none", file_path=str(path))
-        provider = setup_tracing(config)
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(config)
         assert provider is not None
 
         tracer = provider.get_tracer("test")
@@ -665,17 +622,14 @@ class TestProviderPreset:
             setup_tracing(config)
         assert any("otlp=no" in rec.message for rec in caplog.records)
 
-    def test_otlp_enabled_default_with_file_path_builds_otlp(self, reset_tracer_provider, caplog):
-        """Bug fix: the default ``otlp_enabled=True`` means both sinks are
-        active even when only ``file_path`` is explicitly set and the
-        endpoint is at the schema default.  Before the fix, this produced
-        ``otlp=no`` silently."""
+    def test_otlp_enabled_default_builds_otlp(self, reset_tracer_provider, caplog):
+        """The default ``otlp_enabled=True`` means both sinks are active."""
         import logging
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
-        config = TracingSettings(enabled=True, file_path="/dev/null")
+        config = TracingSettings(enabled=True)
         with caplog.at_level(logging.INFO, logger="fin_assist.hub.tracing"):
             setup_tracing(config)
         assert any("otlp=yes" in rec.message for rec in caplog.records)
@@ -729,12 +683,14 @@ class TestAttributeHygiene:
 
     def test_logfire_attrs_stripped_from_file_output(self, reset_tracer_provider, tmp_path):
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "h.jsonl"
-        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(TracingSettings(enabled=True, provider="none"))
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -753,16 +709,17 @@ class TestAttributeHygiene:
     def test_final_result_attr_stripped(self, reset_tracer_provider, tmp_path):
         """``final_result`` on an ``agent run`` span duplicates
         ``output.value`` + ``pydantic_ai.all_messages``.  Export should
-        drop it.  Other spans that happen to have a ``final_result``
-        attribute stay untouched — we only strip the pydantic-ai leak.
+        drop it.
         """
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "h.jsonl"
-        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(TracingSettings(enabled=True, provider="none"))
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
@@ -778,16 +735,16 @@ class TestAttributeHygiene:
 
     def test_duplicate_session_id_dropped(self, reset_tracer_provider, tmp_path):
         """When ``session.id`` equals ``fin_assist.context.id`` they are
-        redundant; drop ``session.id``.  When they differ (unlikely but
-        possible in future custom backends), keep both so the user-set
-        ``session.id`` isn't silently erased."""
+        redundant; drop ``session.id``.  When they differ, keep both."""
         import json as _json
+        from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
         from fin_assist.hub.tracing import setup_tracing
 
         path = tmp_path / "h.jsonl"
-        provider = setup_tracing(TracingSettings(enabled=True, file_path=str(path)))
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_tracing(TracingSettings(enabled=True, provider="none"))
         assert provider is not None
 
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]

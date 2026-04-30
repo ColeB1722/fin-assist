@@ -38,12 +38,6 @@
     FIN_DATA_DIR = "./.fin";
     FIN_TRACING__ENABLED = "true";
     FIN_TRACING__PROVIDER = "phoenix";
-    # JSONL sink colocated with other runtime state under $FIN_DATA_DIR.
-    # Runs alongside the OTLP exporter (Phoenix at the default endpoint),
-    # so when Phoenix is down we still capture spans — and coding agents
-    # can grep/jq the file directly.  Delete with `rm .fin/traces.jsonl`
-    # between runs; no rotation yet (tracked as a future follow-up).
-    FIN_TRACING__FILE_PATH = "./.fin/traces.jsonl";
   };
 
   git-hooks.hooks = {

@@ -2,47 +2,20 @@
 
 Closes issue #104 ("CLI traceparent propagation").
 
-Why a CLI tracer at all
-~~~~~~~~~~~~~~~~~~~~~~~
-Before this module existed, each ``fin`` invocation produced *four*
-disconnected traces in Phoenix:
+Before this module, each ``fin`` invocation produced *four* disconnected
+traces (health → discover → agent-card → send-message) because no
+traceparent left the CLI.  This module:
 
-1. ``GET /health`` (from ``ensure_server_running``)
-2. ``GET /agents`` (from ``discover_agents``)
-3. ``GET /agents/<name>`` (A2A AgentCard fetch inside
-   ``ClientFactory.create_from_url``)
-4. ``POST /agents/<name>/:send-message`` (the actual work)
-
-No traceparent left the CLI, so every hub-side HTTP request opened a
-fresh trace.  An approval round-trip produced two more disconnected
-traces, totaling six per invocation.
-
-This module:
-
-* Opens one ``cli.<command>`` root span via :func:`cli_root_span` at
-  the top of every command (``do``, ``talk``, ``serve``, ``status``, ...).
+* Opens one ``cli.<command>`` root span via :func:`cli_root_span`.
 * Installs ``HTTPXClientInstrumentor`` so every outgoing httpx request
   auto-injects W3C ``traceparent`` and ``baggage`` headers.
 * Stamps a unique ``fin_assist.cli.invocation_id`` onto the root span
-  **and** onto OTel Baggage, so the hub can read it on the receiving
-  side (via ``baggage.get_baggage``) and attach it to its own
-  ``fin_assist.task`` span.  That's the join key: the CLI trace and
-  the hub trace live in different trace_ids (separate HTTP boundaries
-  for pause/resume) but both carry the same invocation_id, and any
-  Phoenix query filtering on ``fin_assist.cli.invocation_id`` gets
-  the full round-trip.
+  **and** OTel Baggage, so the hub can attach it to its own
+  ``fin_assist.task`` span.  CLI and hub traces live in different
+  trace_ids (separate HTTP boundaries) but carry the same invocation_id
+  as a join key.
 * Provides :func:`approval_wait_span` so dashboards can subtract
   human-think-time from total CLI wall-clock.
-
-File vs OTLP parity with the hub
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The CLI reads the same ``TracingSettings`` the hub does and writes to
-the same ``file_path`` (``./.fin/traces.jsonl`` in dev).  The file
-exporter's ``FileSpanExporter`` uses a ``threading.Lock`` and line
-buffering so concurrent writes within a process don't interleave.
-Cross-process writes (CLI + hub) rely on POSIX append-mode atomicity
-for small writes.  This is deliberate: operators grep one file, not
-two.
 """
 
 from __future__ import annotations
@@ -132,10 +105,10 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
     def _wrap(inner: BatchSpanProcessor):
         return _DropSpansProcessor(_TruncatingSpanProcessor(inner))
 
-    if config.file_path:
-        from fin_assist.hub.file_exporter import FileSpanExporter
+    from fin_assist.hub.file_exporter import FileSpanExporter
+    from fin_assist.paths import TRACES_PATH
 
-        provider.add_span_processor(_wrap(BatchSpanProcessor(FileSpanExporter(config.file_path))))
+    provider.add_span_processor(_wrap(BatchSpanProcessor(FileSpanExporter(str(TRACES_PATH)))))
 
     # Only construct the OTLP exporter when the operator has opted in
     # via provider preset or otlp_enabled.  ``_want_otlp_exporter``

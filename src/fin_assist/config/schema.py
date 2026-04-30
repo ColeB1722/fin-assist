@@ -63,38 +63,35 @@ class TracingSettings(BaseModel):
 
     * ``provider`` — human-readable preset that replaces raw OTel env
       vars for the common case.  ``"phoenix"`` exports to Phoenix at the
-      default OTLP/HTTP endpoint (both OTLP and file sinks active when
-      ``file_path`` is set).  ``"none"`` is file-only mode (no OTLP
-      exporter constructed).  ``None`` (unset) falls back to manual
-      mode where ``otlp_enabled`` and explicit endpoint/OTel env vars
-      control the decision.  Set via ``FIN_TRACING__PROVIDER=phoenix``.
+      default OTLP/HTTP endpoint (both OTLP and file sinks active).
+      ``"none"`` is file-only mode (no OTLP exporter constructed).
+      ``None`` (unset) falls back to manual mode where ``otlp_enabled``
+      and explicit endpoint/OTel env vars control the decision.
+      Set via ``FIN_TRACING__PROVIDER=phoenix``.
     * ``otlp_enabled`` — whether to build the OTLP exporter at all.
       Defaults to ``True`` so both sinks are active by default.  Set to
       ``False`` for file-only mode when you don't want TCP connect
       attempts to the endpoint on every batch flush.
       ``provider="none"`` overrides this (always off).
-    * ``sampling_ratio`` — ``1.0`` in dev so every trace lands in
-      Phoenix; production can dial it down (``0.1`` = 10% sampled)
-      without code changes.
+    * ``sampling_ratio`` — ``1.0`` in dev so every trace lands;
+      production can dial it down (``0.1`` = 10% sampled) without code
+      changes.
     * ``headers`` — injected into the OTLP exporter for auth on hosted
       backends (Logfire ``authorization: Bearer ...``, Honeycomb
       ``x-honeycomb-team: ...``).  Resolution precedence is
       config-headers > ``OTEL_EXPORTER_OTLP_HEADERS`` > empty.
     * ``event_mode`` — pydantic-ai can emit LLM messages either inline
-      as span attributes or as OTel log events.  Phoenix renders the
-      attribute form, so that's the default; native-OTel backends can
-      flip to ``logs``.
+      as span attributes or as OTel log events.  ``"attributes"`` is the
+      default for OTLP backends that render them; native-OTel backends
+      can flip to ``logs``.
     * ``include_content`` — whether to record full message bodies.  On
-      by default so Phoenix's chat viewer has something to show; turn
-      off for shared or regulated deployments and the bridge will emit
-      only counts/roles.
-    * ``file_path`` — optional JSONL sink that writes every span as a
-      line of OTLP/JSON.  Runs alongside the OTLP exporter (or alone,
-      if no endpoint is configured) so traces survive when the remote
-      collector is offline and can be grep'd/jq'd directly.  Defaults
-      to ``None`` (disabled); relative paths are resolved against the
-      CWD.  When enabled, the canonical default path is
-      ``paths.TRACES_PATH`` (``$FIN_DATA_DIR/traces.jsonl``).
+      by default; turn off for shared or regulated deployments and the
+      bridge will emit only counts/roles.
+
+    When tracing is enabled, a JSONL file sink always writes to
+    ``paths.TRACES_PATH`` (``$FIN_DATA_DIR/traces.jsonl``).  This is
+    not configurable — toggling is via ``enabled``, not via a separate
+    path knob.
     """
 
     enabled: bool = False
@@ -106,7 +103,6 @@ class TracingSettings(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     event_mode: Literal["attributes", "logs"] = "attributes"
     include_content: bool = True
-    file_path: str | None = None
     otlp_enabled: bool = True
 
 

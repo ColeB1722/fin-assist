@@ -1,40 +1,20 @@
 """OpenTelemetry tracing bootstrap for the fin-assist hub.
 
-Vendor-agnostic by design.  The module knows nothing about Phoenix,
-Logfire, Tempo, Jaeger, or any specific OTel backend — it only knows
-how to build an OTLP exporter, a TracerProvider, and invoke each
-registered backend's ``install_tracing`` hook (which is where backend-
-specific instrumentation like the OpenInference bridge lives).
+Vendor-agnostic — builds an OTLP exporter and TracerProvider using raw
+OTel SDK (not ``phoenix.otel.register()``), so any OTLP-compatible
+backend works.  Framework-specific instrumentation lives in each
+backend's ``install_tracing`` hook.
 
-Entry point: ``setup_tracing(config, backends=...)``.  Called once at
-hub startup from ``cli/main.py:_serve_command``.  No-op when tracing is
-disabled.
+Entry point: :func:`setup_tracing`.  No-op when tracing is disabled.
 
-Configuration precedence (highest wins)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-1. Explicit non-default value in ``TracingSettings`` (``FIN_TRACING__*``
-   env or config.toml).
-2. Standard OTel env vars: ``OTEL_EXPORTER_OTLP_ENDPOINT``,
-   ``OTEL_EXPORTER_OTLP_HEADERS``, ``OTEL_EXPORTER_OTLP_PROTOCOL``.
-3. Schema default (``http://localhost:6006/v1/traces`` — Phoenix's
-   default OTLP/HTTP port, but nothing else in the code assumes Phoenix).
+Configuration precedence (highest wins):
+  1. Explicit non-default ``TracingSettings`` value
+  2. Standard OTel env vars (``OTEL_EXPORTER_OTLP_*``)
+  3. Schema default (``http://localhost:6006/v1/traces``)
 
-Why we don't use ``phoenix.otel.register()``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-That helper couples the process to Phoenix's API.  Raw OTel SDK is a
-dozen extra lines and works with any OTLP-compatible backend.  Users
-who want to point at Tempo, Jaeger, Logfire, or their own renderer do
-so via env vars without editing code.
-
-Attribute-size truncation
-~~~~~~~~~~~~~~~~~~~~~~~~~
-LLM instrumentation produces spans whose attribute strings
-(``gen_ai.input.messages`` / ``gen_ai.output.messages``) can exceed
-gRPC's default 4MB message limit when tool outputs are large.  The
-``_TruncatingSpanProcessor`` wraps the export pipeline and trims any
-string attribute longer than ``_MAX_ATTR_BYTES`` before export.  This
-keeps the gRPC path usable and the UI snappy without changing span
-semantics.
+``_TruncatingSpanProcessor`` trims string attributes over
+``_MAX_ATTR_BYTES`` before export to stay under gRPC's 4MB message
+limit.
 """
 
 from __future__ import annotations
@@ -273,14 +253,6 @@ def _want_otlp_exporter(config: TracingSettings) -> bool:
     2. ``otlp_enabled=False`` → always False (explicit opt-out).
     3. ``provider`` is any non-None value (e.g. ``"phoenix"``) → True.
     4. ``provider=None`` (manual mode) → ``otlp_enabled`` (default True).
-
-    Before this function existed, the OTLP decision depended on
-    whether ``file_path`` was set: ``file_path is None or
-    _otlp_explicitly_configured(config)``.  Setting ``file_path``
-    without an explicit endpoint silently disabled OTLP — a confusing
-    default.  ``otlp_enabled=True`` (the new default) makes both
-    sinks active by default; ``provider="none"`` or
-    ``otlp_enabled=False`` opt out explicitly.
     """
     if config.provider == "none":
         return False
@@ -399,7 +371,7 @@ def setup_tracing(
     provider = TracerProvider(resource=resource, sampler=sampler)
 
     # Construct the OTLP exporter only when the user has opted into it.
-    # ``_want_otlp_exporter`` resolves provider / otlp_enabled / file_path
+    # ``_want_otlp_exporter`` resolves provider / otlp_enabled
     # into a single boolean.  See that function for the full decision table.
     #
     # Processor stack (outermost → innermost):
@@ -424,11 +396,11 @@ def setup_tracing(
     # Attach the JSONL file sink as a second (or only) processor.  It
     # rides the same truncating + drop wrappers so the file output stays
     # clean and bounded even when OTLP isn't configured.
-    if config.file_path:
-        from fin_assist.hub.file_exporter import FileSpanExporter
+    from fin_assist.hub.file_exporter import FileSpanExporter
+    from fin_assist.paths import TRACES_PATH
 
-        file_exporter = FileSpanExporter(config.file_path)
-        provider.add_span_processor(_wrap(BatchSpanProcessor(file_exporter)))
+    file_exporter = FileSpanExporter(str(TRACES_PATH))
+    provider.add_span_processor(_wrap(BatchSpanProcessor(file_exporter)))
 
     from opentelemetry.trace import set_tracer_provider
 
@@ -476,7 +448,7 @@ def setup_tracing(
         config.exporter_protocol,
         config.project_name,
         sum(1 for b in backends if hasattr(b, "install_tracing")),
-        config.file_path or "-",
+        str(TRACES_PATH),
         "yes" if want_otlp else "no",
         config.provider or "-",
     )

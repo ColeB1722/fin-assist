@@ -2,31 +2,24 @@
 
 Two layers:
 
-1. **OpenInference semantic conventions** — re-exported verbatim from
+1. **OpenInference semantic conventions** — re-exported from
    ``openinference.semconv.trace``.  Every OpenInference attribute used
-   in fin-assist code should come through this module rather than being
-   hand-typed as a string.  Rationale: hand-typed strings drift silently
-   (e.g. ``"input.mime_type" = "json"`` vs the canonical
-   ``"application/json"`` that Phoenix's LLM renderer expects, a bug
-   fixed by this refactor).
+   in fin-assist code should come through this module to prevent silent
+   drift (e.g. wrong MIME type values that break LLM renderers).
 
-2. **fin-assist platform attributes** — our own ``fin_assist.*`` namespace
-   for things that OpenInference does not model (task/context IDs, the
-   approval flow, step counters).  Collected on ``FinAssistAttributes``
-   so there is a single discoverable source of truth.
+2. **fin-assist platform attributes** — ``fin_assist.*`` namespace for
+   concepts OpenInference doesn't model (task/context IDs, approval
+   flow, step counters).  Collected on ``FinAssistAttributes``.
 
-Span **names** are also centralized on ``SpanNames`` so renames happen in
-one place.  This is especially useful for the two-span HITL flow
-(``approval_request`` at pause, ``approval_decided`` at resume) — the
-naming is load-bearing for Phoenix's span-filter UX.
+Span names are centralized on ``SpanNames`` so renames happen in one
+place.
 
-Attribute precedence in executor.py and backends is:
+Attribute precedence in executor.py and backends:
 
-- Use ``SpanAttributes.*`` / ``OpenInferenceSpanKindValues.*.value`` /
-  ``OpenInferenceMimeTypeValues.*.value`` where OpenInference has a
-  convention for the concept.
-- Use ``FinAssistAttributes.*`` for platform-specific additions.
-- Use ``SpanNames.*`` for span names.
+- ``SpanAttributes.*`` / ``OpenInferenceSpanKindValues.*.value`` /
+  ``OpenInferenceMimeTypeValues.*.value`` for OpenInference conventions.
+- ``FinAssistAttributes.*`` for platform-specific additions.
+- ``SpanNames.*`` for span names.
 """
 
 from __future__ import annotations
