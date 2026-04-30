@@ -100,15 +100,17 @@ class AgentBackend(Protocol):
     def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any: ...
 
     # ``install_tracing`` is **optional** — backends that do not wrap an
-    # LLM framework (e.g. test fakes) may omit it entirely.  The hub's
-    # ``setup_tracing`` performs a ``hasattr`` check before calling, so
-    # the Protocol only documents the intended signature without
-    # requiring every conforming type to implement it.
+    # LLM framework (e.g. test fakes, future non-LLM backends) may omit
+    # it entirely.  The hub's ``setup_tracing`` uses ``hasattr`` to
+    # detect the method before calling, so conforming types don't have
+    # to implement it.
     #
-    # Backends that wrap a framework should register any framework-
-    # specific SpanProcessors (e.g. OpenInferenceSpanProcessor) on the
-    # provided TracerProvider and flip any framework-global
-    # instrumentation flags (e.g. pydantic-ai's ``Agent.instrument_all``).
+    # When present, the method attaches any framework-specific
+    # SpanProcessors (e.g. ``OpenInferenceSpanProcessor``) to the
+    # provided TracerProvider and flips framework-global instrumentation
+    # flags (e.g. ``Agent.instrument_all``).  This is the seam that
+    # keeps the hub framework-neutral: the hub builds the OTel pipeline,
+    # each backend hooks in its own framework's instrumentation.
 
 
 class _PydanticAIStepHandle:
@@ -313,21 +315,19 @@ class PydanticAIBackend:
     ) -> None:
         """Attach pydantic-ai → OpenInference tracing to *provider*.
 
-        Called once per backend by ``hub.tracing.setup_tracing`` after
-        the provider is registered globally.  Adds the
-        ``OpenInferenceSpanProcessor`` so pydantic-ai's ``gen_ai.*``
-        attributes are translated to OpenInference ``llm.*`` at span end,
-        and flips pydantic-ai's global instrumentation flag via
-        ``Agent.instrument_all``.
+        Called once by ``hub.tracing.setup_tracing`` after the provider is
+        registered globally.  Delegates to
+        ``pydantic_ai_tracing.install_pydantic_ai_instrumentation``,
+        which adds ``OpenInferenceSpanProcessor`` (translates pydantic-ai's
+        ``gen_ai.*`` attributes to OpenInference ``llm.*`` at span end) and
+        flips ``Agent.instrument_all`` (enables pydantic-ai's global span
+        emission).
 
-        Args:
-            provider: The hub-built ``TracerProvider``.
-            include_content: Forward to pydantic-ai — include full
-                message bodies in spans (``True``) or only metadata
-                (``False``).
-            event_mode: Forward to pydantic-ai — ``"attributes"`` puts
-                LLM messages on the span, ``"logs"`` uses OTel log
-                events instead.
+        ``install_tracing`` is optional on the ``AgentBackend`` protocol —
+        the hub uses ``hasattr`` to detect it.  This backend implements it
+        because pydantic-ai has framework-specific instrumentation that
+        must be wired into the OTel pipeline.  A future backend wrapping a
+        framework without custom instrumentation would simply omit it.
 
         Idempotent — see ``pydantic_ai_tracing.install_pydantic_ai_instrumentation``.
         """

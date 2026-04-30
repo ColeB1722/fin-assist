@@ -3,9 +3,13 @@
 Two layers:
 
 1. **OpenInference semantic conventions** — re-exported from
-   ``openinference.semconv.trace``.  Every OpenInference attribute used
-   in fin-assist code should come through this module to prevent silent
-   drift (e.g. wrong MIME type values that break LLM renderers).
+   ``openinference.semconv.trace``.  OpenInference is a set of attribute
+   *names* for LLM/AI spans (e.g. ``input.value``, ``tool.name``,
+   ``openinference.span.kind``), not a framework or SDK.  Using these
+   names makes spans intelligible to any OTel backend; backends that
+   understand OpenInference (e.g. Phoenix) render them with
+   domain-specific UI.  Every OpenInference attribute used in fin-assist
+   code should come through this module to prevent silent drift.
 
 2. **fin-assist platform attributes** — ``fin_assist.*`` namespace for
    concepts OpenInference doesn't model (task/context IDs, approval
@@ -13,13 +17,6 @@ Two layers:
 
 Span names are centralized on ``SpanNames`` so renames happen in one
 place.
-
-Attribute precedence in executor.py and backends:
-
-- ``SpanAttributes.*`` / ``OpenInferenceSpanKindValues.*.value`` /
-  ``OpenInferenceMimeTypeValues.*.value`` for OpenInference conventions.
-- ``FinAssistAttributes.*`` for platform-specific additions.
-- ``SpanNames.*`` for span names.
 """
 
 from __future__ import annotations
@@ -63,18 +60,16 @@ class FinAssistAttributes:
 
     TASK_STATE = "fin_assist.task.state"
     """Terminal lifecycle state of a task, set on the ``fin_assist.task``
-    span before it ends.  Distinct from A2A's ``TaskState`` (which is
-    the wire protocol state) because it collapses uninteresting A2A
-    states and distinguishes interesting platform sub-states that A2A
-    doesn't model (e.g. ``paused_for_approval`` vs generic INPUT_REQUIRED).
+    span before it ends.  Distinct from A2A's ``TaskState`` (wire protocol
+    state) because it collapses uninteresting A2A states and distinguishes
+    platform sub-states that A2A doesn't model (e.g.
+    ``paused_for_approval`` vs generic INPUT_REQUIRED).
 
     Valid values live on :class:`TaskStateValues`.
 
-    One attribute with a small enum makes Phoenix filtering trivial:
-    one equality check per state instead of a compound predicate over
-    several booleans.  Replaces a short-lived
-    ``fin_assist.task.paused_for_approval`` boolean that never shipped
-    outside this branch."""
+    One attribute with a small enum makes filtering trivial: one equality
+    check per state instead of a compound predicate over several booleans.
+    """
 
     CLI_INVOCATION_ID = "fin_assist.cli.invocation_id"
     """Matches the CLI-side attribute of the same name.  Stamped on the

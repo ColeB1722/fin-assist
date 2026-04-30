@@ -131,7 +131,7 @@ class _ExecutionContext:
     - ``task_span`` — the one root ``fin_assist.task`` span for this run.
     - ``current_step_span`` — the currently-open ``fin_assist.step`` span,
       or ``None`` between ``step_start`` / ``step_end`` boundaries.
-    - ``active_tool_spans`` — dict keyed by ``tool_call_id``.  pydantic-ai
+    - ``active_tool_spans`` — dict keyed by ``tool_call_id``.  A backend
       can emit multiple ``tool_call`` events within a single step (parallel
       tool calls) whose results arrive interleaved; keying by
       ``tool_call_id`` keeps each ``tool_call`` → ``tool_result`` pair
@@ -286,9 +286,9 @@ class Executor(AgentExecutor):
 
         # Resume detection needs to happen *before* the task span is
         # started so the task span can carry a Link back to the paused
-        # approval_request span.  The Link signals to Phoenix that this
+        # approval_request span.  The Link tells OTel backends that this
         # trace is a continuation of a prior trace — the operator sees
-        # a "linked" affordance and can click through.
+        # a "linked" affordance and can navigate between them.
         approval_decisions = self._extract_approval_decisions(context.message)
         prior_trace_ctx: tuple[int, int, int] | None = None
         prior_user_input: str = ""
@@ -304,7 +304,7 @@ class Executor(AgentExecutor):
 
         # On resume, the incoming message is just the approval_result
         # metadata — no prompt.  Hydrating from the stored pause state
-        # gives Phoenix a meaningful ``input.value`` on the resumed
+        # gives OTel backends a meaningful ``input.value`` on the resumed
         # task span instead of an empty string.
         if not user_input and prior_user_input:
             user_input = prior_user_input
@@ -325,9 +325,9 @@ class Executor(AgentExecutor):
             SpanAttributes.INPUT_VALUE: user_input,
             # Start in ``running`` — ``completed``/``failed``/``paused_for_approval``
             # overwrite this exactly once before span end.  Setting it at
-            # start (rather than only at end) means Phoenix's live-trace
-            # view can display the state while the task is still in
-            # flight.
+            # start (rather than only at end) means OTel backends with
+            # live-trace views can display the state while the task is
+            # still in flight.
             FinAssistAttributes.TASK_STATE: TaskStateValues.RUNNING,
         }
 
@@ -493,10 +493,10 @@ class Executor(AgentExecutor):
         """Save history + paused approval span context, move task to
         ``requires_input``.
 
-        Trace-context persistence is what makes pause → resume one
-        browsable flow in Phoenix.  Without it, the resume's new trace
-        has no Link back to the paused ``approval_request`` span and the
-        user sees two disconnected traces.
+        Trace-context persistence makes pause → resume one browsable flow
+        in OTel backends.  Without it, the resume's new trace has no Link
+        back to the paused ``approval_request`` span and the operator sees
+        two disconnected traces.
         """
         if ctx.task_span is not None:
             ctx.task_span.set_attribute(
@@ -734,9 +734,9 @@ class Executor(AgentExecutor):
         between this span's end and the ``approval_decided`` span that
         opens when the task resumes (see architecture.md → HITL tracing).
 
-        The span carries ``approval.status = "paused"`` so Phoenix/other
-        UIs can filter pending approvals without needing to know about
-        the downstream decision.
+        The span carries ``approval.status = "paused"`` so OTel backends
+        can filter pending approvals without needing to know about the
+        downstream decision.
         """
         parent = ctx.current_step_span or ctx.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
@@ -791,7 +791,7 @@ class Executor(AgentExecutor):
         Separated from ``_extract_approval_results`` so the executor can
         reason about the raw decisions (for the ``approval_decided``
         span, the Link, the decision summary attribute) without having
-        to round-trip through the framework-specific
+        to round-trip through the backend-specific
         ``DeferredToolResults`` object.  Returns an empty list when no
         ``approval_result`` metadata part is present, which is the
         signal to ``execute()`` that this is a fresh (non-resume) run.
@@ -821,7 +821,7 @@ class Executor(AgentExecutor):
     def _extract_approval_results(self, message: Any) -> Any | None:
         """Check if an incoming A2A message contains approval decisions.
 
-        Returns framework-specific ``DeferredToolResults`` if found,
+        Returns backend-specific ``DeferredToolResults`` if found,
         ``None`` otherwise.  Retained for callers that want the
         ready-to-send deferred results; prefer
         ``_extract_approval_decisions`` when you need the raw list.
@@ -871,7 +871,7 @@ class Executor(AgentExecutor):
         Carries the aggregate decision (``approved``/``denied``/
         ``overridden``) as an attribute and a ``Link`` back to the
         paused ``approval_request`` span (tagged ``approval_for``) so
-        Phoenix can render the full decision trail.
+        OTel backends can render the full decision trail.
 
         With multiple decisions in one resume message, the aggregate
         rule is: if **any** decision is a denial, the span's decision

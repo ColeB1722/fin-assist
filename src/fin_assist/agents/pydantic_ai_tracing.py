@@ -6,22 +6,25 @@ for the purpose of configuring instrumentation.  Everything else in the
 tracing path stays on vanilla OpenTelemetry + the OpenInference semantic
 conventions (attribute names only — no instrumentor imports).
 
-Why the split is important
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-The platform (``hub/tracing.py``, ``hub/executor.py``) is LLM-framework
-agnostic; it only knows about OTel.  Each backend (``PydanticAIBackend``,
-future ``LangChainBackend``, etc.) is responsible for attaching any
-framework-specific instrumentation.  The hub invokes ``install_tracing``
-once per backend at startup, passing the configured ``TracerProvider``.
+Why this is a separate module from backend.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``PydanticAIBackend`` (backend.py) implements the ``AgentBackend``
+protocol for per-agent concerns: message conversion, running the agent,
+serializing history.  Tracing instrumentation is a *provider-level*
+concern — it runs once per ``TracerProvider`` at startup, not once per
+agent.  The split keeps provider-level OTel wiring separate from
+per-agent request handling.
+
+A future ``LangChainBackend`` would have its own ``langchain_tracing.py``
+module following the same pattern.
 
 What the bridge does
 ~~~~~~~~~~~~~~~~~~~~
 - Adds ``OpenInferenceSpanProcessor`` to the provider.  This is an
   **additive** processor: at ``on_end`` it reads pydantic-ai's emitted
   ``gen_ai.*`` attributes and writes the equivalent OpenInference
-  ``llm.*`` attributes (plus ``openinference.span.kind = "LLM"``) in
-  place on the span.  The original ``gen_ai.*`` attrs are preserved so
-  vanilla OTel consumers are unaffected.
+  ``llm.*`` attributes in place on the span.  The original ``gen_ai.*``
+  attrs are preserved so vanilla OTel consumers are unaffected.
 - Calls ``Agent.instrument_all(InstrumentationSettings(include_content=True))``
   to flip pydantic-ai's global instrumentation flag.  Must run before
   any ``Agent`` instance is built that should emit spans.
@@ -69,13 +72,13 @@ def install_pydantic_ai_instrumentation(
             is added to it so ``gen_ai.*`` spans get enriched into
             ``llm.*`` attributes at ``on_end``.
         include_content: Whether pydantic-ai should include full message
-            bodies in the emitted spans.  ``True`` in dev so Phoenix's
-            chat viewer has content to render.  Flip to ``False`` in
-            privacy-sensitive / shared deployments.
+            bodies in the emitted spans.  ``True`` gives OTel backends
+            content to render in chat views; ``False`` for privacy-
+            sensitive / shared deployments.
         event_mode: ``"attributes"`` embeds LLM messages as span
-            attributes (Phoenix's preferred form); ``"logs"`` emits
-            them as OTel log events for backends that render logs
-            natively.
+            attributes (OpenInference's preferred form for backends that
+            render chat views); ``"logs"`` emits them as OTel log events
+            for backends that render logs natively.
     """
     global _agent_instrumented
 

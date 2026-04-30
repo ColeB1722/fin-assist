@@ -94,10 +94,29 @@ class FileSpanExporter(SpanExporter):
             return SpanExportResult.FAILURE
 
     def force_flush(self, timeout_millis: int = 30_000) -> bool:
-        """Flush buffered writes to the OS.  Called by the
-        BatchSpanProcessor on ``provider.force_flush`` and at
-        shutdown; must return True on success so the processor
-        doesn't log a spurious flush-failed warning."""
+        """Flush buffered writes to the OS.
+
+        Called by ``BatchSpanProcessor.force_flush`` (which is called by
+        ``TracerProvider.force_flush``).  The OTel shutdown lifecycle is:
+
+        1. ``provider.force_flush(timeout)`` — drains every processor's
+           pending batch, which calls ``exporter.force_flush`` on each.
+           This is the *last chance* to get in-flight spans to disk or
+           over the network before shutdown.
+        2. ``provider.shutdown()`` — calls ``processor.shutdown()``,
+           which calls ``exporter.shutdown()`` on each.  After this no
+           further exports are possible.
+
+        ``force_flush`` writes buffered Python-level data to the OS
+        (via ``file.flush()``) but does *not* guarantee the data hits
+        disk — that requires ``fsync``, which is too expensive per
+        batch.  The OS flushes its own buffers asynchronously; in
+        practice, the line-buffered file (``buffering=1``) means each
+        completed line is visible to ``cat``/``grep`` immediately.
+
+        Returns ``True`` on success so the processor doesn't log a
+        spurious flush-failed warning.
+        """
         if self._closed:
             return True
         try:
@@ -109,8 +128,13 @@ class FileSpanExporter(SpanExporter):
         return True
 
     def shutdown(self) -> None:
-        """Close the underlying file.  Idempotent — ``TracerProvider``
-        and ``BatchSpanProcessor`` may both call this during teardown."""
+        """Close the underlying file.
+
+        Called by ``BatchSpanProcessor.shutdown`` during
+        ``TracerProvider.shutdown``.  Flushes pending data before
+        closing.  Idempotent — both ``TracerProvider`` and
+        ``BatchSpanProcessor`` may call this during teardown.
+        """
         with self._lock:
             if self._closed:
                 return

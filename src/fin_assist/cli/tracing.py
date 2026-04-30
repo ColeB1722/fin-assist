@@ -1,21 +1,44 @@
 """CLI-side OpenTelemetry tracer — one root span per ``fin`` invocation.
 
-Closes issue #104 ("CLI traceparent propagation").
+Each ``fin`` command produces a ``cli.<command>`` root span that covers
+the full CLI wall-clock time, including all HTTP round-trips to the hub.
+This module:
 
-Before this module, each ``fin`` invocation produced *four* disconnected
-traces (health → discover → agent-card → send-message) because no
-traceparent left the CLI.  This module:
-
-* Opens one ``cli.<command>`` root span via :func:`cli_root_span`.
+* Opens the root span via :func:`cli_root_span`.
 * Installs ``HTTPXClientInstrumentor`` so every outgoing httpx request
   auto-injects W3C ``traceparent`` and ``baggage`` headers.
 * Stamps a unique ``fin_assist.cli.invocation_id`` onto the root span
   **and** OTel Baggage, so the hub can attach it to its own
-  ``fin_assist.task`` span.  CLI and hub traces live in different
-  trace_ids (separate HTTP boundaries) but carry the same invocation_id
-  as a join key.
+  ``fin_assist.task`` span.
 * Provides :func:`approval_wait_span` so dashboards can subtract
   human-think-time from total CLI wall-clock.
+
+Why a separate CLI tracer (not just the hub's)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The CLI and hub are separate processes — the hub is a long-lived server,
+the CLI is a short-lived client.  They cannot share a TracerProvider.
+Each process emits its own trace with its own ``trace_id``.  The
+``traceparent`` header propagates the *span context* (not the trace) so
+the hub's spans are children of the CLI's HTTP-client span within the
+hub's own trace.
+
+This produces two spans that cover the same logical operation (the CLI
+root and the hub's ``fin_assist.task`` span) but from different
+perspectives:
+
+* The CLI root span measures wall-clock time from the user's terminal,
+  including network latency and human think-time during approval prompts.
+* The hub task span measures server-side processing time only.
+
+This is the standard pattern for distributed tracing across service
+boundaries — it's how every HTTP microservice instrumented with OTel
+works.  The ``invocation_id`` join key lets OTel backends correlate the
+two traces into a single logical operation view.
+
+The alternative — having the CLI create one trace and having the hub
+continue it — would require the CLI to pass its full TracerProvider
+configuration to the hub, which is impractical across process boundaries
+and would collapse the useful distinction between client and server spans.
 """
 
 from __future__ import annotations

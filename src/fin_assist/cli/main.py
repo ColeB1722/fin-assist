@@ -214,11 +214,15 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
 
     # Build backends *before* tracing setup so we can hand them to
     # ``setup_tracing`` for framework-specific instrumentation.  Each
-    # backend owns its own ``install_tracing`` hook (see
-    # ``AgentBackend`` protocol) which attaches framework-level
-    # processors (e.g. OpenInferenceSpanProcessor for pydantic-ai) and
-    # flips framework globals (e.g. ``Agent.instrument_all``) — keeping
-    # the hub itself vendor-neutral.
+    # backend owns an ``install_tracing`` hook which attaches framework-
+    # level processors (e.g. OpenInferenceSpanProcessor for pydantic-ai)
+    # and flips framework globals (e.g. ``Agent.instrument_all``) —
+    # keeping the hub itself framework-neutral.
+    #
+    # The ordering is: backends → setup_tracing → create app → instrument
+    # app.  Each step depends on the output of the previous one:
+    #   - setup_tracing needs backends (to call install_tracing)
+    #   - FastAPIInstrumentor needs the app object (doesn't exist yet)
     from fin_assist.agents.backend import PydanticAIBackend
     from fin_assist.agents.tools import create_default_registry
     from fin_assist.hub.tracing import setup_tracing
@@ -238,6 +242,11 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     )
 
     if config.tracing.enabled:
+        # FastAPI auto-instrumentation is separate from setup_tracing
+        # because it requires the app object, which doesn't exist until
+        # after create_hub_app.  This is an ASGI-level concern (automatic
+        # ``http.server.request`` spans), distinct from the framework-
+        # specific backend hooks installed by setup_tracing.
         try:
             from opentelemetry.instrumentation.fastapi import (
                 FastAPIInstrumentor,  # type: ignore[import-untyped]

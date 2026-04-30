@@ -1,9 +1,11 @@
-"""OpenTelemetry tracing bootstrap for the fin-assist hub.
+"""OTel tracing bootstrap for the fin-assist hub.
 
-Vendor-agnostic — builds an OTLP exporter and TracerProvider using raw
-OTel SDK (not ``phoenix.otel.register()``), so any OTLP-compatible
-backend works.  Framework-specific instrumentation lives in each
-backend's ``install_tracing`` hook.
+Uses the raw OTel SDK (TracerProvider, BatchSpanProcessor, OTLP
+exporters) with OpenInference semantic conventions for LLM attribute
+names.  Any OTLP-compatible backend (Phoenix, Jaeger, Tempo, etc.)
+can consume the exported spans.  Framework-specific instrumentation
+(e.g. pydantic-ai's OpenInferenceSpanProcessor) is delegated to each
+backend's ``install_tracing`` hook so the hub stays framework-neutral.
 
 Entry point: :func:`setup_tracing`.  No-op when tracing is disabled.
 
@@ -12,9 +14,14 @@ Configuration precedence (highest wins):
   2. Standard OTel env vars (``OTEL_EXPORTER_OTLP_*``)
   3. Schema default (``http://localhost:6006/v1/traces``)
 
-``_TruncatingSpanProcessor`` trims string attributes over
-``_MAX_ATTR_BYTES`` before export to stay under gRPC's 4MB message
-limit.
+Two SpanProcessor wrappers sit between the export pipeline and the
+real exporters:
+
+* Noise filtering — drops framework-internal spans (e.g. ASGI
+  per-chunk response spans) that have no diagnostic value.
+* Attribute hygiene — scrbs noise attributes leaked by upstream
+  instrumentors (e.g. ``logfire.*`` from pydantic-ai) and truncates
+  oversized string attributes to stay under gRPC's 4MB message limit.
 """
 
 from __future__ import annotations
@@ -35,19 +42,16 @@ logger = logging.getLogger(__name__)
 _MAX_ATTR_BYTES = 50_000
 
 
-# Keys that are scrubbed from every span's attributes before export.
-# Two sources of noise:
+# Attribute keys scrubbed from every span before export.  These are noise
+# leaked by upstream instrumentors — they carry no diagnostic value for
+# downstream consumers and bloat span size.
 #
-# * ``logfire.*`` — pydantic-ai uses logfire as its internal tracing
-#   front-end.  When OpenInference bridges the span, the logfire
-#   attributes ride along with no semantic value for downstream
-#   consumers (they're the rendered log message + its JSON schema,
-#   both of which we already have in dedicated fields).
-# * ``final_result`` — pydantic-ai's dump of the full ``RunResult`` on
-#   the ``agent run`` span.  Already redundantly available as
-#   ``output.value`` (OpenInference) and ``pydantic_ai.all_messages``
-#   (pydantic-ai's own inventory attribute).  A single non-trivial
-#   tool output gets stored three times otherwise.
+# * ``logfire.*`` — pydantic-ai's internal tracing front-end emits these
+#   as rendered log messages + JSON schemas, both already available in
+#   dedicated OpenInference fields.
+# * ``final_result`` — pydantic-ai dumps the full ``RunResult`` on the
+#   ``agent run`` span.  Redundantly available as ``output.value``
+#   (OpenInference) and ``pydantic_ai.all_messages``.
 _SCRUB_ATTR_PREFIXES = ("logfire.",)
 _SCRUB_ATTR_NAMES = frozenset({"final_result"})
 
@@ -55,17 +59,15 @@ _SCRUB_ATTR_NAMES = frozenset({"final_result"})
 def _scrub_span_attributes(span) -> None:
     """Delete attribute keys that leak from upstream instrumentors.
 
-    Applied at ``on_end`` before export.  Mirrors the mutation
-    contract in ``_truncate_span_attributes`` — see that function for
-    the rationale behind mutating ``_attributes`` directly vs.
-    ``set_attribute`` / ``pop`` on the read-only proxy.
+    Applied at ``on_end`` before export.  Mutates ``span._attributes``
+    directly because ``set_attribute`` no-ops after ``end()`` and the
+    read-only snapshot passed to multi-processor setups doesn't expose a
+    public write API.
 
     Also drops ``session.id`` when it equals ``fin_assist.context.id``:
-    carrying both is redundant since we stamp both with the same value
-    inside the executor, but legacy dashboards may still read
-    ``session.id`` so we keep it whenever an operator set it to a
-    different value (can't happen in fin_assist code today, but a
-    future backend may want ``session.id`` = tenant-id).
+    both are set to the same value by the executor, so carrying both is
+    redundant.  Kept when the values differ (a future backend may set
+    ``session.id`` to a different value, e.g. a tenant identifier).
     """
     attributes = getattr(span, "_attributes", None) or span.attributes
     if not attributes:
@@ -91,27 +93,14 @@ def _scrub_span_attributes(span) -> None:
 def _truncate_span_attributes(span) -> None:
     """Truncate string attributes that exceed the export size limit.
 
-    LLM instrumentation (pydantic-ai) embeds full message history as JSON
-    in ``gen_ai.input.messages`` and ``gen_ai.output.messages``.  Tool
-    results can be very large (e.g. ``find . -type f`` returning 70K+ lines),
-    producing span attributes that exceed gRPC's 4MB message limit.
+    LLM instrumentation can embed full message history as JSON in span
+    attributes (e.g. ``gen_ai.input.messages``), and tool results can be
+    very large, producing attributes that exceed gRPC's 4MB message limit.
 
-    Truncates any string attribute longer than ``_MAX_ATTR_BYTES`` (50KB),
-    replacing it with a truncated marker.  Applied at ``on_end`` before
-    export.
-
-    Implementation note — why we mutate ``_attributes`` directly
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    ``span.set_attribute`` no-ops after ``end()`` (OTel logs a warning
-    and drops the write) and isn't defined at all on the read-only
-    snapshots OTel passes to multi-processor setups.  The underlying
-    ``_attributes`` is a plain mapping that both ``_Span`` and
-    ``ReadableSpan`` expose, and mutating it here is the only way to
-    rewrite a value at ``on_end`` time without re-implementing the
-    attribute pipeline.  This is a grey-area API but OTel's own
-    ``BatchSpanProcessor`` relies on the same invariant (the span being
-    read-only after end), so we're safe as long as we only mutate
-    values, never keys.
+    Replaces any string attribute longer than ``_MAX_ATTR_BYTES`` (50KB)
+    with a truncated marker.  Like ``_scrub_span_attributes``, this
+    mutates ``span._attributes`` directly because the public API is
+    read-only after ``end()``.
     """
     attributes = getattr(span, "_attributes", None) or span.attributes
     if not attributes:
@@ -135,13 +124,14 @@ class _TruncatingSpanProcessor(SpanProcessor):
     """SpanProcessor that scrubs noise attributes and truncates large
     string attributes before export.
 
-    Order at ``on_end``:
-      1. ``_scrub_span_attributes`` — delete logfire-leaked attrs,
-         drop ``final_result``, dedupe ``session.id``.  Done first so
-         we don't waste work truncating attrs we're about to delete.
-      2. ``_truncate_span_attributes`` — trim any remaining string
-         attribute over ``_MAX_ATTR_BYTES``.
+    Processing order at ``on_end``:
+      1. Scrub noise attributes (leaked instrumentor keys, redundant
+         ``session.id``).
+      2. Truncate oversized string attributes.
       3. Forward to the downstream delegate (the batch exporter).
+
+    Scrubbing before truncation avoids wasting work on attributes that
+    are about to be deleted.
     """
 
     def __init__(self, delegate: SpanProcessor) -> None:
@@ -230,9 +220,9 @@ def _default_endpoint() -> str:
 def _resolve_endpoint(config: TracingSettings) -> str:
     """Resolve the effective OTLP endpoint: explicit config > env > default.
 
-    ``TracingSettings.endpoint`` defaults to Phoenix's local HTTP port.
-    When it equals the default we treat it as unset and fall back to
-    ``OTEL_EXPORTER_OTLP_ENDPOINT`` (standard OTel env var).
+    When the config endpoint equals the schema default we treat it as
+    unset and fall back to ``OTEL_EXPORTER_OTLP_ENDPOINT`` (standard
+    OTel env var).
     """
     if config.endpoint != _default_endpoint():
         return config.endpoint
@@ -362,8 +352,9 @@ def setup_tracing(
     resource = Resource.create(
         {
             SERVICE_NAME: config.project_name,
-            # Phoenix-only attribute, but it's a resource attribute, not an
-            # API call — keeping it here does not couple us to Phoenix.
+            # OpenInference convention for project grouping.  Stored as a
+            # resource attribute so any OTel backend persists it; backends
+            # that understand OpenInference use it for project-level filtering.
             "openinference.project.name": config.project_name,
         }
     )
@@ -375,12 +366,12 @@ def setup_tracing(
     # into a single boolean.  See that function for the full decision table.
     #
     # Processor stack (outermost → innermost):
-    #   _DropSpansProcessor   ← filters framework noise (ASGI per-chunk, …)
-    #   _TruncatingSpanProcessor   ← trims oversized string attrs
-    #   BatchSpanProcessor    ← ships to the configured exporter
+    #   _DropSpansProcessor          ← filters framework noise
+    #   _TruncatingSpanProcessor     ← scrubs + truncates attributes
+    #   BatchSpanProcessor           ← ships to the configured exporter
     #
     # The drop processor sits outermost so filtered spans short-circuit
-    # *before* paying the truncation + batch-queue cost.
+    # before the truncation + batch-queue cost.
     def _wrap(processor: BatchSpanProcessor) -> SpanProcessor:
         return _DropSpansProcessor(_TruncatingSpanProcessor(processor))
 
@@ -408,12 +399,12 @@ def setup_tracing(
 
     # Give each backend a chance to attach framework-specific
     # instrumentation (e.g. OpenInferenceSpanProcessor for pydantic-ai).
-    # The hook is optional — skip backends that don't expose it.
+    # The hook is optional — backends that don't expose it are skipped.
     #
-    # Forward the content/event-mode knobs through as kwargs so backends
-    # can honor the operator's privacy and rendering preferences.  A
-    # backend is free to ignore either (it's informational — the hub
-    # makes no assumptions about what each framework supports).
+    # ``include_content`` and ``event_mode`` are forwarded as kwargs so
+    # backends can honor the operator's privacy and rendering preferences.
+    # A backend is free to ignore either — they're informational hints,
+    # not contracts.
     for backend in backends:
         install = getattr(backend, "install_tracing", None)
         if install is None:

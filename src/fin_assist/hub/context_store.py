@@ -17,10 +17,20 @@ When a task pauses for human approval the resume may land in a *different
 process* (hub restart, multi-worker deployment).  OTel spans cannot be
 reopened across processes, so the executor saves the paused
 ``approval_request`` span's SpanContext (``trace_id``, ``span_id``,
-``trace_flags``) here at pause time, and loads it at resume to seed a
-span ``Link`` on the new task span.  The pause-state row is independent
-of the opaque ``data`` blob so history serialization stays backend-owned
-while trace plumbing stays platform-owned.
+``trace_flags``) here at pause time, and loads it at resume to construct
+a span **Link** on the new task span.
+
+OTel Links are a standard mechanism for expressing causal relationships
+between spans in *different* traces.  A Link is not a parent-child
+relationship — the linked spans belong to separate traces — but it tells
+OTel backends "these two traces are related."  Backends like Phoenix
+render Links as clickable navigation between the paused approval request
+and the resumed task, making pause → resume one browsable flow rather
+than two disconnected traces.
+
+The pause-state row is independent of the opaque ``data`` blob so history
+serialization stays backend-owned while trace plumbing stays
+platform-owned.
 
 The row also persists the original ``user_input`` (prompt) so the
 resume can hydrate ``input.value`` on the new task span — the resume
