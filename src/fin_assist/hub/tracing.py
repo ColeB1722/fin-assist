@@ -18,7 +18,6 @@ Configuration precedence (highest wins):
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from fin_assist.tracing_shared import (
@@ -81,16 +80,6 @@ def setup_tracing(
     if not config.enabled:
         logger.debug("tracing disabled")
         return None
-
-    # Suppress a2a-sdk's per-class ``@trace_class`` instrumentation.
-    # It emits a ``SpanKind.SERVER`` span for every internal EventQueue /
-    # TaskStore / TaskManager method with zero useful attributes — ~195
-    # spans per ``fin do`` invocation.  The env var is the vendor-
-    # supported off-switch (see ``a2a/utils/telemetry.py``).  Using
-    # ``setdefault`` so operators can force-enable it for debugging by
-    # exporting ``OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=true`` before
-    # starting the hub.
-    os.environ.setdefault("OTEL_INSTRUMENTATION_A2A_SDK_ENABLED", "false")
 
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
         OTLPSpanExporter as GRPCSpanExporter,
