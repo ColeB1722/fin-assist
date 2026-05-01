@@ -173,17 +173,6 @@ def setup_tracing(
                 include_content=config.include_content,
                 event_mode=config.event_mode,
             )
-        except TypeError:
-            # Older / minimal backends may not accept the kwargs.  Fall
-            # back to the minimal signature so we don't lock users out of
-            # custom backends mid-refactor.
-            try:
-                install(provider)
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "backend.install_tracing failed backend=%s",
-                    type(backend).__name__,
-                )
         except Exception:  # noqa: BLE001
             logger.exception(
                 "backend.install_tracing failed backend=%s",
