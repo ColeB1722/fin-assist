@@ -245,16 +245,11 @@ class Executor(AgentExecutor):
     def _extract_user_input(context: RequestContext) -> str:
         """Read the user prompt from the request context.
 
-        Returns the empty string when the context has no message or
-        ``get_user_input`` is unavailable — callers treat ``""`` as
-        "no prompt" and move on.
+        Returns the empty string when the context has no message.
         """
         if context.message is None:
             return ""
-        getter = getattr(context, "get_user_input", None)
-        if not callable(getter):
-            return ""
-        raw = getter()
+        raw = context.get_user_input()
         return raw if isinstance(raw, str) else ""
 
     async def _detect_resume(
