@@ -107,8 +107,8 @@ def _scrub_span_attributes(span) -> None:
             except (TypeError, KeyError, AttributeError):
                 logger.debug("could not scrub attribute key=%s", key)
 
-    session_id = attributes.get("session.id") if hasattr(attributes, "get") else None
-    context_id = attributes.get("fin_assist.context.id") if hasattr(attributes, "get") else None
+    session_id = attributes.get("session.id")
+    context_id = attributes.get("fin_assist.context.id")
     if session_id is not None and session_id == context_id:
         try:
             del attributes["session.id"]
