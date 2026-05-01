@@ -297,7 +297,7 @@ class Executor(AgentExecutor):
 
         task_attributes: dict[str, Any] = {
             SpanAttributes.OPENINFERENCE_SPAN_KIND: (OpenInferenceSpanKindValues.AGENT.value),
-            "gen_ai.agent.name": self._agent_name,
+            FinAssistAttributes.GEN_AI_AGENT_NAME: self._agent_name,
             FinAssistAttributes.TASK_ID: ctx.task_id,
             FinAssistAttributes.CONTEXT_ID: ctx.raw_context_id or "",
             SpanAttributes.SESSION_ID: ctx.raw_context_id or "",

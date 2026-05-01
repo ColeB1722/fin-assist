@@ -109,6 +109,10 @@ class FinAssistAttributes:
     ``"resume_from_approval"`` (task span → paused approval_request span),
     ``"approval_for"`` (approval_decided → approval_request)."""
 
+    GEN_AI_AGENT_NAME = "gen_ai.agent.name"
+    """OTel GenAI semantic convention for the agent/model name.  Stable
+    since semconv v1.28; the older ``llm_*`` prefix is deprecated."""
+
 
 class TaskStateValues:
     """Valid values for :attr:`FinAssistAttributes.TASK_STATE`.
