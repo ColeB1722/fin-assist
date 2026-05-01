@@ -84,10 +84,9 @@ def _make_request_context(
     context.task_id = task_id
     context.context_id = context_id
     if user_input:
-        msg = MagicMock()
-        msg.parts = []
-        msg.get_user_input.return_value = user_input
-        context.message = msg
+        context.message = MagicMock()
+        context.message.parts = []
+        context.get_user_input = lambda *a, **kw: user_input
     else:
         context.message = None
     return context

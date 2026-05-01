@@ -268,21 +268,12 @@ class Executor(AgentExecutor):
         if ctx is None:
             return
 
-        # ``get_user_input`` lives on ``RequestContext``, not on the
-        # wrapped ``Message``.  The method concatenates text parts; we
-        # also tolerate a MagicMock message with ``get_user_input`` on
-        # it, which is what older tests use.
         user_input: str = ""
         if context.message is not None:
-            raw = ""
             getter = getattr(context, "get_user_input", None)
             if callable(getter):
                 raw = getter()
-            else:
-                msg_getter = getattr(context.message, "get_user_input", None)
-                if callable(msg_getter):
-                    raw = msg_getter()
-            user_input = raw if isinstance(raw, str) else ""
+                user_input = raw if isinstance(raw, str) else ""
 
         # Resume detection needs to happen *before* the task span is
         # started so the task span can carry a Link back to the paused
