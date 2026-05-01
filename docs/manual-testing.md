@@ -16,7 +16,7 @@
 
 ## Test Coverage Summary (2026-04-29)
 
-**876 tests passing, 91% line coverage overall.** (Latest bumps: +12 tests for the JSONL file exporter #105, +27 tests for the Tracing UX pass #104 — CLI tracer, `_DropSpansProcessor`, `task.state` enum, `save_pause_state`, attribute scrubbing.)
+**880 tests passing.** (Latest bumps: +12 tests for the JSONL file exporter #105, +27 tests for the Tracing UX pass #104 — CLI tracer, `_DropSpansProcessor`, `task.state` enum, `save_pause_state`, attribute scrubbing.)
 
 ### Coverage by module
 

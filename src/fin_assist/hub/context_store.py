@@ -40,8 +40,11 @@ original prompt.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,7 @@ class ContextStore:
             ),
         )
         conn.commit()
+        logger.info("pause_state saved context_id=%s trace_id=%032x", context_id, trace_id)
 
     async def load_pause_state(self, context_id: str) -> PauseState | None:
         """Return the full pause state or ``None`` if no pause is
@@ -183,9 +187,11 @@ class ContextStore:
         ).fetchone()
         if row is None:
             return None
-        return PauseState(
+        state = PauseState(
             trace_id=int(row["trace_id"], 16),
             span_id=int(row["span_id"], 16),
             trace_flags=int(row["trace_flags"]),
             user_input=row["user_input"] or "",
         )
+        logger.info("pause_state loaded context_id=%s trace_id=%032x", context_id, state.trace_id)
+        return state

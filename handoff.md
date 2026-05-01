@@ -128,7 +128,7 @@ Three incremental phases, all shipped:
 
 **Span hierarchy:**
 
-```
+```text
 HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
   └── fin_assist.task (AGENT)
         ├── fin_assist.step (CHAIN)

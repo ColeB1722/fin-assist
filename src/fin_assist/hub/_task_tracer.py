@@ -20,6 +20,7 @@ Span hierarchy managed by this class:
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace as trace_api
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
 
     from fin_assist.agents.step import StepEvent
     from fin_assist.agents.tools import ApprovalDecision
+
+logger = logging.getLogger(__name__)
 
 
 def _get_tracer() -> Tracer:
@@ -96,6 +99,7 @@ class _TaskTracer:
         self._task_context_token: Any = None
         self._step_context_token: Any = None
         self._tracer: Tracer | None = None
+        self._task_id: str = ""
 
     @property
     def _active_tracer(self) -> Tracer:
@@ -145,6 +149,8 @@ class _TaskTracer:
             links=links,
         )
         self._task_context_token = attach(trace_api.set_span_in_context(self.task_span))
+        self._task_id = task_id
+        logger.info("task_span started agent=%s task_id=%s", agent_name, task_id)
 
     def end_task_span_completed(self, result: Any) -> None:
         """Set output attributes and end the task span on success."""
@@ -164,6 +170,7 @@ class _TaskTracer:
             except (TypeError, ValueError):
                 self.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, str(result))
         self.task_span.end()
+        logger.info("task_span completed task_id=%s", self._task_id)
 
     def end_task_span_paused(self) -> None:
         """Set paused state and end the task span before approval pause."""
@@ -173,6 +180,7 @@ class _TaskTracer:
             FinAssistAttributes.TASK_STATE, TaskStateValues.PAUSED_FOR_APPROVAL
         )
         self.task_span.end()
+        logger.info("task_span paused task_id=%s", self._task_id)
 
     def end_task_span_failed(self, partial_output: str, exc: Exception) -> None:
         """Set error attributes and end the task span on failure."""
@@ -184,6 +192,7 @@ class _TaskTracer:
         self.task_span.record_exception(exc)
         self.task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
         self.task_span.end()
+        logger.info("task_span failed task_id=%s exc=%s", self._task_id, type(exc).__name__)
 
     def detach_task_context(self) -> None:
         """Detach the task span's OTel context token."""
@@ -331,7 +340,8 @@ class _TaskTracer:
         parent = self.current_step_span or self.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
         deferred = event.content
-        assert isinstance(deferred, DeferredToolCall)
+        if not isinstance(deferred, DeferredToolCall):
+            raise TypeError(f"Expected DeferredToolCall, got {type(deferred).__name__}")
         args_str = (
             json.dumps(deferred.args) if isinstance(deferred.args, dict) else str(deferred.args)
         )

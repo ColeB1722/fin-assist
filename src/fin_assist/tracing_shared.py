@@ -96,7 +96,9 @@ def _scrub_span_attributes(span) -> None:
     redundant.  Kept when the values differ (a future backend may set
     ``session.id`` to a different value, e.g. a tenant identifier).
     """
-    attributes = getattr(span, "_attributes", None) or span.attributes
+    attributes = getattr(span, "_attributes", None)
+    if attributes is None:
+        attributes = span.attributes
     if not attributes:
         return
 
@@ -128,18 +130,22 @@ def _truncate_span_attributes(span) -> None:
     mutates ``span._attributes`` directly because the public API is
     read-only after ``end()``.
     """
-    attributes = getattr(span, "_attributes", None) or span.attributes
+    attributes = getattr(span, "_attributes", None)
+    if attributes is None:
+        attributes = span.attributes
     if not attributes:
         return
     for key, value in list(attributes.items()):
-        if isinstance(value, str) and len(value.encode("utf-8")) > MAX_ATTR_BYTES:
-            truncated = (
-                value[: MAX_ATTR_BYTES // 2] + f"\n... [truncated, {len(value)} chars total]"
-            )
-            try:
-                attributes[key] = truncated
-            except (TypeError, AttributeError):
-                logger.debug("could not rewrite oversized attribute key=%s", key)
+        if isinstance(value, str):
+            encoded = value.encode("utf-8")
+            if len(encoded) > MAX_ATTR_BYTES:
+                half_budget = MAX_ATTR_BYTES // 2
+                truncated_prefix = encoded[:half_budget].decode("utf-8", errors="ignore")
+                truncated = truncated_prefix + f"\n... [truncated, {len(encoded)} bytes total]"
+                try:
+                    attributes[key] = truncated
+                except (TypeError, AttributeError):
+                    logger.debug("could not rewrite oversized attribute key=%s", key)
 
 
 class TruncatingSpanProcessor(SpanProcessor):
