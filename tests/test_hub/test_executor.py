@@ -272,7 +272,7 @@ class TestExecutorThinkingViaArtifacts:
     """Thinking deltas route through add_artifact with metadata, not status-update messages."""
 
     async def test_thinking_delta_produces_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
+        from fin_assist.protobuf import struct_to_dict
 
         thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
@@ -295,11 +295,7 @@ class TestExecutorThinkingViaArtifacts:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "thinking":
                     thinking_artifacts.append(part)
 
@@ -307,7 +303,7 @@ class TestExecutorThinkingViaArtifacts:
         assert thinking_artifacts[0].text == "hmm..."
 
     async def test_text_delta_artifact_has_no_thinking_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
+        from fin_assist.protobuf import struct_to_dict
 
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[text_event])
@@ -330,11 +326,7 @@ class TestExecutorThinkingViaArtifacts:
             for part in event.artifact.parts:
                 if not part.text:
                     continue
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 assert meta_dict.get("type") != "thinking"
 
 
@@ -379,7 +371,7 @@ class TestExecutorDeferredApproval:
         assert len(input_required_updates) >= 1
 
     async def test_deferred_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
+        from fin_assist.protobuf import struct_to_dict
 
         from fin_assist.agents.tools import DeferredToolCall
 
@@ -420,11 +412,7 @@ class TestExecutorDeferredApproval:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "deferred":
                     deferred_artifacts.append((part, meta_dict))
 
@@ -661,7 +649,7 @@ class TestExecutorCancel:
 
 class TestExecutorToolCallDispatch:
     async def test_tool_call_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
+        from fin_assist.protobuf import struct_to_dict
 
         tool_call_event = StepEvent(
             kind="tool_call",
@@ -689,11 +677,7 @@ class TestExecutorToolCallDispatch:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "tool_call":
                     tool_call_parts.append((part, meta_dict))
 
@@ -703,9 +687,8 @@ class TestExecutorToolCallDispatch:
         assert meta.get("args", {}).get("path") == "test.py"
 
     async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
+        from fin_assist.protobuf import struct_to_dict
 
-        # Backends are required to emit tool_result.content as a plain str.
         tool_result_event = StepEvent(
             kind="tool_result",
             content="file contents here",
@@ -731,11 +714,7 @@ class TestExecutorToolCallDispatch:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "tool_result":
                     tool_result_parts.append((part, meta_dict))
 

@@ -2,14 +2,25 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-30):** 880 tests passing, `just ci` green. PR #103 (OTel tracing) review comments addressed in code, awaiting merge. All Tier 1 features shipped. Tracing fully integrated: hub + CLI spans, JSONL file sink, HITL two-span trace continuity, noise suppression, attribute hygiene. Code review follow-up issue [#111](https://github.com/ColeB1722/fin-assist/issues/111) open.
+**Current state (2026-05-01):** 928 tests passing, `just ci` green. Skills API v0.1 fully implemented (Phases 0–4). Config migrated from `tools`/`workflows` to `skills` with per-subcommand approval rules. `load_skill` dynamic tool for agent-driven skill discovery. SKILL.md file loader and discovery. `fin list skills` command. Bug fixes for FileHistory dir creation (#54/#51), malformed session crash (#81), AgentCard version from package metadata (#78), `MessageToDict` consolidation (#86), dead code removal.
 
-**Recent refactoring (this session):**
+**Recent work (this session):**
 
-1. **`tracing_shared.py`** — extracted shared span processors, config resolvers, and constants from `hub/tracing.py` and `cli/tracing.py` into a new public module. Eliminated cross-module private imports and duplicated logic. Dependency graph changed from `cli/ → hub/` to `cli/ → tracing_shared/ ← hub/`.
-2. **`get_user_input` fix** — removed test-induced fallback path (`getattr(context.message, ...)`) from executor; fixed `_make_request_context` helper in `test_tracing.py` to stub on the context object where the real a2a-sdk API puts it.
-3. **Executor prep extract** — extracted `_extract_user_input()` (static method) and `_detect_resume()` + `_ResumeInfo` dataclass from `execute()`, shrinking the method by ~15 lines and untangling user-input extraction and resume detection into named, testable units.
-4. **`_TaskTracer` extraction** — moved all OTel span lifecycle from `executor.py` into `hub/_task_tracer.py`. `_ExecutionContext` went from 13 fields (6 tracing, 7 business) to 8 (7 business + 1 `tracer` reference). Executor lost 8 tracing methods and 50+ lines of inline span setup. `execute()` dropped from ~135 lines of interleaved logic to ~50 lines of pure business flow. All 880 tests pass unchanged.
+1. **Skills API v0.1** — Full implementation of the core Skills API abstraction:
+   - `ApprovalRule` dataclass + `ApprovalPolicy.evaluate()` for per-subcommand approval
+   - `SkillConfig`, `ApprovalConfig`, `ApprovalRuleConfig` in config schema
+   - `SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager` in `agents/skills.py`
+   - SKILL.md file loader with YAML frontmatter + markdown body
+   - `load_skill` dynamic tool for agent-driven skill discovery
+   - Skill catalog injected into system prompt
+   - `fin list skills` command
+   - Config migrated from `tools`/`workflows` to `skills` with per-skill approval rules
+   - `_resolve_workflow` → `_resolve_skill` with backward compat
+   - `--skill` CLI flag (`--workflow` alias kept)
+   - `AgentSpec.tools` now derives from skill union (falls back to flat `tools` list)
+   - `_CONTEXT_TYPE_MAP` replaced with module-level `_CONTEXT_TYPE_HINTS`
+   - Backend uses skill-level approval overrides for tool registration
+2. **Bug fixes:** FileHistory dir creation, malformed session crash, AgentCard version from package metadata, `MessageToDict` consolidation, dead code removal (`format_context`/`build_user_message`)
 
 **Core platform status:**
 
@@ -29,11 +40,12 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Remaining tracked items:**
 
-- `_CONTEXT_TYPE_MAP` centralization — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool→context mappings; tests read the private attribute
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
-- `build_user_message`/`format_context` helpers in `llm/prompts.py` are dead code
 - `supported_context_types` published in agent cards, never consumed by clients
-- Scoped CLI tools approval=always is not final state — per-subcommand approval is Phase A of Skills API
+- Skill composability (skills invoking skills) — v0.2
+- Agent-to-agent orchestration — v0.2
+- MCP tool source — v0.1.1
+- Eval harness — v0.3
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
 
 ---
@@ -42,24 +54,20 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Recommended picks (in priority order):**
 
-1. **`fin-assist trace replay <file>`** — POST loop that re-ships JSONL lines at an OTLP endpoint so a captured trace can be re-rendered in a fresh backend. ~50 LOC. Not filed yet.
-2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" below.
-3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from parallel-tool-span refactor.
-4. **Re-parent `running tool` under `fin_assist.tool_execution`** — currently siblings under `fin_assist.step`, which double-counts `tool.name` queries. Needs SpanProcessor.on_start hook. No issue filed.
+1. **v0.1 manual testing** — Run through `docs/manual-testing.md` with the new skills config. Verify `fin do git commit` works, `fin list skills` shows config + SKILL.md, approval rules work as expected (e.g., `git diff` auto-approved, `git push` requires approval).
+2. **Update `docs/architecture.md`** — Add Skills Architecture section documenting the new abstractions, config format, SKILL.md convention, and approval rules.
+3. **MCP tool source (v0.1.1)** — Add `MCPToolset` as a second tool source that registers discovered tools into `ToolRegistry`. The skill→tool binding is source-agnostic, ready for MCP.
+4. **Tag v0.1.0** — After manual test pass and doc update.
 
 ### Sequenced roadmap
 
 | # | Work | Status |
 |---|------|--------|
 | 1 | Tracing: OTel + OpenInference bridge | ✅ Complete — follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109) |
-| 2 | Eval harness (per-agent, not platform-level) | ⬜ Queued — rides on tracing; Phoenix eval primitives consume OTel traces |
-| 3 | Skills API | 📐 Phase A sketch resolved; see below |
-
-### Alternative picks
-
-1. **Phase 4 design discussions** — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
-2. **Tech debt** — `_CONTEXT_TYPE_MAP`, dead code in `llm/prompts.py`, AgentBackend simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
-3. **Other open issues** — `gh issue list`
+| 2 | Skills API v0.1 | ✅ Complete — Phases 0–4 shipped (928 tests) |
+| 3 | MCP tool source (v0.1.1) | ⬜ Queued — skill→tool binding is source-agnostic |
+| 4 | Eval harness (per-agent) | ⬜ Queued — rides on tracing |
+| 5 | Skill composability + agent-to-agent (v0.2) | ⬜ Queued |
 
 ---
 
@@ -98,7 +106,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client | ⬜ Not Started |
 | 14 | Testing Infrastructure (Deep Evals) | ⬜ Queued |
-| 15 | Skills + MCP Integration | 📐 Phase A sketch resolved |
+| 15 | Skills + MCP Integration | ✅ Skills API v0.1 shipped; MCP queued for v0.1.1 |
 | 16 | Additional Agents | 🔄 Git shipped |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
@@ -172,7 +180,68 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 ---
 
-### Skills API: sequenced refactor (Phase 15 breakdown)
+### Skills API: v0.1 Implementation (shipped 2026-05-01)
+
+**Status:** Phases 0–4 complete. 928 tests passing, `just ci` green.
+
+**What was implemented:**
+
+1. **`ApprovalRule` + `ApprovalPolicy.evaluate()`** — fnmatch-based per-subcommand approval rules. First-match semantics with `default` fallback. Replaces the old binary `always`/`never` mode.
+
+2. **`SkillConfig` + `ApprovalConfig` + `ApprovalRuleConfig`** — config schema types for inline TOML skill definitions. Added to `AgentConfig.skills: dict[str, SkillConfig]`.
+
+3. **`SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`** — runtime types in `agents/skills.py`. `SkillLoader` resolves both inline TOML and SKILL.md files. `SkillManager` tracks loaded skills, provides `load_skill` callable, and generates catalog text.
+
+4. **SKILL.md file loader** — parses YAML frontmatter + markdown body following agentskills.io convention. Discovery from `.fin/skills/` and `~/.config/fin/skills/`. fin-assist extensions under `metadata.fin-assist.*`.
+
+5. **Config migration** — `config.toml` migrated from `tools`/`workflows` to `skills` with per-skill approval rules. `_resolve_workflow` → `_resolve_skill` with backward compat. `--skill` CLI flag, `--workflow` kept as alias.
+
+6. **Dynamic skill loading** — `load_skill` tool registered when skills exist. Skill catalog injected into system prompt. `SkillManager.load_skill()` marks skills as active.
+
+7. **`fin list skills`** — lists config-defined and SKILL.md-discovered skills.
+
+**Key design decisions:**
+
+- Skills are additive (no unloading in v0.1)
+- Tools shared across skills; name collisions = config error
+- `AgentSpec.tools` derives from skill union, falls back to flat `tools` list for backward compat
+- Approval is conservative: if default="always" or any rule has mode="always", tool gets `requires_approval=True`. Fine-grained per-subcommand evaluation will be integrated at executor level in v0.1.1
+- `_CONTEXT_TYPE_MAP` → `_CONTEXT_TYPE_HINTS` module-level constant (no longer on AgentSpec class)
+- Dead code removed: `format_context()`, `build_user_message()` in `llm/prompts.py`
+
+**Bug fixes shipped alongside:**
+
+- FileHistory dir creation (#54/#51) — `prompt.py:_build_session()` now creates parent dir
+- Malformed session file crash (#81) — `display.py:render_session_list()` catches JSONDecodeError
+- AgentCard version from package metadata (#78) — `factory.py` uses `importlib.metadata.version()`
+- `MessageToDict` consolidation (#86) — all direct calls replaced with `struct_to_dict()` from `protobuf.py`
+
+**New files:**
+- `src/fin_assist/agents/skills.py`
+- `tests/test_agents/test_skills.py`
+- `tests/test_agents/test_approval_policy_evaluate.py`
+
+**Modified files (key):**
+- `src/fin_assist/agents/tools.py` — `ApprovalRule`, `ApprovalPolicy.evaluate()`
+- `src/fin_assist/agents/spec.py` — `skills` property, derived `tools`, `_CONTEXT_TYPE_HINTS`
+- `src/fin_assist/agents/backend.py` — skill-based approval overrides, `load_skill` tool, catalog in prompt
+- `src/fin_assist/config/schema.py` — `SkillConfig`, `ApprovalConfig`, `ApprovalRuleConfig`
+- `src/fin_assist/cli/main.py` — `_resolve_skill`, `--skill` flag, `fin list skills`
+- `src/fin_assist/hub/factory.py` — version from metadata, skills in log
+- `config.toml` — migrated to skills format
+
+**Post-v0.1 roadmap:**
+
+| Version | Feature |
+|---------|---------|
+| v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
+| v0.1.1 | Per-subcommand approval evaluation at executor level |
+| v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
+| v0.3 | Eval harness |
+
+---
+
+### Skills API: Original Design Sketch (for reference)
 
 **Status:** Sketch resolved 2026-04-27. Ready to start Phase A.
 

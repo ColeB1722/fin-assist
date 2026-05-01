@@ -13,8 +13,6 @@ Both context paths are fully wired:
 
 Not yet wired:
 - ``Environment`` provider not exposed as a tool (intentional — sensitive).
-- ``build_user_message``/``format_context`` helpers in ``llm/prompts.py``
-  not called from the request path (``@``-completion bypasses them).
 """
 
 from __future__ import annotations

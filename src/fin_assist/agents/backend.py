@@ -60,7 +60,7 @@ from pydantic_ai.messages import TextPart as PydanticTextPart
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.serialization import unwrap_payload, wrap_payload
 from fin_assist.agents.step import StepEvent
-from fin_assist.agents.tools import ApprovalDecision, DeferredToolCall
+from fin_assist.agents.tools import ApprovalDecision, ApprovalPolicy, DeferredToolCall
 
 _message_ta = TypeAdapter(list[ModelMessage])
 
@@ -305,6 +305,17 @@ class PydanticAIBackend:
         self._spec = agent_spec
         self._tool_registry = tool_registry
         self._registry: Any = None
+        self._skill_manager: Any | None = None
+
+    def _get_skill_manager(self):
+        from fin_assist.agents.skills import SkillManager
+
+        if self._skill_manager is None and self._spec.skills:
+            self._skill_manager = SkillManager.from_agent_config(
+                self._spec._agent_config,
+                tool_registry=self._tool_registry,
+            )
+        return self._skill_manager
 
     def install_tracing(
         self,
@@ -438,8 +449,13 @@ class PydanticAIBackend:
         has_approval_tools = False
         if self._tool_registry:
             tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
+            approval_overrides = self._get_skill_approval_overrides()
             for td in tool_defs:
-                if td.approval_policy is not None and td.approval_policy.mode == "always":
+                effective_policy = approval_overrides.get(td.name, td.approval_policy)
+                needs_approval = effective_policy is not None and self._policy_requires_approval(
+                    effective_policy
+                )
+                if needs_approval:
                     has_approval_tools = True
                     pydantic_tools.append(
                         Tool(
@@ -455,21 +471,66 @@ class PydanticAIBackend:
                         Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
                     )
 
+        skill_mgr = self._get_skill_manager()
+        if skill_mgr is not None and skill_mgr.available_skills():
+            pydantic_tools.append(
+                Tool(
+                    skill_mgr.make_load_skill_callable(),
+                    takes_ctx=False,
+                    name="load_skill",
+                    description=(
+                        "Load a skill by name to activate its tools and context. "
+                        "Use this to discover and activate skills from the catalog."
+                    ),
+                )
+            )
+
         base_output_type = self._spec.output_type
         output_type = (
             [base_output_type, DeferredToolRequests] if has_approval_tools else base_output_type
         )
 
-        # pydantic-ai's ``Agent`` accepts ``tools=()`` (default) or a non-empty
-        # sequence.  It does **not** accept ``tools=None`` (raises TypeError).
-        # Passing ``pydantic_tools`` directly is safe: an empty list is
-        # equivalent to the default tuple.
+        instructions = self._spec.system_prompt
+        if skill_mgr is not None:
+            catalog = skill_mgr.catalog_text()
+            if catalog:
+                instructions = f"{instructions}\n\n{catalog}"
+
         return Agent(
             output_type=output_type,
-            instructions=self._spec.system_prompt,
+            instructions=instructions,
             capabilities=capabilities,
             tools=pydantic_tools,
         )
+
+    def _get_skill_approval_overrides(self) -> dict[str, ApprovalPolicy]:
+        """Build per-tool approval overrides from skill definitions.
+
+        When a skill defines an approval config for its tools, it overrides
+        the tool's default ``ApprovalPolicy``.  If multiple skills reference
+        the same tool, the last skill's policy wins (this is rare and would
+        be a config validation error in a future version).
+        """
+        overrides: dict[str, ApprovalPolicy] = {}
+        for skill_def in self._spec.get_skill_definitions():
+            if skill_def.approval_policy is not None:
+                for tool_name in skill_def.tools:
+                    overrides[tool_name] = skill_def.approval_policy
+        return overrides
+
+    @staticmethod
+    def _policy_requires_approval(policy: ApprovalPolicy) -> bool:
+        """Check if an approval policy requires approval for any invocation.
+
+        Returns True if the default mode is "always" or any rule has mode
+        "always".  This is conservative — some subcommands may not need
+        approval, but pydantic-ai sets approval at registration time, not
+        at call time.  Fine-grained per-subcommand evaluation will be
+        integrated at the executor level in a future version.
+        """
+        if policy.default == "always":
+            return True
+        return any(rule.mode == "always" for rule in policy.rules)
 
     def _build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel
@@ -500,6 +561,10 @@ class PydanticAIBackend:
         return FallbackModel(*models)
 
     def _get_approval_reason(self, tool_name: str) -> str | None:
+        overrides = self._get_skill_approval_overrides()
+        skill_policy = overrides.get(tool_name)
+        if skill_policy is not None:
+            return skill_policy.reason
         if self._tool_registry is None:
             return None
         td = self._tool_registry.get(tool_name)

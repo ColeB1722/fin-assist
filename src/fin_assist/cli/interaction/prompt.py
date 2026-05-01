@@ -294,10 +294,11 @@ class FinPrompt:
         return _CombinedCompleter(slash_completer, at_completer)
 
     def _build_session(self) -> PromptSession[str]:
+        self.history_path.parent.mkdir(parents=True, exist_ok=True)
         return PromptSession(
             completer=self._build_completer(),
             complete_in_thread=True,
-            history=FileHistory(self.history_path),
+            history=FileHistory(str(self.history_path)),
             style=Style.from_dict({"": "#ansibrightgreen"}),
         )
 

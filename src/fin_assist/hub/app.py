@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from google.protobuf.json_format import MessageToDict
 
 from fin_assist.hub.context_store import ContextStore
 from fin_assist.hub.factory import AgentFactory
+from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -38,7 +38,7 @@ def _extract_card_meta(sub_app: FastAPI) -> dict:
         return {}
     for ext in card.capabilities.extensions:
         if ext.uri == "fin_assist:meta":
-            return MessageToDict(ext.params, preserving_proto_field_name=True)
+            return struct_to_dict(ext.params)
     return {}
 
 

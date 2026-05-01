@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from fin_assist.agents.spec import AgentSpec
+from fin_assist.agents.spec import AgentSpec, _CONTEXT_TYPE_HINTS
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult, MissingCredentialsError
 from fin_assist.agents.results import CommandResult
 from fin_assist.config.schema import AgentConfig
 
-_MAP = AgentSpec._CONTEXT_TYPE_MAP
+_MAP = _CONTEXT_TYPE_HINTS
 
 
 def _make_default_agent(mock_config, mock_credentials) -> AgentSpec:

@@ -115,17 +115,59 @@ class ServerSettings(BaseModel):
     log_path: str = str(DATA_DIR / "hub.log")
 
 
+class ApprovalRuleConfig(BaseModel):
+    """A single fnmatch-based approval rule in config.
+
+    Maps to ``ApprovalRule`` in ``agents/tools.py``.  The ``pattern``
+    field is matched against the tool's args string using fnmatch.
+    """
+
+    pattern: str
+    mode: Literal["never", "always"]
+    reason: str | None = None
+
+
+class ApprovalConfig(BaseModel):
+    """Per-skill approval configuration.
+
+    When present on a ``SkillConfig``, overrides the tool's default
+    ``ApprovalPolicy`` for tools within that skill.  ``default`` sets the
+    fallback mode when no rule matches; ``rules`` are checked in order
+    with first-match semantics.
+    """
+
+    default: Literal["never", "always"] = "always"
+    rules: list[ApprovalRuleConfig] = []
+
+
+class SkillConfig(BaseModel):
+    """Per-skill configuration within an agent.
+
+    A skill is a named collection of tools, approval rules, context
+    injection text, and prompt steering.  Skills are loaded additively
+    — once loaded, a skill's tools stay active for the session.
+
+    Skills can be defined inline in ``config.toml`` or as SKILL.md files
+    in ``.fin/skills/<name>/SKILL.md`` or
+    ``~/.config/fin/skills/<name>/SKILL.md``.  SKILL.md takes precedence
+    for same-name skills.
+    """
+
+    description: str = ""
+    tools: list[str] = []
+    approval: ApprovalConfig | None = None
+    prompt_template: str = ""
+    entry_prompt: str = ""
+    context: str = ""
+    serving_modes: list[ServingMode] | None = None
+
+
 class WorkflowConfig(BaseModel):
     """Per-workflow configuration within an agent.
 
-    Workflows are prompt-steered sub-tasks an agent can perform.  They define
-    a description (for discovery), a prompt template name or inline text, an
-    entry prompt sent as the initial user message, and optional serving-mode
-    overrides.
-
-    This is level 2 of the workflow spectrum (prompt steering).  Future
-    extensions (level 3) may add ``tool_scope`` and ``approval_override``
-    fields — see the Skills API vision in architecture.md.
+    .. deprecated::
+        Use ``SkillConfig`` instead.  Workflows are superseded by skills.
+        Kept for backward compatibility during migration.
     """
 
     description: str = ""
@@ -150,6 +192,7 @@ class AgentConfig(BaseModel):
     tags: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     workflows: dict[str, WorkflowConfig] = Field(default_factory=dict)
+    skills: dict[str, SkillConfig] = Field(default_factory=dict)
 
 
 _DEFAULT_AGENTS: dict[str, AgentConfig] = {}

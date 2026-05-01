@@ -18,6 +18,7 @@ as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 from __future__ import annotations
 
 import logging
+from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
 
 from a2a.server.request_handlers import DefaultRequestHandler
@@ -92,10 +93,11 @@ class AgentFactory:
         meta_struct = Struct()
         meta_struct.update(meta.model_dump())
 
+        _version = pkg_version("fin-assist")
         agent_card = AgentCard(
             name=agent.name,
             description=agent.description,
-            version="1.0.0",
+            version=_version,
             provider=AgentProvider(organization="fin-assist"),
             capabilities=AgentCapabilities(
                 streaming=True,
@@ -148,9 +150,10 @@ class AgentFactory:
 
         app.state.agent_card = agent_card
         logger.info(
-            "agent mounted name=%s tools=%s serving_modes=%s",
+            "agent mounted name=%s tools=%s skills=%s serving_modes=%s",
             agent.name,
             list(agent.tools),
+            list(agent.skills.keys()),
             list(meta.serving_modes),
         )
         return app

@@ -6,18 +6,15 @@ Backends adapt platform tool definitions to their framework's registration
 mechanism (e.g., pydantic-ai's ``Tool`` dataclass or ``@agent.tool``
 decorator).
 
-Tools are **shareable between agents** — agents opt in via config
-(``tools = ["read_file", "git"]``).  The registry is global; each
-agent's ``AgentSpec`` references tool names, and the backend registers
-only the tools the agent needs.
+Tools are **shareable between agents** — agents opt in via skills
+(``skills = {"commit": {...}}``).  The registry is global; each agent's
+``AgentSpec`` references tool names, and the backend registers only the
+tools the agent needs.
 
-**Scoped CLI tools** (``git``, ``gh``) are the prototype for the future
-Skills API.  Each wraps a command prefix and lets the LLM choose the
-subcommand/args — one tool definition per CLI instead of one per
-subcommand.  This saves prompt tokens and maps naturally to the
-API + CLI + Skills pattern (see architecture.md).  Approval is currently
-``always`` for all scoped CLI tools; per-subcommand approval is a planned
-Skills API enhancement.
+**Scoped CLI tools** (``git``, ``gh``) support per-subcommand approval
+via ``ApprovalPolicy.rules`` — each rule is an fnmatch pattern matched
+against the tool's args string.  This enables e.g. ``git diff`` → never
+require approval while ``git push`` → always requires approval.
 
 MCP integration (#84): A future ``MCPToolset`` would wrap an MCP client
 and register discovered tools into the ``ToolRegistry`` with appropriate
@@ -28,13 +25,38 @@ know about MCP — it's just another tool source.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from fin_assist.config.schema import ContextSettings
+
+
+@dataclass
+class ApprovalRule:
+    """A single fnmatch-based rule for per-subcommand approval.
+
+    When ``ApprovalPolicy.evaluate(args)`` is called, rules are checked
+    in order.  The first rule whose ``pattern`` matches wins.  If no rule
+    matches, the policy's ``default`` mode is used.
+
+    Example patterns::
+
+        "git diff"     → matches exactly "git diff"
+        "git push *"   → matches "git push origin main"
+        "git *"        → matches any git subcommand
+        "*"            → matches everything (catch-all)
+    """
+
+    pattern: str
+    mode: Literal["never", "always"]
+    reason: str | None = None
+
+    def matches(self, args: str) -> bool:
+        return fnmatch(args, self.pattern)
 
 
 @dataclass
@@ -51,19 +73,28 @@ class ApprovalPolicy:
     ``approval_required()`` toolset wrapper.  Future backends map to
     their own mechanism (LangGraph ``interrupt()``, etc.).
 
-    Only two modes exist today: ``"always"`` (every call is gated) and
-    ``"never"`` (no gate — equivalent to ``approval_policy=None``).  A
-    predicate-based ``"conditional"`` mode was considered but cut because
-    (a) nothing used it, (b) per-call predicates would require wrapping
-    the tool callable with framework-specific exceptions, breaking the
-    "platform types have zero framework imports" invariant, and (c) the
-    UX problem it was meant to solve (remember approval for a session) is
-    better handled client-side as session state.  Revisit if a real
-    server-side use case appears.
+    Approval is determined by ``evaluate(args)`` which checks ``rules``
+    in first-match order.  If no rule matches, ``default`` mode is used.
+    When ``rules`` is empty (the default), ``evaluate()`` always returns
+    ``default`` — preserving backward compatibility with the original
+    two-mode (``always``/``never``) behavior.
     """
 
     mode: Literal["never", "always"]
+    default: Literal["never", "always"] | None = None
     reason: str | None = None
+    rules: list[ApprovalRule] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.default is None:
+            object.__setattr__(self, "default", self.mode)
+
+    def evaluate(self, args: str = "") -> tuple[Literal["never", "always"], str | None]:
+        for rule in self.rules:
+            if rule.matches(args):
+                return rule.mode, rule.reason
+        assert self.default is not None
+        return self.default, self.reason
 
 
 @dataclass

@@ -208,7 +208,11 @@ def render_session_list(agent_name: str) -> None:
         return
     console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
     for session_file in files:
-        session = json.loads(session_file.read_text())
+        try:
+            session = json.loads(session_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            console.print(f"  [dim]{session_file.stem}  (corrupted)[/dim]")
+            continue
         sid = session.get("session_id", "unknown")
         cid = session.get("context_id", "unknown")
         cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid
