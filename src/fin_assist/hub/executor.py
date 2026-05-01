@@ -60,7 +60,7 @@ from a2a.types import Part, Task, TaskState, TaskStatus
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.metadata import MissingCredentialsError
-from fin_assist.agents.tools import ApprovalDecision
+from fin_assist.agents.tools import ApprovalDecision, DeferredToolCall
 from fin_assist.hub._task_tracer import _TaskTracer
 from fin_assist.protobuf import struct_to_dict
 
@@ -527,18 +527,16 @@ class Executor(AgentExecutor):
         (called by the dispatcher before this method).  This method only
         emits the A2A artifact.
         """
-        deferred_content = event.content
-        tool_call_id = getattr(deferred_content, "tool_call_id", "") or ""
-        reason = getattr(deferred_content, "reason", None) or ""
-        args = getattr(deferred_content, "args", {})
+        deferred = event.content
+        assert isinstance(deferred, DeferredToolCall)
         deferred_meta = Struct()
         deferred_meta.update(
             {
                 "type": "deferred",
                 "tool_name": event.tool_name or "",
-                "tool_call_id": tool_call_id,
-                "reason": reason,
-                "args": args,
+                "tool_call_id": deferred.tool_call_id,
+                "reason": deferred.reason or "",
+                "args": deferred.args,
             }
         )
         await self._emit_artifact(

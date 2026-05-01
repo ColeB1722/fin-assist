@@ -27,6 +27,7 @@ from opentelemetry.context import attach, detach
 from opentelemetry.trace import StatusCode
 from opentelemetry.trace.status import Status
 
+from fin_assist.agents.tools import DeferredToolCall
 from fin_assist.hub.tracing_attrs import (
     FinAssistAttributes,
     OpenInferenceMimeTypeValues,
@@ -329,11 +330,11 @@ class _TaskTracer:
         """
         parent = self.current_step_span or self.task_span
         parent_context = trace_api.set_span_in_context(parent) if parent else None
-        deferred_content = event.content
-        args = getattr(deferred_content, "args", {})
-        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-        tool_call_id = getattr(deferred_content, "tool_call_id", "") or ""
-        reason = getattr(deferred_content, "reason", None) or ""
+        deferred = event.content
+        assert isinstance(deferred, DeferredToolCall)
+        args_str = (
+            json.dumps(deferred.args) if isinstance(deferred.args, dict) else str(deferred.args)
+        )
 
         approval_span = self._active_tracer.start_span(
             SpanNames.APPROVAL_REQUEST,
@@ -342,9 +343,9 @@ class _TaskTracer:
                 SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.TOOL.value,
                 SpanAttributes.TOOL_NAME: event.tool_name or "",
                 FinAssistAttributes.TOOL_NAME: event.tool_name or "",
-                FinAssistAttributes.TOOL_CALL_ID: tool_call_id,
+                FinAssistAttributes.TOOL_CALL_ID: deferred.tool_call_id,
                 FinAssistAttributes.APPROVAL_STATUS: "paused",
-                FinAssistAttributes.APPROVAL_REASON: reason,
+                FinAssistAttributes.APPROVAL_REASON: deferred.reason or "",
                 SpanAttributes.INPUT_VALUE: args_str,
                 SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
             },
