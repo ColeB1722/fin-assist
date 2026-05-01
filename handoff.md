@@ -4,6 +4,14 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Current state (2026-04-30):** 880 tests passing, `just ci` green. PR #103 (OTel tracing) review comments addressed in code, awaiting merge. All Tier 1 features shipped. Tracing fully integrated: hub + CLI spans, JSONL file sink, HITL two-span trace continuity, noise suppression, attribute hygiene. Code review follow-up issue [#111](https://github.com/ColeB1722/fin-assist/issues/111) open.
 
+**Recent refactoring (this session):**
+
+1. **`tracing_shared.py`** — extracted shared span processors, config resolvers, and constants from `hub/tracing.py` and `cli/tracing.py` into a new public module. Eliminated cross-module private imports and duplicated logic. Dependency graph changed from `cli/ → hub/` to `cli/ → tracing_shared/ ← hub/`.
+2. **`get_user_input` fix** — removed test-induced fallback path (`getattr(context.message, ...)`) from executor; fixed `_make_request_context` helper in `test_tracing.py` to stub on the context object where the real a2a-sdk API puts it.
+3. **Executor prep extract** — extracted `_extract_user_input()` (static method) and `_detect_resume()` + `_ResumeInfo` dataclass from `execute()`, shrinking the method by ~15 lines and untangling user-input extraction and resume detection into named, testable units.
+
+**Deferred to follow-up PR:** Full `_TaskTracer` extraction from `executor.py` — moving 6 tracing fields from `_ExecutionContext` and 8 tracing methods from `Executor` into a dedicated `_TaskTracer` class. See "Design Sketches: _TaskTracer Extraction" below.
+
 **Core platform status:**
 
 | Area | Status |
@@ -144,6 +152,54 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 5. CLI: `setup_cli_tracing(config.tracing)` — separate provider writing to same JSONL
 
 **Follow-up issues:** [#104](https://github.com/ColeB1722/fin-assist/issues/104) (W3C traceparent), [#106](https://github.com/ColeB1722/fin-assist/issues/106) (multi-exporter), [#107](https://github.com/ColeB1722/fin-assist/issues/107) (event_mode=logs), [#108](https://github.com/ColeB1722/fin-assist/issues/108) (retry-aware tool spans), [#109](https://github.com/ColeB1722/fin-assist/issues/109) (OTLP probing), [#111](https://github.com/ColeB1722/fin-assist/issues/111) (code review quality improvements).
+
+---
+
+### _TaskTracer Extraction (deferred)
+
+**Status:** Design sketched, not yet implemented.
+
+**Problem:** `executor.py` conflates A2A task lifecycle and OTel span lifecycle. `_ExecutionContext` has 6 tracing fields out of 11 total. 8 of ~15 `Executor` methods are pure-tracing or majority-tracing. `execute()` spends ~63 lines on tracing setup before business logic starts. The interleaving hurts readability — anyone reading for the task lifecycle must mentally filter ~50% tracing boilerplate.
+
+**Design:**
+
+```python
+class _TaskTracer:
+    """Owns all OTel span lifecycle for one task invocation."""
+
+    task_span: Span | None
+    current_step_span: Span | None
+    active_tool_spans: dict[str, Span]
+    paused_approval_span_ctx: Any  # SpanContext
+    _task_context_token: Any
+    _step_context_token: Any
+
+    def start_task_span(self, ctx: _ExecutionContext, ...) -> None: ...
+    def end_task_span(self, ctx: _ExecutionContext, ...) -> None: ...
+    def read_invocation_id_from_baggage(self) -> str: ...
+    def detach_task_context(self) -> None: ...
+    def start_step_span(self, event: StepEvent) -> None: ...
+    def end_step_span(self) -> None: ...
+    def start_tool_span(self, event: StepEvent) -> None: ...
+    def end_tool_span(self, event: StepEvent) -> None: None: ...
+    def make_link(self, trace_ctx, link_type) -> Any: ...
+    def emit_approval_decided_span(self, decisions, prior_trace_ctx) -> None: ...
+    def emit_approval_request_span(self, event: StepEvent) -> None: ...
+```
+
+**Changes:**
+
+1. Move 6 tracing fields from `_ExecutionContext` into `_TaskTracer`
+2. Move 8 tracing methods from `Executor` into `_TaskTracer`
+3. Split mixed methods: A2A artifact/state calls stay in executor, span attribute calls delegate to tracer
+4. `_ExecutionContext` becomes pure business state (task_id, raw_context_id, updater, artifact_id, user_input, created_artifacts, text_chunks)
+5. `Executor.execute()` creates a `_TaskTracer` early, passes `ctx.tracer.task_span` where needed
+
+**Expected outcome:** `execute()` shrinks from ~135 lines to ~50 lines (business flow only). `_ExecutionContext` docstring focuses on business state. Tracing logic is independently testable.
+
+**Risk profile:** Structural refactor of the most critical path. If it introduces a regression in span parenting or context token management, tracing silently degrades (no test failures, just missing/wrong spans). The current interleaving is ugly but stable.
+
+**Why deferred:** Current PR delivers core value (tracing_shared dedup, get_user_input fix, prep extracts). `_TaskTracer` is readability improvement, not correctness. Better as a dedicated PR with focused review.
 
 ---
 

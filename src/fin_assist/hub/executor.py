@@ -119,6 +119,19 @@ def _get_tracer() -> Tracer:
 
 
 @dataclass
+class _ResumeInfo:
+    """Result of resume detection for a task invocation.
+
+    ``prior_trace_ctx`` and ``prior_user_input`` are non-``None`` only
+    when a pause state was found in the ``ContextStore`` — i.e. this
+    invocation is a resume after a deferred-tool approval pause.
+    """
+
+    prior_trace_ctx: tuple[int, int, int] | None
+    prior_user_input: str
+
+
+@dataclass
 class _ExecutionContext:
     """Mutable state carried between Executor helper methods for one task.
 
@@ -268,42 +281,17 @@ class Executor(AgentExecutor):
         if ctx is None:
             return
 
-        user_input: str = ""
-        if context.message is not None:
-            getter = getattr(context, "get_user_input", None)
-            if callable(getter):
-                raw = getter()
-                user_input = raw if isinstance(raw, str) else ""
-
-        # Resume detection needs to happen *before* the task span is
-        # started so the task span can carry a Link back to the paused
-        # approval_request span.  The Link tells OTel backends that this
-        # trace is a continuation of a prior trace — the operator sees
-        # a "linked" affordance and can navigate between them.
+        user_input = self._extract_user_input(context)
         approval_decisions = self._extract_approval_decisions(context.message)
-        prior_trace_ctx: tuple[int, int, int] | None = None
-        prior_user_input: str = ""
-        if approval_decisions and ctx.raw_context_id:
-            pause_state = await self._context_store.load_pause_state(ctx.raw_context_id)
-            if pause_state is not None:
-                prior_trace_ctx = (
-                    pause_state.trace_id,
-                    pause_state.span_id,
-                    pause_state.trace_flags,
-                )
-                prior_user_input = pause_state.user_input or ""
+        resume_info = await self._detect_resume(ctx, approval_decisions)
 
-        # On resume, the incoming message is just the approval_result
-        # metadata — no prompt.  Hydrating from the stored pause state
-        # gives OTel backends a meaningful ``input.value`` on the resumed
-        # task span instead of an empty string.
-        if not user_input and prior_user_input:
-            user_input = prior_user_input
+        if not user_input and resume_info.prior_user_input:
+            user_input = resume_info.prior_user_input
         ctx.user_input = user_input
 
         task_span_links = []
-        if prior_trace_ctx is not None:
-            link = self._make_link(prior_trace_ctx, "resume_from_approval")
+        if resume_info.prior_trace_ctx is not None:
+            link = self._make_link(resume_info.prior_trace_ctx, "resume_from_approval")
             if link is not None:
                 task_span_links.append(link)
 
@@ -314,19 +302,9 @@ class Executor(AgentExecutor):
             FinAssistAttributes.CONTEXT_ID: ctx.raw_context_id or "",
             SpanAttributes.SESSION_ID: ctx.raw_context_id or "",
             SpanAttributes.INPUT_VALUE: user_input,
-            # Start in ``running`` — ``completed``/``failed``/``paused_for_approval``
-            # overwrite this exactly once before span end.  Setting it at
-            # start (rather than only at end) means OTel backends with
-            # live-trace views can display the state while the task is
-            # still in flight.
             FinAssistAttributes.TASK_STATE: TaskStateValues.RUNNING,
         }
 
-        # Read the CLI-injected invocation id from baggage so the task
-        # span carries the same join key as the CLI root.  Empty /
-        # missing baggage means "no CLI trace" (e.g. direct hub call);
-        # in that case we omit the attribute entirely so queries
-        # filtering on it don't match unrelated tasks.
         invocation_id = self._read_invocation_id_from_baggage()
         if invocation_id:
             task_attributes[FinAssistAttributes.CLI_INVOCATION_ID] = invocation_id
@@ -340,12 +318,8 @@ class Executor(AgentExecutor):
 
         ctx._task_context_token = attach(trace_api.set_span_in_context(task_span))
 
-        # As the first child of the resumed task, emit the
-        # ``approval_decided`` span so the decision and its Link back to
-        # the paused ``approval_request`` are visible before any new
-        # model turn starts.
-        if approval_decisions and prior_trace_ctx is not None:
-            self._emit_approval_decided_span(approval_decisions, prior_trace_ctx)
+        if approval_decisions and resume_info.prior_trace_ctx is not None:
+            self._emit_approval_decided_span(approval_decisions, resume_info.prior_trace_ctx)
 
         try:
             message_history = await self._load_history(ctx)
@@ -381,6 +355,54 @@ class Executor(AgentExecutor):
             return
 
         await self._finalize(ctx, result)
+
+    @staticmethod
+    def _extract_user_input(context: RequestContext) -> str:
+        """Read the user prompt from the request context.
+
+        Returns the empty string when the context has no message or
+        ``get_user_input`` is unavailable — callers treat ``""`` as
+        "no prompt" and move on.
+        """
+        if context.message is None:
+            return ""
+        getter = getattr(context, "get_user_input", None)
+        if not callable(getter):
+            return ""
+        raw = getter()
+        return raw if isinstance(raw, str) else ""
+
+    async def _detect_resume(
+        self,
+        ctx: _ExecutionContext,
+        approval_decisions: list[ApprovalDecision],
+    ) -> _ResumeInfo:
+        """Check whether this invocation is a resume after a deferred-tool pause.
+
+        Resume detection happens *before* the task span is started so the
+        span can carry an OTel ``Link`` back to the paused
+        ``approval_request`` span.  The link tells OTel backends that
+        this trace is a continuation of a prior trace.
+
+        Returns a ``_ResumeInfo`` with ``prior_trace_ctx`` and
+        ``prior_user_input`` populated only when a pause state was found
+        in the ``ContextStore``.  When no approval decisions are present
+        or no pause state exists, both fields are their zero values.
+        """
+        if not approval_decisions or not ctx.raw_context_id:
+            return _ResumeInfo(prior_trace_ctx=None, prior_user_input="")
+
+        pause_state = await self._context_store.load_pause_state(ctx.raw_context_id)
+        if pause_state is None:
+            return _ResumeInfo(prior_trace_ctx=None, prior_user_input="")
+
+        prior_trace_ctx = (
+            pause_state.trace_id,
+            pause_state.span_id,
+            pause_state.trace_flags,
+        )
+        prior_user_input = pause_state.user_input or ""
+        return _ResumeInfo(prior_trace_ctx=prior_trace_ctx, prior_user_input=prior_user_input)
 
     def _detach_task_context(self, ctx: _ExecutionContext) -> None:
         if ctx._task_context_token is not None:
