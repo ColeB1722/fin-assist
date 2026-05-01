@@ -128,6 +128,8 @@ class AgentFactory:
         executor = Executor(
             backend=backend,
             context_store=self._context_store,
+            agent_name=agent.name,
+            model_name=agent.default_model,
         )
         task_store = InMemoryTaskStore()
         request_handler = DefaultRequestHandler(

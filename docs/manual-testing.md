@@ -14,9 +14,9 @@
 
 ---
 
-## Test Coverage Summary (2026-04-27)
+## Test Coverage Summary (2026-04-29)
 
-**704 tests passing, 91% line coverage overall.**
+**880 tests passing.** (Latest bumps: +12 tests for the JSONL file exporter #105, +27 tests for the Tracing UX pass #104 — CLI tracer, `_DropSpansProcessor`, `task.state` enum, `save_pause_state`, attribute scrubbing.)
 
 ### Coverage by module
 
@@ -277,7 +277,7 @@ Known gaps in automated test coverage that should be addressed before or alongsi
 ## Running Order
 
 ```text
-just test  ←  704 tests, 91% coverage
+just test  ←  876 tests, 91% coverage
                Covers: types, config, context (mocked), agent spec, context store,
                        factory, credentials, display, prompt, @-completion, response,
                        integration: discovery, dispatch, auth, streaming, multi-turn
@@ -313,7 +313,7 @@ Part 2 (Interactive) — human at TTY
 
 Before a big refactor, run the minimum set most likely to catch regressions:
 
-**Automated** (`just test`): 704 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics
+**Automated** (`just test`): 876 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics + tracing (hub + CLI + pause/resume continuity)
 
 **Manual (agent runs)**: A7–A15 (server lifecycle), L1–L4 (platform capabilities), A5 (default from config)
 

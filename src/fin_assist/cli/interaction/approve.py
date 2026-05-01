@@ -80,17 +80,26 @@ async def run_approval_widget(
     # visually merge.
     console.print()
 
+    # Wrap the prompt wait in a tracing span so dashboards can subtract
+    # human-think-time from total wall-clock duration.  The span is a
+    # child of the currently-active ``cli.<command>`` root span (via
+    # the OTel current context); outside a CLI tracing setup it's a
+    # no-op.  The wait itself is what takes non-trivial time — the
+    # panel rendering above is sub-millisecond.
+    from fin_assist.cli.tracing import approval_wait_span
+
     try:
-        approved = await ChoiceInput(
-            message="Approve this tool call?",
-            options=[
-                (True, "Approve"),
-                (False, "Deny"),
-            ],
-            default=True,
-            style=_STYLE,
-            key_bindings=_build_key_bindings(),
-        ).prompt_async()
+        with approval_wait_span():
+            approved = await ChoiceInput(
+                message="Approve this tool call?",
+                options=[
+                    (True, "Approve"),
+                    (False, "Deny"),
+                ],
+                default=True,
+                style=_STYLE,
+                key_bindings=_build_key_bindings(),
+            ).prompt_async()
     except KeyboardInterrupt:
         return None
 

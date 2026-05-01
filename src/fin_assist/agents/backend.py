@@ -36,7 +36,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator, Sequence  # noqa: TC003
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from a2a.types import Part
 from google.protobuf.struct_pb2 import Struct, Value
@@ -66,6 +66,7 @@ _message_ta = TypeAdapter(list[ModelMessage])
 
 
 if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import TracerProvider
     from pydantic_ai import Agent
     from pydantic_ai.models import Model
 
@@ -97,6 +98,19 @@ class AgentBackend(Protocol):
     def convert_result_to_part(self, result: Any) -> Part: ...
     def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
     def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any: ...
+
+    # ``install_tracing`` is **optional** — backends that do not wrap an
+    # LLM framework (e.g. test fakes, future non-LLM backends) may omit
+    # it entirely.  The hub's ``setup_tracing`` uses ``hasattr`` to
+    # detect the method before calling, so conforming types don't have
+    # to implement it.
+    #
+    # When present, the method attaches any framework-specific
+    # SpanProcessors (e.g. ``OpenInferenceSpanProcessor``) to the
+    # provided TracerProvider and flips framework-global instrumentation
+    # flags (e.g. ``Agent.instrument_all``).  This is the seam that
+    # keeps the hub framework-neutral: the hub builds the OTel pipeline,
+    # each backend hooks in its own framework's instrumentation.
 
 
 class _PydanticAIStepHandle:
@@ -154,11 +168,14 @@ class _PydanticAIStepHandle:
                     step += 1
 
                 elif Agent.is_call_tools_node(node):
+                    yield StepEvent(kind="step_start", content=None, step=step)
                     async with node.stream(run.ctx) as tool_stream:
                         async for tool_event in tool_stream:
                             te = _tool_event_to_step_event(tool_event, step)
                             if te is not None:
                                 yield te
+                    yield StepEvent(kind="step_end", content=None, step=step)
+                    step += 1
 
             final = run.result
             if final is None:
@@ -236,7 +253,10 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
                 content=event.part,
                 step=step,
                 tool_name=event.part.tool_name,
-                metadata={"args": event.part.args_as_dict()},
+                metadata={
+                    "args": event.part.args_as_dict(),
+                    "tool_call_id": event.part.tool_call_id,
+                },
             )
         case FunctionToolResultEvent():
             return StepEvent(
@@ -244,6 +264,7 @@ def _tool_event_to_step_event(event: Any, step: int) -> StepEvent | None:
                 content=_extract_tool_result_text(event.result),
                 step=step,
                 tool_name=event.result.tool_name,
+                metadata={"tool_call_id": event.result.tool_call_id},
             )
         case _:
             return None
@@ -284,6 +305,39 @@ class PydanticAIBackend:
         self._spec = agent_spec
         self._tool_registry = tool_registry
         self._registry: Any = None
+
+    def install_tracing(
+        self,
+        provider: TracerProvider,
+        *,
+        include_content: bool = True,
+        event_mode: Literal["attributes", "logs"] = "attributes",
+    ) -> None:
+        """Attach pydantic-ai → OpenInference tracing to *provider*.
+
+        Called once by ``hub.tracing.setup_tracing`` after the provider is
+        registered globally.  Delegates to
+        ``pydantic_ai_tracing.install_pydantic_ai_instrumentation``,
+        which adds ``OpenInferenceSpanProcessor`` (translates pydantic-ai's
+        ``gen_ai.*`` attributes to OpenInference ``llm.*`` at span end) and
+        flips ``Agent.instrument_all`` (enables pydantic-ai's global span
+        emission).
+
+        ``install_tracing`` is optional on the ``AgentBackend`` protocol —
+        the hub uses ``hasattr`` to detect it.  This backend implements it
+        because pydantic-ai has framework-specific instrumentation that
+        must be wired into the OTel pipeline.  A future backend wrapping a
+        framework without custom instrumentation would simply omit it.
+
+        Idempotent — see ``pydantic_ai_tracing.install_pydantic_ai_instrumentation``.
+        """
+        from fin_assist.agents.pydantic_ai_tracing import install_pydantic_ai_instrumentation
+
+        install_pydantic_ai_instrumentation(
+            provider,
+            include_content=include_content,
+            event_mode=event_mode,
+        )
 
     def check_credentials(self) -> list[str]:
         return self._spec.check_credentials()

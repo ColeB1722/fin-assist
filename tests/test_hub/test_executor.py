@@ -83,11 +83,22 @@ def _make_request_context(*, task_id: str = "task-1", context_id: str = "ctx-1")
     return context
 
 
+def _make_context_store(*, load_return: Any = None) -> MagicMock:
+    """Return a MagicMock shaped like ``ContextStore`` with every async
+    method the executor awaits wired as ``AsyncMock``.
+    """
+    store = MagicMock()
+    store.load = AsyncMock(return_value=load_return)
+    store.save = AsyncMock()
+    store.load_pause_state = AsyncMock(return_value=None)
+    store.save_pause_state = AsyncMock()
+    return store
+
+
 class TestExecutorAuthRequired:
     async def test_sets_auth_required_on_missing_credentials(self) -> None:
         backend = _make_backend(missing_providers=["anthropic"])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -109,8 +120,7 @@ class TestExecutorAuthRequired:
 
     async def test_other_exceptions_still_set_failed(self) -> None:
         backend = _make_backend(run_side_effect=RuntimeError("something broke"))
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -130,9 +140,7 @@ class TestExecutorAuthRequired:
 
     async def test_successful_task_completes(self) -> None:
         backend = _make_backend()
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -157,9 +165,7 @@ class TestExecutorAuthRequired:
                 new_message_parts=[],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context(context_id="ctx-save-test")
@@ -175,9 +181,7 @@ class TestExecutorAuthRequired:
 
     async def test_streaming_produces_artifact_chunks(self) -> None:
         backend = _make_backend(events=["hel", "lo"])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -199,9 +203,7 @@ class TestExecutorAuthRequired:
 
         backend = _make_backend()
         backend.deserialize_history.return_value = deserialized
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=serialized)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store(load_return=serialized)
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context(context_id="ctx-with-history")
@@ -225,9 +227,7 @@ class TestExecutorAuthRequired:
             ),
         )
         backend.convert_result_to_part.return_value = result_part
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -249,9 +249,7 @@ class TestExecutorAuthRequired:
                 new_message_parts=[thinking_part],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -279,9 +277,7 @@ class TestExecutorThinkingViaArtifacts:
         thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[thinking_event, text_event])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -315,9 +311,7 @@ class TestExecutorThinkingViaArtifacts:
 
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[text_event])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -367,9 +361,7 @@ class TestExecutorDeferredApproval:
                 new_message_parts=[],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -410,9 +402,7 @@ class TestExecutorDeferredApproval:
                 new_message_parts=[],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -466,9 +456,7 @@ class TestExecutorDeferredApproval:
                 new_message_parts=[],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context(context_id="ctx-deferred")
@@ -500,9 +488,7 @@ class TestExecutorDeferredApproval:
                 new_message_parts=[],
             ),
         )
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -621,9 +607,7 @@ class TestExecutorResumeWithApprovalResults:
         backend = _make_backend()
         backend.build_deferred_results.return_value = mock_deferred_results
         backend.deserialize_history.return_value = [MagicMock()]
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=b"[serialized]")
-        context_store.save = AsyncMock()
+        context_store = _make_context_store(load_return=b"[serialized]")
 
         meta = Struct()
         meta.update(
@@ -687,9 +671,7 @@ class TestExecutorToolCallDispatch:
             metadata={"args": {"path": "test.py"}},
         )
         backend = _make_backend(events=[tool_call_event])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -731,9 +713,7 @@ class TestExecutorToolCallDispatch:
             tool_name="read_file",
         )
         backend = _make_backend(events=[tool_result_event])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -773,9 +753,7 @@ class TestExecutorArtifactAppendSemantics:
 
     async def test_first_artifact_uses_append_false(self) -> None:
         backend = _make_backend(events=["hello"])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -794,9 +772,7 @@ class TestExecutorArtifactAppendSemantics:
 
     async def test_subsequent_artifacts_use_append_true(self) -> None:
         backend = _make_backend(events=["hel", "lo"])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -819,9 +795,7 @@ class TestExecutorArtifactAppendSemantics:
         thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[thinking_event, text_event])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -841,9 +815,7 @@ class TestExecutorArtifactAppendSemantics:
 
     async def test_no_events_final_chunk_uses_append_false(self) -> None:
         backend = _make_backend(events=[])
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()
@@ -872,9 +844,7 @@ class TestExecutorArtifactAppendSemantics:
             ),
         )
         backend.convert_result_to_part.return_value = result_part
-        context_store = MagicMock()
-        context_store.load = AsyncMock(return_value=None)
-        context_store.save = AsyncMock()
+        context_store = _make_context_store()
 
         executor = Executor(backend=backend, context_store=context_store)
         ctx = _make_request_context()

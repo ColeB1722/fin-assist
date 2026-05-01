@@ -37,6 +37,7 @@ from fin_assist.cli.server import (
     ensure_server_running,
     stop_server,
 )
+from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
 from fin_assist.config.loader import load_config
 from fin_assist.paths import SESSIONS_DIR
 
@@ -210,12 +211,51 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         for name, ac in config.agents.items()
         if ac.enabled
     ]
+
+    # Build backends *before* tracing setup so we can hand them to
+    # ``setup_tracing`` for framework-specific instrumentation.  Each
+    # backend owns an ``install_tracing`` hook which attaches framework-
+    # level processors (e.g. OpenInferenceSpanProcessor for pydantic-ai)
+    # and flips framework globals (e.g. ``Agent.instrument_all``) —
+    # keeping the hub itself framework-neutral.
+    #
+    # The ordering is: backends → setup_tracing → create app → instrument
+    # app.  Each step depends on the output of the previous one:
+    #   - setup_tracing needs backends (to call install_tracing)
+    #   - FastAPIInstrumentor needs the app object (doesn't exist yet)
+    from fin_assist.agents.backend import PydanticAIBackend
+    from fin_assist.agents.tools import create_default_registry
+    from fin_assist.hub.tracing import setup_tracing
+
+    tool_registry = create_default_registry(config.context)
+    backends_by_spec = {
+        spec: PydanticAIBackend(agent_spec=spec, tool_registry=tool_registry) for spec in agents
+    }
+    setup_tracing(config.tracing, backends=list(backends_by_spec.values()))
+
     app = create_hub_app(
         agents=agents,
         db_path=db_path,
         base_url=f"http://{host}:{port}",
         context_settings=config.context,
+        backend_factory=lambda spec: backends_by_spec[spec],
     )
+
+    if config.tracing.enabled:
+        # FastAPI auto-instrumentation is separate from setup_tracing
+        # because it requires the app object, which doesn't exist until
+        # after create_hub_app.  This is an ASGI-level concern (automatic
+        # ``http.server.request`` spans), distinct from the framework-
+        # specific backend hooks installed by setup_tracing.
+        try:
+            from opentelemetry.instrumentation.fastapi import (
+                FastAPIInstrumentor,  # type: ignore[import-untyped]
+            )
+
+            FastAPIInstrumentor.instrument_app(app)
+        except ImportError:
+            pass
+
     uvicorn_config = uvicorn.Config(app, host=host, port=port, log_config=None)
     server = uvicorn.Server(uvicorn_config)
     asyncio.run(server.serve(sockets=[sock]))
@@ -459,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("agents", help="List available agents.")
+    subparsers.add_parser("agents", help="List available agents.").set_defaults(agent=None)
 
     do_parser = subparsers.add_parser(
         "do",
@@ -533,17 +573,25 @@ def main(argv: list[str] | None = None) -> int:
         "list",
         help="List platform capabilities (tools, prompts, output-types).",
     )
+    list_parser.set_defaults(agent=None)
     list_parser.add_argument(
         "resource",
         choices=["tools", "prompts", "output-types"],
         help="Which platform resource to list.",
     )
 
-    subparsers.add_parser("start", help="Start the agent hub server in the background.")
-    subparsers.add_parser("stop", help="Stop the running agent hub server.")
-    subparsers.add_parser("status", help="Check if the agent hub server is running.")
+    subparsers.add_parser(
+        "start", help="Start the agent hub server in the background."
+    ).set_defaults(agent=None)
+    subparsers.add_parser("stop", help="Stop the running agent hub server.").set_defaults(
+        agent=None
+    )
+    subparsers.add_parser("status", help="Check if the agent hub server is running.").set_defaults(
+        agent=None
+    )
 
     serve_parser = subparsers.add_parser("serve", help="Start the agent hub server.")
+    serve_parser.set_defaults(agent=None)
     serve_parser.add_argument(
         "--host",
         default=None,
@@ -590,41 +638,62 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         args.agent = agent
 
+    # Set up CLI-side tracing *before* any command runs so every HTTP
+    # call the CLI makes carries ``traceparent`` and the shared
+    # ``fin_assist.cli.invocation_id`` baggage entry.  No-op when
+    # ``config.tracing.enabled`` is False, so the off-path costs nothing.
+    #
+    # ``serve`` is deliberately excluded — it's the hub process itself,
+    # not a client, and it installs a full TracerProvider inside
+    # ``_serve_command`` with backend hooks.  Running both would try to
+    # set two global providers in one process.
+    if args.command != "serve":
+        setup_cli_tracing(config.tracing)
+
+    agent_attr = args.agent or ""
+
     match args.command:
         case "agents":
-            return asyncio.run(_agents_command(args, config, config_path))
+            with cli_root_span("agents"):
+                return asyncio.run(_agents_command(args, config, config_path))
         case "do":
-            return asyncio.run(_do_command(args, config, config_path))
+            with cli_root_span("do", agent=agent_attr):
+                return asyncio.run(_do_command(args, config, config_path))
         case "talk":
-            return asyncio.run(_talk_command(args, config, config_path))
+            with cli_root_span("talk", agent=agent_attr):
+                return asyncio.run(_talk_command(args, config, config_path))
         case "list":
-            return _list_command(args, config)
+            with cli_root_span("list"):
+                return _list_command(args, config)
         case "start":
-            try:
-                base_url = asyncio.run(ensure_server_running(config, config_path))
-                render_info(f"Hub running at {base_url}")
-                return 0
-            except ServerStartupError as e:
-                render_error(str(e))
-                return 1
+            with cli_root_span("start"):
+                try:
+                    base_url = asyncio.run(ensure_server_running(config, config_path))
+                    render_info(f"Hub running at {base_url}")
+                    return 0
+                except ServerStartupError as e:
+                    render_error(str(e))
+                    return 1
         case "stop":
-            if stop_server(port=config.server.port):
-                render_info("Hub stopped.")
-            else:
-                render_error("No running hub found (no PID file or process already stopped).")
-                return 1
-            return 0
+            with cli_root_span("stop"):
+                if stop_server(port=config.server.port):
+                    render_info("Hub stopped.")
+                else:
+                    render_error("No running hub found (no PID file or process already stopped).")
+                    return 1
+                return 0
         case "status":
-            status = asyncio.run(check_status(config))
-            if status.healthy:
-                pid_info = f", PID {status.pid}" if status.pid else ""
-                note = ""
-                if not status.pid_file_exists and status.pid:
-                    note = " [yellow](PID file missing — orphaned server)[/yellow]"
-                render_info(f"Hub running at {status.base_url}{pid_info}{note}")
-            else:
-                render_info("Hub is not running.")
-            return 0
+            with cli_root_span("status"):
+                status = asyncio.run(check_status(config))
+                if status.healthy:
+                    pid_info = f", PID {status.pid}" if status.pid else ""
+                    note = ""
+                    if not status.pid_file_exists and status.pid:
+                        note = " [yellow](PID file missing — orphaned server)[/yellow]"
+                    render_info(f"Hub running at {status.base_url}{pid_info}{note}")
+                else:
+                    render_info("Hub is not running.")
+                return 0
         case "serve":
             return _serve_command(args, config, config_path)
         case _:

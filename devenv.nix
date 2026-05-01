@@ -34,8 +34,10 @@
     OPENROUTER_API_KEY = config.secretspec.secrets.OPENROUTER_API_KEY or "";
     ANTHROPIC_API_KEY = config.secretspec.secrets.ANTHROPIC_API_KEY or "";
     FIN_GENERAL__DEFAULT_PROVIDER = "openrouter";
-    FIN_GENERAL__DEFAULT_MODEL = "google/gemini-2.5-flash";
+    FIN_GENERAL__DEFAULT_MODEL = "anthropic/claude-sonnet-4.6";
     FIN_DATA_DIR = "./.fin";
+    FIN_TRACING__ENABLED = "true";
+    FIN_TRACING__PROVIDER = "phoenix";
   };
 
   git-hooks.hooks = {
@@ -69,6 +71,7 @@
     echo "  just lint     - Run linter"
     echo "  just test     - Run tests"
     echo "  just run      - Run the TUI"
+    echo "  phoenix serve - Start Phoenix trace backend"
     echo ""
   '';
 }

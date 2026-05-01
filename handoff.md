@@ -2,59 +2,64 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-27)**: 729 tests passing, CI green. Git agent (#79) shipped with scoped CLI tools (`git`, `gh`) and workflow config. All Tier 1 features shipped. Documentation synced with codebase. Phase 4 architectural discussions filed as issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94).
+**Current state (2026-04-30):** 880 tests passing, `just ci` green. PR #103 (OTel tracing) review comments addressed in code, awaiting merge. All Tier 1 features shipped. Tracing fully integrated: hub + CLI spans, JSONL file sink, HITL two-span trace continuity, noise suppression, attribute hygiene. Code review follow-up issue [#111](https://github.com/ColeB1722/fin-assist/issues/111) open.
+
+**Recent refactoring (this session):**
+
+1. **`tracing_shared.py`** — extracted shared span processors, config resolvers, and constants from `hub/tracing.py` and `cli/tracing.py` into a new public module. Eliminated cross-module private imports and duplicated logic. Dependency graph changed from `cli/ → hub/` to `cli/ → tracing_shared/ ← hub/`.
+2. **`get_user_input` fix** — removed test-induced fallback path (`getattr(context.message, ...)`) from executor; fixed `_make_request_context` helper in `test_tracing.py` to stub on the context object where the real a2a-sdk API puts it.
+3. **Executor prep extract** — extracted `_extract_user_input()` (static method) and `_detect_resume()` + `_ResumeInfo` dataclass from `execute()`, shrinking the method by ~15 lines and untangling user-input extraction and resume detection into named, testable units.
+4. **`_TaskTracer` extraction** — moved all OTel span lifecycle from `executor.py` into `hub/_task_tracer.py`. `_ExecutionContext` went from 13 fields (6 tracing, 7 business) to 8 (7 business + 1 `tracer` reference). Executor lost 8 tracing methods and 50+ lines of inline span setup. `execute()` dropped from ~135 lines of interleaved logic to ~50 lines of pure business flow. All 880 tests pass unchanged.
 
 **Core platform status:**
 
 | Area | Status |
 |------|--------|
-| Executor rework + tool calling | ✅ Complete (Phases A + B merged via PR #87) |
-| HITL approval | ✅ Complete (Phase C — `ApprovalPolicy`, deferred tool flow, approval widget) |
-| ContextProviders dual path | ✅ Complete — model-driven (tools) + user-driven (`@`-completion) |
-| Streaming UX (thinking + text deltas, `render_stream`) | ✅ Complete |
-| `fin do` input panel + `--edit` | ✅ Complete — interactive input, pre-fill, `--agent` flag |
-| `@`-completion in FinPrompt | ✅ Complete — `AtCompleter`, `resolve_at_references`, `_CombinedCompleter` |
-| `fin list` capabilities | ✅ Complete — `tools`, `prompts`, `output-types` (local, no hub) |
-| Remove built-in agents | ✅ Complete — `_DEFAULT_AGENTS = {}`, all from config.toml |
-| Client artifact-merge fix | ✅ Complete — splice in both `stream_agent()` and `_send_and_wait()` |
-| Git agent (#79) | ✅ Complete — scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows (commit/pr/summarize) |
-| Observability / tracing | 📐 Design resolved (Phoenix + OTel); queued as next session — see "Sequenced roadmap" |
+| Executor rework + tool calling | ✅ Complete (PR #87) |
+| HITL approval | ✅ Complete |
+| ContextProviders dual path | ✅ Complete |
+| Streaming UX | ✅ Complete |
+| `fin do` input panel + `--edit` | ✅ Complete |
+| `@`-completion | ✅ Complete |
+| `fin list` capabilities | ✅ Complete |
+| Remove built-in agents | ✅ Complete |
+| Client artifact-merge fix | ✅ Complete |
+| Git agent (#79) | ✅ Complete |
+| Observability / tracing | ✅ Complete (PR #103 + hardening + UX pass) |
 
 **Remaining tracked items:**
 
-- `_CONTEXT_TYPE_MAP` centralization — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool→context mappings; tests read the private attribute.
+- `_CONTEXT_TYPE_MAP` centralization — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool→context mappings; tests read the private attribute
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
 - `build_user_message`/`format_context` helpers in `llm/prompts.py` are dead code
 - `supported_context_types` published in agent cards, never consumed by clients
+- Scoped CLI tools approval=always is not final state — per-subcommand approval is Phase A of Skills API
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
-- Scoped CLI tools approval=always is not final state — per-subcommand approval is Phase A of the sequenced Skills API plan (see "Design Sketches: Skills API" below)
 
 ---
 
 ## Next Session
 
-**Planned: Tracing — Phoenix + OTel.**
+**Recommended picks (in priority order):**
 
-Design is resolved (see architecture.md and handoff.md historical notes). Now that the git agent provides real multi-step tool-call + deferred-approval flows to observe, the tracing signal will be meaningful. Wire OTel spans to `StepEvent`/`StepHandle` boundaries from PR #87, ship Phoenix as the observability backend.
+1. **`fin-assist trace replay <file>`** — POST loop that re-ships JSONL lines at an OTLP endpoint so a captured trace can be re-rendered in a fresh backend. ~50 LOC. Not filed yet.
+2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" below.
+3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from parallel-tool-span refactor.
+4. **Re-parent `running tool` under `fin_assist.tool_execution`** — currently siblings under `fin_assist.step`, which double-counts `tool.name` queries. Needs SpanProcessor.on_start hook. No issue filed.
 
-### Sequenced roadmap (why this order)
+### Sequenced roadmap
 
-| # | Work | Rationale |
-|---|------|-----------|
-| 1 | **Tracing: Phoenix + OTel** (next session) | Design resolved but zero code in `src/`. Git agent provides real multi-step tool-call + deferred-approval flows to observe. `StepEvent`/`StepHandle` boundaries from PR #87 are fresh — cheapest time to wire instrumentation. Phoenix gives us an eval UI for free once traces are clean. |
-| 2 | **Eval harness (per-agent, not platform-level)** | Evals are downstream of observability when using Phoenix. Two real agents exist (test + git) — eval criteria are meaningful. Platform stance: evals live at the agent level (`tests/evals/<agent>/`). Closes [#14](https://github.com/ColeB1722/fin-assist/issues/14). Likely surfaces [#80](https://github.com/ColeB1722/fin-assist/issues/80) (AgentBackend simplification). |
-| 3 | **Skills API** | Generalizes the scoped CLI tools + workflow config pattern from the git agent. Per-subcommand approval, context templates, skill auto-discovery. See the Skills API GitHub issue for the full vision. |
+| # | Work | Status |
+|---|------|--------|
+| 1 | Tracing: OTel + OpenInference bridge | ✅ Complete — follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109) |
+| 2 | Eval harness (per-agent, not platform-level) | ⬜ Queued — rides on tracing; Phoenix eval primitives consume OTel traces |
+| 3 | Skills API | 📐 Phase A sketch resolved; see below |
 
-**Why not tracing first:** tracing one agent (the `test` agent) gives ~10% of the learnings of tracing a real agent with non-trivial tool calls. The scaffolding would ship but the signal wouldn't.
+### Alternative picks
 
-**Why not evals first:** without tracing, eval failures are opaque — you know an eval failed but not why the agent went wrong in the middle of a 3-step tool loop. Phoenix eval primitives specifically consume OTel traces, so doing them in the other order duplicates work.
-
-### Alternative picks if priorities change
-
-1. **Phase 4 design discussions** — open issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94). Each issue body is a session-ready brief. `#92` has a research spike as pre-work.
-2. **Tech debt** — `_CONTEXT_TYPE_MAP` centralization, dead code cleanup in `llm/prompts.py`, AgentBackend simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80)).
-3. **Future phases** — Multiplexer, TUI, Skills/MCP, additional agents, multi-agent workflows.
-4. **Other open issues** — see `gh issue list` for the broader backlog.
+1. **Phase 4 design discussions** — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
+2. **Tech debt** — `_CONTEXT_TYPE_MAP`, dead code in `llm/prompts.py`, AgentBackend simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
+3. **Other open issues** — `gh issue list`
 
 ---
 
@@ -63,70 +68,135 @@ Design is resolved (see architecture.md and handoff.md historical notes). Now th
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1–8b | Core platform (repo setup → CLI REPL) | ✅ Complete |
-| — | Config-Driven Redesign (all steps including context injection) | ✅ Complete |
-| — | a2a-sdk migration (from fasta2a) | ✅ Complete (2026-04-20) |
-| — | Backend Extraction (AgentSpec pure config) | ✅ Complete (2026-04-21) |
-| — | Auth-Required Credential Pre-Check | ✅ Complete (2026-04-03) |
-| — | Reliable Server Lifecycle (fcntl PID lock) | ✅ Complete (2026-04-09) |
-| — | Shared Render Pipeline (`render_agent_output`) | ✅ Complete |
-| — | Streaming UX Refactor (thinking in artifacts, `render_stream`) | ✅ Complete (2026-04-23) |
-| — | Unified Executor + Tools + HITL (PR #87 Phases A–C) | ✅ Complete (2026-04-24/26) |
+| — | Config-Driven Redesign | ✅ Complete |
+| — | a2a-sdk migration | ✅ Complete |
+| — | Backend Extraction (AgentSpec pure config) | ✅ Complete |
+| — | Auth-Required Credential Pre-Check | ✅ Complete |
+| — | Reliable Server Lifecycle (fcntl PID lock) | ✅ Complete |
+| — | Shared Render Pipeline | ✅ Complete |
+| — | Streaming UX Refactor | ✅ Complete |
+| — | Unified Executor + Tools + HITL (PR #87) | ✅ Complete |
 | — | `FIN_DATA_DIR` unified path | ✅ Complete |
-| — | Remove built-in agents (`_DEFAULT_AGENTS = {}`) | ✅ Complete |
-| — | `fin do` input panel + `--edit` + `--agent` flag | ✅ Complete |
-| — | `@`-completion (AtCompleter + resolve_at_references) | ✅ Complete |
-| — | `fin list` capabilities (tools, prompts, output-types) | ✅ Complete |
-| — | Client artifact-merge fix (splice in stream_agent + _send_and_wait) | ✅ Complete |
+| — | Remove built-in agents | ✅ Complete |
+| — | `fin do` + `--edit` + `--agent` | ✅ Complete |
+| — | `@`-completion | ✅ Complete |
+| — | `fin list` capabilities | ✅ Complete |
+| — | Client artifact-merge fix | ✅ Complete |
 | — | ContextSettings forwarded to tool callables | ✅ Complete |
-| — | PR #87 self-review triage (Phases 1–3) | ✅ Complete (2026-04-26) |
-| — | Phase 4 architecture discussions | 📐 Filed as issues #89–#94 |
-| — | Documentation sync (README, architecture.md, manual-testing.md, handoff.md) | ✅ Complete (2026-04-27) |
-| — | Git agent (#79): scoped `git`/`gh` CLI tools, `WorkflowConfig`, three workflows | ✅ Complete (2026-04-27) |
-| 9b | Full SSE Streaming (was blocked on fasta2a) | ✅ Covered by a2a-sdk migration |
+| — | PR #87 self-review triage | ✅ Complete |
+| — | Phase 4 architecture discussions | 📐 Filed as #89–#94 |
+| — | Documentation sync | ✅ Complete |
+| — | Git agent (#79) | ✅ Complete |
+| — | Phoenix/OTel tracing (PR #103) | ✅ Complete |
+| — | Telemetry Hardening Phase 2 | ✅ Complete |
+| — | JSONL file exporter (#105) | ✅ Complete |
+| — | Tracing UX pass (#104) | ✅ Complete |
+| — | PR #103 code review fixes | ✅ Complete |
+| 9b | Full SSE Streaming | ✅ Covered by a2a-sdk migration |
 | 10 | Non-blocking + interactive tasks | 📐 Superseded by deferred tools |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
-| 13 | TUI Client (A2A) | ⬜ Not Started |
-| 14 | Testing Infrastructure (Deep Evals) — per-agent eval harness, rides on Phoenix traces | ⬜ Queued after tracing — see "Sequenced roadmap" in Next Session |
-| 15 | Skills + MCP Integration | 📐 Scoped CLI tools + WorkflowConfig shipped (git agent); sequenced Phase A/B/C sketch resolved 2026-04-27 — see "Design Sketches" below |
-| 16 | Additional Agents | 🔄 Git agent shipped; SDD/TDD/code review pending |
+| 13 | TUI Client | ⬜ Not Started |
+| 14 | Testing Infrastructure (Deep Evals) | ⬜ Queued |
+| 15 | Skills + MCP Integration | 📐 Phase A sketch resolved |
+| 16 | Additional Agents | 🔄 Git shipped |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
-| — | Phoenix/OTel tracing | 📐 Design resolved; queued as next session |
 | — | Nix/Home Manager packaging | 📐 Sketched |
 
 ---
 
 ## Design Sketches
 
+### Tracing (OTel + OpenInference, shipped 2026-04-29)
+
+Three incremental phases, all shipped:
+
+**Phase 1 — Baseline OTel spans** (PR #103): `setup_tracing` in `hub/tracing.py` builds a vendor-agnostic `TracerProvider` + `OTLPSpanExporter`. Executor emits `fin_assist.task`, `fin_assist.step`, `fin_assist.tool_execution`, `fin_assist.approval_request`/`approval_decided` spans with OpenInference semantic convention attributes. Backends install their own instrumentation via `AgentBackend.install_tracing(provider)` hook. `hub/tracing_attrs.py` is the single source of truth for attribute/span constants.
+
+**Phase 2 — OpenInference bridge + HITL continuity**: `agents/pydantic_ai_tracing.py` adds `OpenInferenceSpanProcessor` (translates `gen_ai.*` → `llm.*` + `openinference.span.kind=LLM`). HITL two-span model: at pause, `approval_request` span ended + `save_pause_state` persists SpanContext + user_input; at resume, new task span with `Link(prev_ctx)`, `approval_decided` child span. `TracingSettings` has `sampling_ratio`, `headers`, `event_mode`, `include_content` knobs. JSONL file exporter (`hub/file_exporter.py`) always writes to `paths.TRACES_PATH` when tracing is enabled — no config knob, toggled via `enabled`.
+
+**Phase 3 — UX pass** (#104): CLI tracer (`cli/tracing.py`) with `cli.<command>` root spans + `HTTPXClientInstrumentor` + Baggage-propagated `fin_assist.cli.invocation_id`. `_DropSpansProcessor` filters ASGI/a2a-sdk noise. `FinAssistAttributes.TASK_STATE` enum replaces binary flag. `_scrub_span_attributes` strips `logfire.*`, `final_result`, duplicate `session.id`. One `fin do` = 1 CLI trace + 1 hub trace, ~30-40 useful spans.
+
+**Key architectural invariants:**
+
+- `hub/tracing.py` and `hub/executor.py` never import from `openinference.instrumentation.*` — only backends do
+- `hub/tracing_attrs.py` re-exports semconv constants — treated as pure spec, not coupling
+- OpenInference is semantic conventions (attribute *names* like `input.value`, `tool.name`), not a framework — any OTel backend stores spans with these attributes
+- JSONL sink is always-on when tracing enabled, writes to `$FIN_DATA_DIR/traces.jsonl` via `paths.TRACES_PATH`
+- `OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false` set in `__init__.py` (before a2a-sdk import) to suppress `@trace_class` noise
+
+**Span hierarchy:**
+
+```text
+HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
+  └── fin_assist.task (AGENT)
+        ├── fin_assist.step (CHAIN)
+        │     └── chat {model} (CLIENT, via instrument_all)
+        ├── fin_assist.step (CHAIN)
+        │     ├── fin_assist.tool_execution (TOOL)
+        │     └── chat {model} (CLIENT)
+        ├── fin_assist.step (CHAIN)
+        │     └── fin_assist.approval_request (TOOL, paused)
+        └── (resume: new trace with Link back)
+              └── fin_assist.approval_decided (TOOL)
+```
+
+**Initialization order** (`fin serve` / `fin do`):
+
+1. Backends constructed
+2. `setup_tracing(config.tracing, backends)` — builds provider, calls `backend.install_tracing(provider)` for each
+3. `create_hub_app`
+4. `FastAPIInstrumentor.instrument_app(app)`
+5. CLI: `setup_cli_tracing(config.tracing)` — separate provider writing to same JSONL
+
+**Follow-up issues:** [#104](https://github.com/ColeB1722/fin-assist/issues/104) (W3C traceparent), [#106](https://github.com/ColeB1722/fin-assist/issues/106) (multi-exporter), [#107](https://github.com/ColeB1722/fin-assist/issues/107) (event_mode=logs), [#108](https://github.com/ColeB1722/fin-assist/issues/108) (retry-aware tool spans), [#109](https://github.com/ColeB1722/fin-assist/issues/109) (OTLP probing), [#111](https://github.com/ColeB1722/fin-assist/issues/111) (code review quality improvements).
+
+---
+
+### _TaskTracer Extraction (completed)
+
+**Status:** Implemented in `hub/_task_tracer.py`.
+
+**What changed:** `executor.py` had 6 tracing fields on `_ExecutionContext` and 8 tracing methods on `Executor`, interleaving A2A task lifecycle and OTel span lifecycle. Extracted all span creation, attribute setting, and context token management into `_TaskTracer` (new file `hub/_task_tracer.py`). `_ExecutionContext` now has a single `tracer: _TaskTracer` field; the executor delegates span operations via `ctx.tracer.start_task_span(...)`, `ctx.tracer.end_step_span()`, etc.
+
+**Results:**
+- `_ExecutionContext`: 13 fields → 8 (6 tracing fields → 1 `tracer` reference)
+- `Executor`: lost `_start_step_span`, `_end_step_span`, `_start_tool_span`, `_end_tool_span`, `_make_link`, `_emit_approval_decided_span`, `_handle_deferred_event`, `_detach_task_context`, `_read_invocation_id_from_baggage`, `_active_tracer` property, `_tracer` field
+- `execute()`: ~135 lines → ~50 lines of business flow
+- `_pause_for_approval()`, `_finalize()`: inline span code replaced by single tracer calls
+- `_dispatch_step_event()`: each event case now has 1 tracer call + A2A artifact logic
+- `_handle_deferred_event()` split into `tracer.emit_approval_request_span(event)` + `_emit_deferred_artifact()`
+- `executor.py` has zero OTel imports — all span lifecycle lives in `_task_tracer.py`
+- All 880 tests pass unchanged
+
+---
+
 ### Skills API: sequenced refactor (Phase 15 breakdown)
 
-**Status:** Sketch resolved 2026-04-27. Ready to start Phase A in a fresh session.
+**Status:** Sketch resolved 2026-04-27. Ready to start Phase A.
 
-**Why this exists:** the scoped CLI + WorkflowConfig pattern from the git agent (2026-04-27) is a prototype for the broader Skills API (`architecture.md:991`, Phase 15). Rather than landing Skills as one big refactor, split into three sequenced phases, each independently shippable with a real user-visible exit gate.
+**Why this exists:** scoped CLI + WorkflowConfig pattern from the git agent is a prototype for the broader Skills API. Split into three sequenced phases, each independently shippable.
 
-**Grounding citations** (in-repo, so this sketch stays honest):
+**Grounding citations:**
 
 - Scoped CLI prototype + TODO for per-subcommand approval: `src/fin_assist/agents/tools.py:213`, `src/fin_assist/agents/tools.py:295`
 - Current `ApprovalPolicy` shape (only `never`/`always`, no rules): `src/fin_assist/agents/tools.py:40`
 - `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99`
-- Empty `skills/` + `mcp/` placeholder folders: `architecture.md:291`, `architecture.md:294`
-- Skills API vision (API + CLI + Skills pattern): `docs/architecture.md:991`–`:1007`
-- Existing note: "Scoped CLI tools approval=always is not final state": this file, "Remaining tracked items"
+- Skills API vision: `docs/architecture.md:991`–`:1007`
 
 ---
 
 #### Phase A — Subcommand approval rules
 
-**Goal:** `git diff` runs un-gated; `git push` still asks. Highest-value slice of the user's idea, aligned with the explicit TODO at `tools.py:213`.
+**Goal:** `git diff` runs un-gated; `git push` still asks. Aligned with TODO at `tools.py:213`.
 
 **Design:**
 
 ```python
-# src/fin_assist/agents/tools.py
 @dataclass
 class ApprovalRule:
-    pattern: str            # fnmatch-style glob against the full args string
+    pattern: str            # fnmatch glob against full args string
     mode: Literal["never", "always"]
     reason: str | None = None
 
@@ -145,32 +215,30 @@ class ApprovalPolicy:
 
 **Touchpoints:**
 
-- `src/fin_assist/agents/tools.py:40` — extend `ApprovalPolicy` (above)
-- `src/fin_assist/agents/tools.py:295` — `_make_scoped_cli` callable becomes aware of its policy so the backend can query `policy.evaluate(args)` per call
-- Backend adapter (pydantic-ai glue that reads `approval_policy`) — switch from static `requires_approval` flag to per-call evaluation via pydantic-ai's `approval_required()` toolset wrapper pattern
-- **Rules still Python-defined in `create_default_registry()`** — no config schema change yet. Config authoring lands in Phase B.
+- `src/fin_assist/agents/tools.py:40` — extend `ApprovalPolicy`
+- `src/fin_assist/agents/tools.py:295` — `_make_scoped_cli` callable queries `policy.evaluate(args)` per call
+- Backend adapter — switch from static `requires_approval` to per-call evaluation
+- Rules still Python-defined in `create_default_registry()` — no config schema change yet
 
-**TDD tests (before implementation, per `AGENTS.md`):**
+**TDD tests:**
 
-- `test_approval_policy_evaluate.py`: pattern matching, first-match-wins, fallback to `mode`, empty rules behaves like current `ApprovalPolicy`
-- `test_tools_scoped_cli_approval.py`: `git diff` → never, `git push origin main` → always, `git log --oneline -5` → never, unknown subcommand → fallback
+- `test_approval_policy_evaluate.py`: pattern matching, first-match-wins, fallback to `mode`, empty rules
+- `test_tools_scoped_cli_approval.py`: `git diff` → never, `git push origin main` → always
 - Executor integration: deferred `StepEvent` emitted only when `evaluate()` returns `always`
 
-**Exit gate:** through the git agent, `git diff` runs without an approval prompt; `git push` still pauses. Manual demo + tests.
-
-**Files touched (estimate):** ~4 source, ~2 new test files, ~200 LOC + tests.
+**Exit gate:** through the git agent, `git diff` runs without prompt; `git push` still pauses.
 
 ---
 
 #### Phase B — Skill bundling (ToolDefinition → SkillDefinition)
 
-**Goal:** one TOML object bundles a scoped CLI + its approval rules + named scripts + workflows. Makes skills authorable end-to-end in config.
+**Goal:** one TOML object bundles a scoped CLI + its approval rules + named scripts + workflows.
 
 **Design (TOML shape):**
 
 ```toml
 [skills.git]
-type = "cli"                         # preps the tool-type taxonomy in Phase C
+type = "cli"
 prefix = "git"
 description = "Run any git subcommand."
 
@@ -180,116 +248,48 @@ rules = [
   { pattern = "diff*",   mode = "never" },
   { pattern = "status*", mode = "never" },
   { pattern = "log*",    mode = "never" },
-  { pattern = "show*",   mode = "never" },
 ]
 
 [skills.git.scripts.pr-checklist]
-description = "Print the PR review checklist from scripts/git/pr-checklist.sh"
+description = "Print the PR review checklist"
 path = "scripts/git/pr-checklist.sh"
 approval = "never"
 
-# Workflows move under skills (decided 2026-04-27) to unlock cross-agent reuse.
-# The existing [agents.<name>.workflows.<w>] keys MUST be migrated; no dual-read.
 [skills.git.workflows.commit]
-description = "Generate a conventional commit message from current changes."
+description = "Generate a conventional commit message."
 prompt_template = "git-commit"
-entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
+entry_prompt = "Analyze the current staged and unstaged changes..."
 ```
 
-**Touchpoints:**
+**Touchpoints:** new `src/fin_assist/skills/` package (definition, loader, registration), `config/schema.py` add `skills: dict[str, SkillConfig]`, migrate workflows from `AgentConfig` to `SkillConfig`, update `cli/main.py` workflow resolution.
 
-- **New:** `src/fin_assist/skills/` package (currently empty placeholder at `architecture.md:291`). Contains:
-  - `definition.py` — `SkillDefinition`, `SkillConfig` (pydantic model)
-  - `loader.py` — reads `config.skills`, instantiates `SkillDefinition`s
-  - `registration.py` — adapter that expands a skill into N `ToolDefinition`s (the CLI itself + one per named script), all sharing the skill's approval policy, and registers them into `ToolRegistry`
-- `src/fin_assist/config/schema.py:85` — add `skills: dict[str, SkillConfig]` at root `Config` level. **Remove** `workflows` from `AgentConfig`; migrate to `SkillConfig.workflows`. `AgentConfig.tools` now references either raw tool names or skill names (skill name expands to "CLI tool + its scripts").
-- `src/fin_assist/hub/app.py:create_hub_app` — load skills and register into the shared `ToolRegistry` before `AgentSpec` construction (so `spec.tools` resolution sees them).
-- `config.toml` — migrate `[agents.git.workflows.*]` to `[skills.git.workflows.*]`. Agent still references the skill via `tools = ["git", "gh"]`.
-- `src/fin_assist/cli/main.py` — workflow resolution (`fin do git commit`) now looks up the workflow via the agent's skills, not `AgentConfig.workflows` directly.
-
-**What Phase B explicitly does NOT do:**
-
-- No tool-type dispatch beyond validation. `type = "cli"` is required and parsed, but only the CLI branch is wired. Second branch (`mcp`, `function`, `browser`) waits for Phase C with a real consumer.
-- No KG / NL-over-docs discoverability. Current `description` is sufficient (and `fin list tools` already surfaces it).
-- No cross-project skill auto-discovery from `~/.config/fin/skills/`. Phase 15 stretch goal.
-
-**TDD tests:**
-
-- `test_skills_config.py`: TOML parsing for skill + approval rules + scripts + workflows
-- `test_skills_registration.py`: a skill with `scripts = {foo, bar}` registers 3 `ToolDefinition`s (`git`, `git.foo`, `git.bar`) all sharing the approval policy
-- `test_skills_workflow_resolution.py`: `fin do git commit` resolves to `[skills.git.workflows.commit]`, not the old `[agents.git.workflows.commit]`
-- Migration test: loading a config with the legacy `[agents.*.workflows.*]` shape raises a clear error pointing to the new location (no silent fallback)
-
-**Exit gate:** `config.toml` defines `skills.git` with subcommand rules and at least one named script; `[agents.git] tools = ["git"]` auto-resolves to the Skill; behavior identical to Phase A but config-driven. A **second** skill authored end-to-end in TOML (candidate: `just`, `gh`, or `docker` — pick at implementation time based on what's most useful for the dev loop) as the config-path validation.
-
-**Files touched (estimate):** ~3 new source files, ~3 modified source files, ~4 new test files, ~400 LOC + tests + config migration.
+**Exit gate:** config.toml defines `skills.git` with rules + scripts; second skill authored end-to-end in TOML as validation.
 
 ---
 
 #### Phase C — Tool-type primitive
 
-**Goal:** `type: Literal["cli", "mcp", ...]` as a first-class field, with type-specific OTel span attributes and a self-documenting registry.
+**Goal:** `type: Literal["cli", "mcp", ...]` as first-class field, with type-specific OTel span attributes.
 
-**Gate for starting Phase C:** a second tool type has a concrete consumer. Most likely trigger: MCP integration (`architecture.md:294`, `tools.py:22`). Secondary candidates: browser-use, Python-script-exec-in-sandbox. **Do not start Phase C speculatively** — the primitive is premature generalization without a second consumer.
+**Gate for starting Phase C:** a second tool type has a concrete consumer. Most likely MCP ([#84](https://github.com/ColeB1722/fin-assist/issues/84)). **Do not start speculatively.**
 
-**Design:**
+**Design:** `ToolTypeAdapter` protocol with `span_attributes()`, `invoke()`, `load_from_config()`. `ToolDefinition.type` field. Global `ToolTypeRegistry`. OTel instrumentation lives in the adapter, not the callable. `fin list tool-types` CLI surface.
 
-```python
-# src/fin_assist/agents/tool_types.py  (new)
-class ToolTypeAdapter(Protocol):
-    """How a tool of type <T> is invoked, traced, and loaded from config."""
-
-    type_name: str  # "cli", "mcp", "function", "browser", ...
-
-    def span_attributes(self) -> list[str]:
-        """OTel attribute names this type emits. Powers `fin list tool-types`."""
-
-    async def invoke(
-        self, definition: ToolDefinition, args: dict[str, Any]
-    ) -> str:
-        """Run the tool and emit a type-shaped OTel span around the callable."""
-
-    def load_from_config(self, skill_config: SkillConfig) -> list[ToolDefinition]:
-        """Turn TOML config into ToolDefinitions. Phase B's CLI loader moves here."""
-```
-
-- `ToolDefinition.type: str` — required field (default `"cli"` for backward compat at first, made required once all skills declare explicitly)
-- OTel instrumentation lives in the adapter, **not** in the tool callable. Preserves "platform types zero framework deps" invariant at `agents/tools.py:1`
-- Global `ToolTypeRegistry` (alongside `ToolRegistry`) maps `type_name` → adapter
-
-**Expanded exit gate (per 2026-04-27 discussion):**
-
-1. **Type-adapter pattern codified.** `ToolTypeAdapter` protocol lands with the `cli` adapter as the first implementation. The existing `_make_scoped_cli` logic moves behind the adapter interface; all current CLI-typed skills flow through it unchanged. Span attributes for `cli`: `cli.prefix`, `cli.args`, `cli.exit_code`, `cli.duration_ms`, `cli.timed_out`.
-2. **Second adapter lands end-to-end.** Most likely `mcp` — `MCPToolsetAdapter` connects to one configured MCP server, enumerates its tools via the MCP client protocol, and registers each as a `ToolDefinition(type="mcp", ...)`. Span attributes for `mcp`: `mcp.server`, `mcp.tool_name`, `mcp.request_id`, `mcp.duration_ms`. Ships with one real MCP server working end-to-end (candidate: `mcp-server-git` or a filesystem server; decide at implementation time based on ecosystem state).
-3. **`fin list tool-types` CLI surface.** New subcommand matching the existing `fin list tools/prompts/output-types` pattern (from handoff Tier 1 work). Output shape:
-   ```
-   cli        span attrs: cli.prefix, cli.args, cli.exit_code, cli.duration_ms, cli.timed_out
-              skills: git, gh, just
-   mcp        span attrs: mcp.server, mcp.tool_name, mcp.request_id, mcp.duration_ms
-              skills: mcp.filesystem, mcp.github
-   ```
-   Self-documenting: adding a new type means its span schema is discoverable without reading adapter source. Enforces the invariant that types are semantically distinct (if two types have identical `span_attributes()`, one of them is decorative).
-4. **Span semantics verified in Phoenix.** By the time Phase C starts, Phoenix/OTel has shipped (next-session work per `handoff.md:36`). Exit criterion: open Phoenix, see `cli`-type and `mcp`-type invocations side-by-side with their type-specific attributes, and be able to filter traces by `tool.type`. **This is the gate that proves the primitive has real semantic weight rather than being a decorative enum.**
-
-**Files touched (estimate):** ~5 new source files (tool_types module, MCP adapter, MCP client wrapper), ~4 modified (ToolDefinition field, backend adapter wiring, CLI `list` command, Phoenix instrumentation hooks), ~5 new test files, ~600 LOC + tests + MCP integration test.
+**Exit gate:** two type adapters landed end-to-end, span semantics verified in OTel backend.
 
 ---
-
-#### Explicitly parked (from the original brainstorm)
-
-- **Knowledge-graph–backed tool discoverability** (NL Q&A over man pages / docs). Revisit post-Skills as a new `ContextProvider` implementation if a real pain point appears — LLMs already know `git`'s surface area, and Context7 covers library docs. Not on Phase A/B/C critical path.
-- **"One `bash` supertool" framing.** Rejected in favor of distinct prefix-scoped Skills. The codebase direction (`tools.py:14`) is explicitly away from generic shell as primary surface; scoped CLIs are the replacement.
-- **"Agents orchestrate many CLIs" as new design.** Already the shape (`[agents.git] tools = ["git", "gh", "run_shell", ...]`); Skills make it more structured but don't change the conceptual model.
 
 #### Sequencing summary
 
 | Phase | Ship | Blocks on | Real consumer |
 |---|---|---|---|
-| A | Per-subcommand approval (Python-defined rules) | — | Git agent UX today |
-| B | Skill object (TOML-authored skills, script bundling, workflows migrated under skills) | Phase A | User-authored skills; replaces agent-scoped workflows |
-| C | Tool-type taxonomy + adapter pattern + `fin list tool-types` | Phase B + Phoenix/OTel + a real second type (MCP likely) | MCP integration or browser-use |
+| A | Per-subcommand approval | — | Git agent UX today |
+| B | Skill object (TOML-authored, workflows migrated) | Phase A | User-authored skills |
+| C | Tool-type taxonomy + adapter pattern | Phase B + real second type | MCP integration |
 
-**Start here in next session:** Phase A, TDD-first per `AGENTS.md`. Open the failing `test_approval_policy_evaluate.py` first.
+#### Skills vs. `context/` overlap
+
+`GitContext` duplicates what the `git` scoped CLI tool does. With per-subcommand approval (Phase A), `@git:diff` can resolve through the skill (diff → `never` approval). `FileFinder` and `ShellHistory` remain as `ContextProvider`s — they have search/get_item semantics, not CLI-wrapper semantics.
 
 ---
 
@@ -297,91 +297,67 @@ class ToolTypeAdapter(Protocol):
 
 Key completed milestones. See git log for full detail; code is the source of truth.
 
+### PR #103 Code Review Fixes (2026-04-30)
+
+Addressed all 21 review comments across 6 themes:
+
+1. **Framework agnosticism** — rewrote docstrings across all tracing files to use vendor-neutral language; explained OpenInference = semantic conventions, not a framework
+2. **Docstring verbosity** — stripped conversational comments, private cross-references, Phoenix-specific editorializing
+3. **Legacy cleanup** — removed `ALTER TABLE` migration sniffing, removed `save_trace_context`/`load_trace_context` methods, renamed to `save_pause_state`/`load_pause_state`
+4. **Config simplification** — removed `file_path` from `TracingSettings`; JSONL sink always-on via `paths.TRACES_PATH` when tracing enabled; removed `FIN_TRACING__FILE_PATH` env var
+5. **OTel conceptual clarity** — added docstrings explaining OTel Links, force_flush/shutdown lifecycle, duplicate span tradeoff
+6. **Argparse cleanup** — replaced `getattr(args, "agent", None) or ""` with `args.agent or ""` via `set_defaults(agent=None)`
+
+4 new tests added (876 → 880). `just ci` green.
+
 ### Git Agent + Scoped CLI Tools (#79, 2026-04-27)
 
-First real end-user agent. Introduced three concepts that generalize to the Skills API:
-
-- **Scoped CLI tools**: `git` and `gh` tools that wrap a command prefix (`git {args}`, `gh {args}`). Replaced per-subcommand wrappers (`git_diff`, `git_log`) — one tool per CLI instead of one per subcommand, saving prompt tokens. Approval is `always` for all scoped CLI tools; per-subcommand approval is a planned Skills API enhancement.
-- **WorkflowConfig**: Agent-scoped config primitive for prompt-steered sub-tasks. Each workflow has a description, prompt_template (system prompt override), entry_prompt (sent as user message), and optional serving_modes override. CLI resolves workflows via `fin do git commit` (positional) or `--workflow commit` (explicit flag).
-- **Git agent system prompt**: Covers three workflows (commit, PR, summarize) with step-by-step instructions. Each workflow has a dedicated prompt template in `SYSTEM_PROMPTS` for focused steering.
-
-Files changed: `tools.py` (scoped CLI factory, remove `git_diff`/`git_log`), `spec.py` (`_CONTEXT_TYPE_MAP` update), `prompts.py` (git instructions), `registry.py` (prompt registration), `schema.py` (`WorkflowConfig`), `config.toml` (git agent + workflows), `main.py` (workflow resolution + `--workflow` flag), `streaming.py` (emoji map + key arg for scoped tools).
+First real end-user agent. Scoped CLI tools (`git`, `gh`), WorkflowConfig (agent-scoped prompt steering), three workflows (commit, PR, summarize).
 
 ### Tier 1 Features + Doc Sync (2026-04-27)
 
-All remaining Tier 1 features landed and documentation synchronized with codebase:
+`@`-completion, `fin list`, `fin do` input panel + `--edit`, remove built-in agents, client artifact-merge fix, ContextSettings forwarding, doc sync.
 
-- **`@`-completion**: `AtCompleter` in `prompt.py` triggers on `@`, offers `file:`, `git:diff`, `git:log`, `history:` types. `@file:` delegates to `FileFinder.search()`. `resolve_at_references()` replaces `@type:ref` tokens with resolved context content before sending. Works in both `do` and `talk`.
-- **`fin list`**: New `list` subcommand with positional `resource: Literal["tools", "prompts", "output-types"]`. Local registry lookups only — no hub connection. Prints name, description, approval status for tools; name + first line for prompts; name → type name for output-types.
-- **`--file`/`--git-diff` removed**: No deprecation path — codebase isn't stable, so the old CLI flags were simply dropped. `@`-completion is the sole user-driven context path.
-- **`fin do` input panel + `--edit`**: `fin do` without prompt opens FinPrompt input panel. `--edit` pre-fills with the prompt arg. `--agent` flag replaces positional agent arg.
-- **Remove built-in agents**: `_DEFAULT_AGENTS = {}`. All agents from config.toml. `GeneralSettings.default_agent` config field. Zero-agents error with TOML example.
-- **Client artifact-merge fix**: Splice collected artifacts into `task.artifacts` in both `stream_agent()` and `_send_and_wait()` before calling `_extract_result()`.
-- **ContextSettings forwarded to tool callables**: `_make_read_file()`, `_make_git_diff()`, etc. all pass `context_settings` to provider constructors.
-- **Doc sync**: README (duplicate Mermaid subgraph fixed, `@`-completion + `fin list` in status), architecture.md (directory tree updated, context section updated, `--file`/`--git-diff` references corrected to historical), manual-testing.md (test counts, `@`-completion tests, `fin list` tests), handoff.md (full rewrite to reflect current state).
+### Unified Executor & Agent Platform (PR #87, 2026-04-24→26)
 
-### Unified Executor & Agent Platform (2026-04-24 → 2026-04-26, PR #87)
-
-Unified five structural gaps into one coherent abstraction: executor loop (multi-step turns), tool calling, dual-path context (user-driven `@`-completion + model-driven tools), HITL approval gates, and OTel-ready step boundaries.
-
-**Guiding principle:** the platform owns the abstractions, backends adapt them. Tools, approval, and step events are platform concepts (zero framework imports); `PydanticAIBackend` maps them to pydantic-ai Deferred Tools / Hooks. Future `LangChainBackend` etc. would map the same platform types to their own primitives.
-
-**Phase A (Foundation) shipped.** ContextStore version byte; `StepEvent`/`StepHandle`/`_PydanticAIStepHandle`; Executor rewritten event-driven; all tests updated.
-
-**Phase B (Tool Calling) shipped.** `ToolDefinition`/`ToolRegistry` in `agents/tools.py`; `create_default_registry()` wraps `ContextProvider`s as async callables; `AgentConfig.tools` field; `AgentSpec.supports_context()` derived from tools; `AgentCardMeta.supported_context_types`; `PydanticAIBackend` resolves tools via `tool_registry.get_for_agent(spec.tools)`.
-
-**Phase C (HITL / Approval) shipped.** `ApprovalPolicy` on `ToolDefinition`; deferred tool flow end-to-end; `DeferredToolCall` dataclass; `run_approval_widget` in CLI.
-
-**Phase D (Observability).** Design only — Phoenix + OTel via `Agent.instrument_all()` aligned to step boundaries. Not yet implemented.
-
-### PR #87 Self-Review Triage (2026-04-26)
-
-45 review comments left on PR #87 as a notetaking mechanism. Worked through in phases:
-
-**Phase 1 — Quick wins** (commit `6149a2b`): Removed stale imports/ignores, `_key_arg_for_tool` → `match`, removed redundant `dest=` kwargs, if/elif → `match`, env var naming convention in AGENTS.md.
-
-**Phase 2 — Real smells** (5 items, all landed): Extracted version envelope to `agents/serialization.py`, dropped `conditional` approval mode, promoted `DeferredToolCall` dataclass, added lifecycle logging, split `Executor.execute()`.
-
-**Phase 3 — Real bugs** (3 items, all landed): Rewrote `_run_shell` with asyncio-native subprocess, dropped unused `AgentSpec.requires_approval`, normalized `StepEvent.content` for `tool_result`.
-
-**Phase 4 — Architectural discussions** filed as issues #89–#94.
+Unified executor loop, tool calling, dual-path context, HITL approval, OTel-ready step boundaries. Platform owns abstractions, backends adapt them.
 
 ### Streaming UX Refactor (2026-04-23)
 
-Backend streams typed `StreamDelta(kind, content)` via pydantic-ai `agent.iter()`. Executor routes thinking deltas as artifacts with `metadata.type = "thinking"`. Client yields `thinking_delta` events. Shared `render_stream()` uses Rich `Live` with initial spinner, transitions to `Group(thinking_panel?, answer_markdown)`. Both `do` and `talk` use the same pipeline.
+Backend streams `StreamDelta(kind, content)`. Shared `render_stream()` with Rich Live. Both `do` and `talk` use same pipeline.
 
 ### AgentBackend Extraction (2026-04-21)
 
-Extracted pydantic-ai coupling from hub into `AgentBackend` protocol. `AgentSpec` is now pure config (no `build_pydantic_agent`); all pydantic-ai knowledge in `PydanticAIBackend`. ContextStore takes `bytes` in/out — backend owns serialization. Executor takes `AgentBackend` and has zero pydantic-ai imports. Tracked simplification work as [#80](https://github.com/ColeB1722/fin-assist/issues/80).
+`AgentSpec` → pure config. All pydantic-ai knowledge in `PydanticAIBackend`. Executor has zero pydantic-ai imports.
 
 ### fasta2a → a2a-sdk Migration (2026-04-20)
 
-Full migration from `fasta2a` (pydantic's abandoned A2A impl) to `a2a-sdk` v1.0.0 (Google's official). Hub/executor uses `TaskUpdater` for all state transitions. `InMemoryTaskStore` (ephemeral) + SQLite `ContextStore` (conversation history). Agent card uses `AgentExtension(uri="fin_assist:meta")`. FastAPI parent app. Client uses `ClientFactory` + `send_message` async iterator. Streaming via `add_artifact(append=True, last_chunk=)`.
+Full migration to Google's `a2a-sdk` v1.0.0. `TaskUpdater` for state transitions, `InMemoryTaskStore` + SQLite `ContextStore`.
 
 ### Config-Driven Redesign (2026-04-11)
 
-Agents went from class-hierarchy (`DefaultAgent`, `ShellAgent` subclasses) to a single `ConfigAgent` driven by TOML. `AgentConfig` in `config/schema.py`. `ServingMode = Literal["do", "talk"]` replaces `multi_turn: bool`. `OUTPUT_TYPES` and `SYSTEM_PROMPTS` registries. Direct `Worker[list[ModelMessage]]` (closed #68).
+Agents from class-hierarchy to `ConfigAgent` driven by TOML. `ServingMode`, `OUTPUT_TYPES`, `SYSTEM_PROMPTS` registries.
 
 ### Auth-Required Credential Pre-Check (2026-04-03)
 
-Graceful early detection of missing API keys using A2A `auth-required` state. `MissingCredentialsError` raised in backend before any LLM call. Client renders yellow panel with provider name, env vars, credentials path.
+`MissingCredentialsError` before LLM call. A2A `auth-required` state. Client renders credential panel.
 
 ### Reliable Server Lifecycle (2026-04-09)
 
-Server-owned PID file with `fcntl.flock()`. `atexit` + custom SIGTERM handler cleans up. Lock-based stale detection. `stop_server` sends SIGTERM, waits up to 10s, escalates to SIGKILL.
+`fcntl.flock()` PID file, `atexit` + SIGTERM cleanup, lock-based stale detection.
 
 ### Early Platform Setup (2026-03-25 → 2026-04-08)
 
-Phases 1–8b: repo setup, core package structure, LLM module (pydantic-ai + credentials), credential UI (Textual `ConnectDialog`), context module (FileFinder/GitContext/ShellHistory/Environment providers), agent protocol & registry, agent hub server (fasta2a + SQLite), CLI client (A2A HTTP), CLI REPL mode (`FinPrompt` with prompt_toolkit, slash commands, persistent history).
+Phases 1–8b: repo setup, LLM module, credentials, context module, agent protocol, hub server, CLI client, REPL.
 
 ---
 
 ## Context for Fresh Session
 
-1. Read this file (`handoff.md`) for current state
+1. Read this file for current state
 2. Read `docs/architecture.md` for full architecture
 3. Read `AGENTS.md` for development patterns
-4. Check "Implementation Progress" table above
+4. Check "Implementation Progress" table
 5. Continue from "Next Session" section
 
 ### Key Files Reference
@@ -401,15 +377,14 @@ Phases 1–8b: repo setup, core package structure, LLM module (pydantic-ai + cre
 - Target fish 3.2+ for shell integration
 - Config stored in `~/.config/fin/config.toml`
 - Credentials stored in `$FIN_DATA_DIR/credentials.json` (0600 permissions)
-- Server binds to `127.0.0.1` only (local-only)
-- A2A protocol via a2a-sdk v1.0 for multi-client support
-- Multi-path routing: N agents at `/agents/{name}/`, each with own agent card
-- Conversation threading via A2A `context_id`
+- Server binds to `127.0.0.1` only
+- A2A protocol via a2a-sdk v1.0
+- Multi-path routing: N agents at `/agents/{name}/`
 - SQLite for context storage; `InMemoryTaskStore` for A2A tasks (ephemeral)
-- Server lifecycle: standalone via `fin serve`; auto-start from CLI; fcntl-locked PID file
-- `AgentSpec` is a pure config object (zero framework imports); all LLM coupling in `PydanticAIBackend`
-- Platform types in `agents/` have zero `hub/` imports by design (platform vs transport separation)
-- `@`-completion is the sole user-driven context path (`@file:`, `@git:diff`, `@git:log`, `@history:`); `--file`/`--git-diff` CLI flags removed
-- `fin list tools/prompts/output-types` lists platform registries locally (no hub connection)
-- Scoped CLI tools (`git`, `gh`) are the prototype for the Skills API — one tool per CLI, LLM picks subcommand/args
-- WorkflowConfig is agent-scoped prompt steering; full Skills API will generalize to global registry + context templates + per-subcommand approval
+- Server lifecycle: fcntl-locked PID file
+- `AgentSpec` is pure config; all LLM coupling in `PydanticAIBackend`
+- Platform types in `agents/` have zero `hub/` imports by design
+- `@`-completion is the sole user-driven context path; `--file`/`--git-diff` removed
+- Scoped CLI tools (`git`, `gh`) are the prototype for Skills API
+- JSONL trace sink always-on when tracing enabled, writes to `$FIN_DATA_DIR/traces.jsonl`
+- `OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false` set in `__init__.py` to suppress a2a-sdk noise

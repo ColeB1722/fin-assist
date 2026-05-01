@@ -26,6 +26,8 @@ ThinkingEffort = Literal["off", "low", "medium", "high"] | None
 
 ServingMode = Literal["do", "talk"]
 
+TracingProvider = Literal["phoenix", "none"]
+
 
 class GeneralSettings(BaseModel):
     """General application settings."""
@@ -52,6 +54,56 @@ class ProviderConfig(BaseModel):
     enabled: bool = True
     base_url: str | None = None
     default_model: str | None = None
+
+
+class TracingSettings(BaseModel):
+    """OpenTelemetry tracing configuration.
+
+    The non-obvious knobs:
+
+    * ``provider`` — human-readable preset that replaces raw OTel env
+      vars for the common case.  ``"phoenix"`` exports to Phoenix at the
+      default OTLP/HTTP endpoint (both OTLP and file sinks active).
+      ``"none"`` is file-only mode (no OTLP exporter constructed).
+      ``None`` (unset) falls back to manual mode where ``otlp_enabled``
+      and explicit endpoint/OTel env vars control the decision.
+      Set via ``FIN_TRACING__PROVIDER=phoenix``.
+    * ``otlp_enabled`` — whether to build the OTLP exporter at all.
+      Defaults to ``True`` so both sinks are active by default.  Set to
+      ``False`` for file-only mode when you don't want TCP connect
+      attempts to the endpoint on every batch flush.
+      ``provider="none"`` overrides this (always off).
+    * ``sampling_ratio`` — ``1.0`` in dev so every trace lands;
+      production can dial it down (``0.1`` = 10% sampled) without code
+      changes.
+    * ``headers`` — injected into the OTLP exporter for auth on hosted
+      backends (Logfire ``authorization: Bearer ...``, Honeycomb
+      ``x-honeycomb-team: ...``).  Resolution precedence is
+      config-headers > ``OTEL_EXPORTER_OTLP_HEADERS`` > empty.
+    * ``event_mode`` — pydantic-ai can emit LLM messages either inline
+      as span attributes or as OTel log events.  ``"attributes"`` is the
+      default for OTLP backends that render them; native-OTel backends
+      can flip to ``logs``.
+    * ``include_content`` — whether to record full message bodies.  On
+      by default; turn off for shared or regulated deployments and the
+      bridge will emit only counts/roles.
+
+    When tracing is enabled, a JSONL file sink always writes to
+    ``paths.TRACES_PATH`` (``$FIN_DATA_DIR/traces.jsonl``).  This is
+    not configurable — toggling is via ``enabled``, not via a separate
+    path knob.
+    """
+
+    enabled: bool = False
+    provider: TracingProvider | None = None
+    endpoint: str = "http://localhost:6006/v1/traces"
+    exporter_protocol: Literal["grpc", "http"] = "http"
+    project_name: str = "fin-assist"
+    sampling_ratio: float = Field(default=1.0, ge=0.0, le=1.0)
+    headers: dict[str, str] = Field(default_factory=dict)
+    event_mode: Literal["attributes", "logs"] = "attributes"
+    include_content: bool = True
+    otlp_enabled: bool = True
 
 
 class ServerSettings(BaseModel):
@@ -121,6 +173,7 @@ class Config(BaseSettings):
     general: GeneralSettings = GeneralSettings()
     context: ContextSettings = ContextSettings()
     server: ServerSettings = ServerSettings()
+    tracing: TracingSettings = TracingSettings()
     providers: dict[str, ProviderConfig] = {}
     agents: dict[str, AgentConfig] = Field(default_factory=lambda: _DEFAULT_AGENTS)
 

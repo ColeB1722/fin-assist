@@ -26,3 +26,6 @@ PID_FILE = DATA_DIR / "hub.pid"
 
 #: Credentials file for API keys.
 CREDENTIALS_FILE = DATA_DIR / "credentials.json"
+
+#: JSONL trace file path — always used when tracing is enabled.
+TRACES_PATH = DATA_DIR / "traces.jsonl"

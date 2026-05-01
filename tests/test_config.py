@@ -16,6 +16,7 @@ from fin_assist.config.schema import (
     GeneralSettings,
     ProviderConfig,
     ServerSettings,
+    TracingSettings,
     WorkflowConfig,
 )
 from fin_assist.paths import DATA_DIR
@@ -98,6 +99,80 @@ class TestServerSettings:
         assert settings.host == "0.0.0.0"
         assert settings.port == 8080
         assert settings.db_path == "/tmp/test.db"
+
+
+class TestTracingSettings:
+    """Tests for TracingSettings.
+
+    Validates that the schema exposes the knobs that matter for OTel
+    deployment ergonomics: sampling, exporter auth headers, and the
+    content-recording policy for LLM span bodies (which can be large
+    and sometimes sensitive).
+    """
+
+    def test_tracing_defaults_are_disabled_and_phoenix_endpoint(self) -> None:
+        settings = TracingSettings()
+        assert settings.enabled is False
+        assert settings.endpoint == "http://localhost:6006/v1/traces"
+        assert settings.exporter_protocol == "http"
+        assert settings.project_name == "fin-assist"
+
+    def test_sampling_ratio_default_is_full_sampling(self) -> None:
+        """Dev-default is record everything so Phoenix shows full traces;
+        production deployments can dial down via config or env."""
+        settings = TracingSettings()
+        assert settings.sampling_ratio == 1.0
+
+    def test_sampling_ratio_accepts_fractional_values(self) -> None:
+        settings = TracingSettings(sampling_ratio=0.1)
+        assert settings.sampling_ratio == 0.1
+
+    def test_sampling_ratio_rejects_out_of_range(self) -> None:
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            TracingSettings(sampling_ratio=1.5)
+        with pytest.raises(pydantic.ValidationError):
+            TracingSettings(sampling_ratio=-0.1)
+
+    def test_headers_default_is_empty(self) -> None:
+        settings = TracingSettings()
+        assert settings.headers == {}
+
+    def test_headers_accepts_auth_tuple(self) -> None:
+        """Hosted backends (Logfire, Honeycomb, Grafana Cloud) gate
+        OTLP ingest on a bearer or API-key header."""
+        settings = TracingSettings(headers={"authorization": "Bearer xyz"})
+        assert settings.headers == {"authorization": "Bearer xyz"}
+
+    def test_event_mode_defaults_to_attributes(self) -> None:
+        """Phoenix renders LLM message attributes nicely but does not yet
+        render OTel event logs, so the Phoenix-friendly default is
+        ``attributes``.  Users pointing at an OTel-log-native backend can
+        flip this to ``logs`` without changing code."""
+        settings = TracingSettings()
+        assert settings.event_mode == "attributes"
+
+    def test_event_mode_accepts_logs(self) -> None:
+        settings = TracingSettings(event_mode="logs")
+        assert settings.event_mode == "logs"
+
+    def test_event_mode_rejects_unknown(self) -> None:
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            TracingSettings(event_mode="messages")  # type: ignore[arg-type]
+
+    def test_include_content_defaults_to_true(self) -> None:
+        """Dev default is include message bodies so Phoenix's chat
+        renderer has something to show; toggle off in shared / privacy-
+        sensitive deployments to emit only token counts and roles."""
+        settings = TracingSettings()
+        assert settings.include_content is True
+
+    def test_include_content_can_be_disabled(self) -> None:
+        settings = TracingSettings(include_content=False)
+        assert settings.include_content is False
 
 
 class TestProviderConfig:
