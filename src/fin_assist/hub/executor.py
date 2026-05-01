@@ -13,18 +13,18 @@ history lives in our ``ContextStore``.  Message conversion uses protobuf
 types (``Part(text=...)``).
 
 Step-driven dispatch
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 The Executor iterates a ``StepHandle`` and dispatches based on
 ``StepEvent.kind``:
 
 - ``text_delta`` / ``thinking_delta`` → streaming artifacts
 - ``tool_call`` → tool call artifact
 - ``tool_result`` → tool result artifact
-- ``step_start`` / ``step_end`` → step boundary markers, create/end OTel step spans
+- ``step_start`` / ``step_end`` → step boundary markers
 - ``deferred`` → task pauses for human approval via ``requires_input()``
 
 Deferred tool approval
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 When a tool requires approval, the backend emits a ``deferred`` StepEvent.
 The Executor:
 
@@ -38,11 +38,17 @@ Resume detection: when a new ``SendMessage`` arrives with the same
 Part (``metadata.type = "approval_result"``), the Executor reconstructs
 ``DeferredToolResults`` and re-invokes the backend with
 ``deferred_tool_results`` to continue from where it paused.
+
+OTel span lifecycle
+~~~~~~~~~~~~~~~~~~~
+All span creation and attribute setting is delegated to
+``_TaskTracer`` (see ``_task_tracer.py``).  The executor never calls
+OTel APIs directly — it creates a ``_TaskTracer`` per invocation and
+calls its methods at the appropriate lifecycle points.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -52,70 +58,20 @@ from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.tasks import TaskUpdater
 from a2a.types import Part, Task, TaskState, TaskStatus
 from google.protobuf.struct_pb2 import Struct
-from opentelemetry import trace as trace_api
-from opentelemetry.context import attach, detach
-from opentelemetry.trace import StatusCode
-from opentelemetry.trace.status import Status
 
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.tools import ApprovalDecision
-from fin_assist.hub.tracing_attrs import (
-    FinAssistAttributes,
-    OpenInferenceMimeTypeValues,
-    OpenInferenceSpanKindValues,
-    SpanAttributes,
-    SpanNames,
-    TaskStateValues,
-)
+from fin_assist.hub._task_tracer import _TaskTracer
 from fin_assist.protobuf import struct_to_dict
 
 if TYPE_CHECKING:
     from a2a.server.events import EventQueue
-    from opentelemetry.trace import Span, Tracer
 
     from fin_assist.agents.backend import AgentBackend, RunResult
     from fin_assist.agents.step import StepEvent
     from fin_assist.hub.context_store import ContextStore
 
 logger = logging.getLogger(__name__)
-
-
-def _aggregate_decisions(
-    decisions: list[ApprovalDecision],
-) -> tuple[str, str | None]:
-    """Collapse multiple ``ApprovalDecision`` values into one span-level verdict.
-
-    Rule:
-
-    - Any denial → ``("denied", first_denial_reason)``.  Denial beats
-      approval because the user's safety concern on any one tool should
-      show up at a glance.
-    - Any ``override_args`` → ``("overridden", None)``.  Distinguished
-      from plain approval so reviewers see that the user tweaked
-      arguments, not just rubber-stamped.
-    - Otherwise → ``("approved", None)``.
-
-    Returning a tuple keeps the reason plumbing localized — callers
-    set both attributes from one call site.
-    """
-    denial = next((d for d in decisions if not d.approved), None)
-    if denial is not None:
-        return ("denied", denial.denial_reason)
-    if any(d.override_args for d in decisions):
-        return ("overridden", None)
-    return ("approved", None)
-
-
-def _get_tracer() -> Tracer:
-    """Return the fin-assist OTel tracer (no-op if tracing is not set up)."""
-    from opentelemetry.trace import get_tracer, get_tracer_provider
-
-    provider = get_tracer_provider()
-    from opentelemetry.trace import ProxyTracerProvider
-
-    if isinstance(provider, ProxyTracerProvider):
-        return provider.get_tracer("fin_assist")
-    return get_tracer("fin_assist")
 
 
 @dataclass
@@ -133,24 +89,16 @@ class _ResumeInfo:
 
 @dataclass
 class _ExecutionContext:
-    """Mutable state carried between Executor helper methods for one task.
+    """Mutable business state carried between Executor helper methods for one task.
 
     Avoids a long parameter list on each helper.  The ``task_id`` and
     ``raw_context_id`` are captured once from the request and used for
     logging and context-store persistence throughout the task lifecycle.
 
-    OTel span tracking:
-
-    - ``task_span`` — the one root ``fin_assist.task`` span for this run.
-    - ``current_step_span`` — the currently-open ``fin_assist.step`` span,
-      or ``None`` between ``step_start`` / ``step_end`` boundaries.
-    - ``active_tool_spans`` — dict keyed by ``tool_call_id``.  A backend
-      can emit multiple ``tool_call`` events within a single step (parallel
-      tool calls) whose results arrive interleaved; keying by
-      ``tool_call_id`` keeps each ``tool_call`` → ``tool_result`` pair
-      correctly paired instead of letting a later call clobber the span
-      of an earlier one.  Tool events without a ``tool_call_id`` (older
-      backends, synthetic test events) fall back to the ``""`` key.
+    OTel span lifecycle is owned by ``tracer`` (``_TaskTracer``).
+    The executor reads ``tracer.paused_approval_span_ctx`` when
+    persisting the pause state but otherwise never touches span
+    objects directly.
     """
 
     task_id: str
@@ -166,20 +114,7 @@ class _ExecutionContext:
     """
     created_artifacts: set[str] = field(default_factory=set)
     text_chunks: list[str] = field(default_factory=list)
-    task_span: Span | None = None
-    current_step_span: Span | None = None
-    active_tool_spans: dict[str, Span] = field(default_factory=dict)
-    paused_approval_span_ctx: Any = field(default=None, repr=False)
-    """SpanContext of the most recent ``approval_request`` span in this run.
-
-    Captured in ``_handle_deferred_event`` right after the request span
-    ends, consumed in ``_pause_for_approval`` to persist via the
-    ContextStore so the next process can Link back to it on resume.
-    ``Any`` here avoids a top-level import of ``SpanContext`` (TYPE_CHECKING
-    can't help because the field is real data, not just a type hint).
-    """
-    _task_context_token: Any = field(default=None, repr=False)
-    _step_context_token: Any = field(default=None, repr=False)
+    tracer: _TaskTracer = field(default_factory=_TaskTracer)
 
 
 class Executor(AgentExecutor):
@@ -229,34 +164,6 @@ class Executor(AgentExecutor):
         self._context_store = context_store
         self._agent_name = agent_name
         self._model_name = model_name
-        self._tracer: Tracer | None = None
-
-    @property
-    def _active_tracer(self) -> Tracer:
-        if self._tracer is None:
-            self._tracer = _get_tracer()
-        return self._tracer
-
-    @staticmethod
-    def _read_invocation_id_from_baggage() -> str:
-        """Read ``fin_assist.cli.invocation_id`` from current OTel baggage.
-
-        The CLI tracer sets this into Baggage inside ``cli_root_span``
-        (via ``baggage.set_baggage``).  When the outgoing httpx request
-        is intercepted by ``HTTPXClientInstrumentor``, the W3C
-        ``baggage`` header is injected.  The hub's FastAPI
-        instrumentor extracts the header back into the current
-        context, and this helper reads it.
-
-        Returns the empty string if baggage is missing or the value
-        isn't a string — callers treat "" as "no CLI trace" and skip
-        setting the attribute.  Returning ``str`` (never ``None``) keeps
-        call sites terse: ``if invocation_id:`` covers both cases.
-        """
-        from opentelemetry import baggage
-
-        value = baggage.get_baggage(FinAssistAttributes.CLI_INVOCATION_ID)
-        return value if isinstance(value, str) else ""
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Run one task through its lifecycle.
@@ -289,37 +196,22 @@ class Executor(AgentExecutor):
             user_input = resume_info.prior_user_input
         ctx.user_input = user_input
 
-        task_span_links = []
+        task_span_links: list[Any] = []
         if resume_info.prior_trace_ctx is not None:
-            link = self._make_link(resume_info.prior_trace_ctx, "resume_from_approval")
+            link = ctx.tracer.make_link(resume_info.prior_trace_ctx, "resume_from_approval")
             if link is not None:
                 task_span_links.append(link)
 
-        task_attributes: dict[str, Any] = {
-            SpanAttributes.OPENINFERENCE_SPAN_KIND: (OpenInferenceSpanKindValues.AGENT.value),
-            FinAssistAttributes.GEN_AI_AGENT_NAME: self._agent_name,
-            FinAssistAttributes.TASK_ID: ctx.task_id,
-            FinAssistAttributes.CONTEXT_ID: ctx.raw_context_id or "",
-            SpanAttributes.SESSION_ID: ctx.raw_context_id or "",
-            SpanAttributes.INPUT_VALUE: user_input,
-            FinAssistAttributes.TASK_STATE: TaskStateValues.RUNNING,
-        }
-
-        invocation_id = self._read_invocation_id_from_baggage()
-        if invocation_id:
-            task_attributes[FinAssistAttributes.CLI_INVOCATION_ID] = invocation_id
-
-        task_span = self._active_tracer.start_span(
-            SpanNames.TASK,
-            attributes=task_attributes,
+        ctx.tracer.start_task_span(
+            agent_name=self._agent_name,
+            task_id=ctx.task_id,
+            context_id=ctx.raw_context_id,
+            user_input=user_input,
             links=task_span_links or None,
         )
-        ctx.task_span = task_span
-
-        ctx._task_context_token = attach(trace_api.set_span_in_context(task_span))
 
         if approval_decisions and resume_info.prior_trace_ctx is not None:
-            self._emit_approval_decided_span(approval_decisions, resume_info.prior_trace_ctx)
+            ctx.tracer.emit_approval_decided_span(approval_decisions, resume_info.prior_trace_ctx)
 
         try:
             message_history = await self._load_history(ctx)
@@ -336,19 +228,12 @@ class Executor(AgentExecutor):
             result: RunResult = await handle.result()
         except Exception as exc:
             logger.exception("execute failed task_id=%s", ctx.task_id)
-            if ctx.task_span is not None:
-                partial = "".join(ctx.text_chunks)
-                if partial:
-                    ctx.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, partial)
-                ctx.task_span.set_attribute(FinAssistAttributes.TASK_STATE, TaskStateValues.FAILED)
-                ctx.task_span.record_exception(exc)
-                ctx.task_span.set_status(Status(StatusCode.ERROR, "execute failed"))
-                ctx.task_span.end()
-            self._detach_task_context(ctx)
+            ctx.tracer.end_task_span_failed("".join(ctx.text_chunks), exc)
+            ctx.tracer.detach_task_context()
             await ctx.updater.failed()
             raise
 
-        self._detach_task_context(ctx)
+        ctx.tracer.detach_task_context()
 
         if has_deferred:
             await self._pause_for_approval(ctx, result)
@@ -403,11 +288,6 @@ class Executor(AgentExecutor):
         )
         prior_user_input = pause_state.user_input or ""
         return _ResumeInfo(prior_trace_ctx=prior_trace_ctx, prior_user_input=prior_user_input)
-
-    def _detach_task_context(self, ctx: _ExecutionContext) -> None:
-        if ctx._task_context_token is not None:
-            detach(ctx._task_context_token)
-            ctx._task_context_token = None
 
     async def _setup_task(
         self,
@@ -505,26 +385,17 @@ class Executor(AgentExecutor):
     ) -> None:
         """Save history + paused approval span context, move task to
         ``requires_input``.
-
-        Trace-context persistence makes pause → resume one browsable flow
-        in OTel backends.  Without it, the resume's new trace has no Link
-        back to the paused ``approval_request`` span and the operator sees
-        two disconnected traces.
         """
-        if ctx.task_span is not None:
-            ctx.task_span.set_attribute(
-                FinAssistAttributes.TASK_STATE, TaskStateValues.PAUSED_FOR_APPROVAL
-            )
-            ctx.task_span.end()
+        ctx.tracer.end_task_span_paused()
 
         if ctx.raw_context_id:
             await self._context_store.save(ctx.raw_context_id, result.serialized_history)
-            if ctx.paused_approval_span_ctx is not None:
+            if ctx.tracer.paused_approval_span_ctx is not None:
                 await self._context_store.save_pause_state(
                     context_id=ctx.raw_context_id,
-                    trace_id=ctx.paused_approval_span_ctx.trace_id,
-                    span_id=ctx.paused_approval_span_ctx.span_id,
-                    trace_flags=int(ctx.paused_approval_span_ctx.trace_flags),
+                    trace_id=ctx.tracer.paused_approval_span_ctx.trace_id,
+                    span_id=ctx.tracer.paused_approval_span_ctx.span_id,
+                    trace_flags=int(ctx.tracer.paused_approval_span_ctx.trace_flags),
                     user_input=ctx.user_input,
                 )
         logger.info("paused for approval task_id=%s", ctx.task_id)
@@ -560,25 +431,7 @@ class Executor(AgentExecutor):
                 ctx.created_artifacts,
             )
 
-        if ctx.task_span is not None:
-            ctx.task_span.set_attribute(
-                FinAssistAttributes.TASK_RESULT_TYPE, type(result.output).__name__
-            )
-            ctx.task_span.set_attribute(FinAssistAttributes.TASK_STATE, TaskStateValues.COMPLETED)
-            if isinstance(result.output, str):
-                ctx.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, result.output)
-            else:
-                try:
-                    ctx.task_span.set_attribute(
-                        SpanAttributes.OUTPUT_VALUE, json.dumps(result.output)
-                    )
-                    ctx.task_span.set_attribute(
-                        SpanAttributes.OUTPUT_MIME_TYPE,
-                        OpenInferenceMimeTypeValues.JSON.value,
-                    )
-                except (TypeError, ValueError):
-                    ctx.task_span.set_attribute(SpanAttributes.OUTPUT_VALUE, str(result.output))
-            ctx.task_span.end()
+        ctx.tracer.end_task_span_completed(result.output)
 
         logger.info("execute complete task_id=%s", ctx.task_id)
         await ctx.updater.complete()
@@ -606,7 +459,7 @@ class Executor(AgentExecutor):
                     last_chunk=False,
                 )
             case "tool_call":
-                self._start_tool_span(event, ctx)
+                ctx.tracer.start_tool_span(event)
                 tool_meta = Struct()
                 tool_meta.update(
                     {
@@ -623,7 +476,7 @@ class Executor(AgentExecutor):
                     last_chunk=False,
                 )
             case "tool_result":
-                self._end_tool_span(event, ctx)
+                ctx.tracer.end_tool_span(event)
                 result_meta = Struct()
                 result_meta.update(
                     {
@@ -640,83 +493,12 @@ class Executor(AgentExecutor):
                     last_chunk=False,
                 )
             case "step_start":
-                self._start_step_span(event, ctx)
+                ctx.tracer.start_step_span(event)
             case "step_end":
-                self._end_step_span(ctx)
+                ctx.tracer.end_step_span()
             case "deferred":
-                await self._handle_deferred_event(event, ctx)
-
-    def _start_step_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
-        """Start a ``fin_assist.step`` span as a child of the task span."""
-        parent = ctx.current_step_span or ctx.task_span
-        parent_context = trace_api.set_span_in_context(parent) if parent else None
-        ctx.current_step_span = self._active_tracer.start_span(
-            SpanNames.STEP,
-            context=parent_context,
-            attributes={
-                SpanAttributes.OPENINFERENCE_SPAN_KIND: (OpenInferenceSpanKindValues.CHAIN.value),
-                FinAssistAttributes.STEP_NUMBER: event.step,
-            },
-        )
-        ctx._step_context_token = attach(trace_api.set_span_in_context(ctx.current_step_span))
-
-    def _end_step_span(self, ctx: _ExecutionContext) -> None:
-        """End the current step span and restore the task span as active context."""
-        if ctx._step_context_token is not None:
-            detach(ctx._step_context_token)
-            ctx._step_context_token = None
-
-        if ctx.current_step_span is not None:
-            ctx.current_step_span.end()
-        ctx.current_step_span = None
-
-    def _start_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
-        """Start a ``fin_assist.tool_execution`` span as a child of the current step span.
-
-        Spans are stored in ``ctx.active_tool_spans`` keyed by
-        ``tool_call_id``.  Multiple parallel tool calls within a single
-        step each get their own entry so ``_end_tool_span`` can close the
-        correct one when the matching ``tool_result`` arrives.
-        """
-        parent = ctx.current_step_span or ctx.task_span
-        parent_context = trace_api.set_span_in_context(parent) if parent else None
-        args = event.metadata.get("args", {})
-        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-        tool_call_id = str(event.metadata.get("tool_call_id") or "")
-        span = self._active_tracer.start_span(
-            SpanNames.TOOL_EXECUTION,
-            context=parent_context,
-            attributes={
-                SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.TOOL.value,
-                SpanAttributes.TOOL_NAME: event.tool_name or "",
-                FinAssistAttributes.TOOL_NAME: event.tool_name or "",
-                FinAssistAttributes.TOOL_ARGS: args_str,
-                FinAssistAttributes.TOOL_CALL_ID: tool_call_id,
-                SpanAttributes.INPUT_VALUE: args_str,
-                SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
-            },
-        )
-        ctx.active_tool_spans[tool_call_id] = span
-
-    def _end_tool_span(self, event: StepEvent, ctx: _ExecutionContext) -> None:
-        """End the tool-execution span matching this ``tool_result`` event.
-
-        Looks up the span by ``tool_call_id`` so parallel tool calls don't
-        clobber each other.  Falls back to ending a single lone span if
-        the id is missing (older backends / synthetic test events).
-        """
-        tool_call_id = str(event.metadata.get("tool_call_id") or "")
-        span = ctx.active_tool_spans.pop(tool_call_id, None)
-        if span is None and tool_call_id == "" and len(ctx.active_tool_spans) == 1:
-            # Test-fixture compatibility: events without tool_call_id can
-            # still close the single open span unambiguously.
-            lone_key = next(iter(ctx.active_tool_spans))
-            span = ctx.active_tool_spans.pop(lone_key)
-        if span is None:
-            return
-        content = event.content if isinstance(event.content, str) else str(event.content)
-        span.set_attribute(SpanAttributes.OUTPUT_VALUE, content)
-        span.end()
+                ctx.tracer.emit_approval_request_span(event)
+                await self._emit_deferred_artifact(event, ctx)
 
     async def _emit_artifact(
         self,
@@ -738,48 +520,17 @@ class Executor(AgentExecutor):
         )
         created_artifacts.add(artifact_id)
 
-    async def _handle_deferred_event(self, event: StepEvent, ctx: _ExecutionContext) -> None:
-        """Emit an ``approval_request`` span and a ``deferred`` A2A artifact.
+    async def _emit_deferred_artifact(self, event: StepEvent, ctx: _ExecutionContext) -> None:
+        """Emit a ``deferred`` A2A artifact for a tool approval request.
 
-        The approval-request span is started **and** ended in this
-        method — OTel spans cannot be reopened across processes, so the
-        actual wait-for-user is represented implicitly by the time-gap
-        between this span's end and the ``approval_decided`` span that
-        opens when the task resumes (see architecture.md → HITL tracing).
-
-        The span carries ``approval.status = "paused"`` so OTel backends
-        can filter pending approvals without needing to know about the
-        downstream decision.
+        Span lifecycle is handled by ``_TaskTracer.emit_approval_request_span``
+        (called by the dispatcher before this method).  This method only
+        emits the A2A artifact.
         """
-        parent = ctx.current_step_span or ctx.task_span
-        parent_context = trace_api.set_span_in_context(parent) if parent else None
         deferred_content = event.content
-        args = getattr(deferred_content, "args", {})
-        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
         tool_call_id = getattr(deferred_content, "tool_call_id", "") or ""
         reason = getattr(deferred_content, "reason", None) or ""
-
-        approval_span = self._active_tracer.start_span(
-            SpanNames.APPROVAL_REQUEST,
-            context=parent_context,
-            attributes={
-                SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.TOOL.value,
-                SpanAttributes.TOOL_NAME: event.tool_name or "",
-                FinAssistAttributes.TOOL_NAME: event.tool_name or "",
-                FinAssistAttributes.TOOL_CALL_ID: tool_call_id,
-                FinAssistAttributes.APPROVAL_STATUS: "paused",
-                FinAssistAttributes.APPROVAL_REASON: reason,
-                SpanAttributes.INPUT_VALUE: args_str,
-                SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
-            },
-        )
-        # Capture the SpanContext **before** ending — SpanContext is
-        # immutable and safe to stash; we'll persist it in
-        # ``_pause_for_approval`` so the resume task in a potentially
-        # different process can Link back here.
-        ctx.paused_approval_span_ctx = approval_span.get_span_context()
-        approval_span.end()
-
+        args = getattr(deferred_content, "args", {})
         deferred_meta = Struct()
         deferred_meta.update(
             {
@@ -843,73 +594,6 @@ class Executor(AgentExecutor):
         if not decisions:
             return None
         return self._backend.build_deferred_results(decisions)
-
-    def _make_link(
-        self,
-        trace_ctx: tuple[int, int, int],
-        link_type: str,
-    ) -> Any:
-        """Build an OTel ``Link`` from a persisted ``(trace, span, flags)``.
-
-        The flags live in ``TraceFlags`` (1-bit sampled flag today).  We
-        mark the context as remote because the paused span was exported
-        from a potentially different process.  Returns ``None`` if the
-        IDs look invalid (zero), so callers don't attach broken links.
-        """
-        from opentelemetry.trace import (
-            Link,
-            SpanContext,
-            TraceFlags,
-        )
-
-        trace_id, span_id, flags = trace_ctx
-        if trace_id == 0 or span_id == 0:
-            return None
-        span_ctx = SpanContext(
-            trace_id=trace_id,
-            span_id=span_id,
-            is_remote=True,
-            trace_flags=TraceFlags(flags),
-        )
-        return Link(span_ctx, attributes={FinAssistAttributes.LINK_TYPE: link_type})
-
-    def _emit_approval_decided_span(
-        self,
-        decisions: list[ApprovalDecision],
-        prior_trace_ctx: tuple[int, int, int],
-    ) -> None:
-        """Emit the ``approval_decided`` span as the first child of the
-        resumed task span.
-
-        Carries the aggregate decision (``approved``/``denied``/
-        ``overridden``) as an attribute and a ``Link`` back to the
-        paused ``approval_request`` span (tagged ``approval_for``) so
-        OTel backends can render the full decision trail.
-
-        With multiple decisions in one resume message, the aggregate
-        rule is: if **any** decision is a denial, the span's decision
-        is ``denied``; if any include ``override_args``, it's
-        ``overridden``; otherwise ``approved``.  The first denial's
-        ``denial_reason`` is preserved as ``approval.reason`` so the
-        operator sees *why* the flow stopped.
-        """
-        aggregate_decision, reason = _aggregate_decisions(decisions)
-        link = self._make_link(prior_trace_ctx, "approval_for")
-        links = [link] if link is not None else None
-
-        attributes: dict[str, Any] = {
-            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.TOOL.value,
-            FinAssistAttributes.APPROVAL_DECISION: aggregate_decision,
-        }
-        if reason:
-            attributes[FinAssistAttributes.APPROVAL_REASON] = reason
-
-        decided_span = self._active_tracer.start_span(
-            SpanNames.APPROVAL_DECIDED,
-            attributes=attributes,
-            links=links,
-        )
-        decided_span.end()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id or str(uuid.uuid4())
