@@ -131,57 +131,57 @@ class TestOtelEnvVarFallbacks:
         """When FIN_TRACING__ENDPOINT is unset but OTEL_EXPORTER_OTLP_ENDPOINT
         is set, the OTel env takes precedence over the schema default."""
         from fin_assist.config.schema import TracingSettings
-        from fin_assist.hub.tracing import _resolve_endpoint
+        from fin_assist.tracing_shared import resolve_endpoint
 
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318/v1/traces")
         # Use the schema default value as the config field value; resolver
         # treats schema-default as "not set" and falls through to env.
         config = TracingSettings(enabled=True)
 
-        resolved = _resolve_endpoint(config)
+        resolved = resolve_endpoint(config)
         assert resolved == "http://otel-collector:4318/v1/traces"
 
     def test_explicit_fin_tracing_endpoint_beats_otel_env(self, reset_tracer_provider, monkeypatch):
         """FIN_TRACING__ENDPOINT (i.e. ``config.tracing.endpoint`` set to a
         non-default value) always wins over OTEL_EXPORTER_OTLP_ENDPOINT."""
         from fin_assist.config.schema import TracingSettings
-        from fin_assist.hub.tracing import _resolve_endpoint
+        from fin_assist.tracing_shared import resolve_endpoint
 
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-env:4318/v1/traces")
         config = TracingSettings(enabled=True, endpoint="http://explicit:6006/v1/traces")
 
-        resolved = _resolve_endpoint(config)
+        resolved = resolve_endpoint(config)
         assert resolved == "http://explicit:6006/v1/traces"
 
     def test_schema_default_used_when_no_env(self, reset_tracer_provider, monkeypatch):
         """With no OTel env var set and no override, the schema default stands."""
         from fin_assist.config.schema import TracingSettings
-        from fin_assist.hub.tracing import _resolve_endpoint
+        from fin_assist.tracing_shared import resolve_endpoint
 
         monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
         config = TracingSettings(enabled=True)
 
-        resolved = _resolve_endpoint(config)
+        resolved = resolve_endpoint(config)
         # Whatever the default is, it should match the schema default.
         assert resolved == TracingSettings.model_fields["endpoint"].default
 
     def test_otel_headers_env_parsed(self, reset_tracer_provider, monkeypatch):
         """``OTEL_EXPORTER_OTLP_HEADERS`` is a comma-separated key=value list
         per the OTel spec.  Parse it into a dict for the exporter."""
-        from fin_assist.hub.tracing import _resolve_headers
+        from fin_assist.tracing_shared import resolve_headers
 
         monkeypatch.setenv(
             "OTEL_EXPORTER_OTLP_HEADERS",
             "authorization=Bearer abc123,x-project=fin",
         )
-        headers = _resolve_headers({})
+        headers = resolve_headers({})
         assert headers == {"authorization": "Bearer abc123", "x-project": "fin"}
 
     def test_config_headers_win_over_otel_env(self, reset_tracer_provider, monkeypatch):
-        from fin_assist.hub.tracing import _resolve_headers
+        from fin_assist.tracing_shared import resolve_headers
 
         monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer env")
-        headers = _resolve_headers({"authorization": "Bearer config"})
+        headers = resolve_headers({"authorization": "Bearer config"})
         assert headers == {"authorization": "Bearer config"}
 
     def test_malformed_otel_headers_are_skipped_with_warning(
@@ -192,14 +192,14 @@ class TestOtelEnvVarFallbacks:
         """
         import logging
 
-        from fin_assist.hub.tracing import _resolve_headers
+        from fin_assist.tracing_shared import resolve_headers
 
         monkeypatch.setenv(
             "OTEL_EXPORTER_OTLP_HEADERS",
             "authorization=Bearer abc,malformed_no_equals,x-good=yes",
         )
-        with caplog.at_level(logging.WARNING, logger="fin_assist.hub.tracing"):
-            headers = _resolve_headers({})
+        with caplog.at_level(logging.WARNING, logger="fin_assist.tracing_shared"):
+            headers = resolve_headers({})
         assert headers == {"authorization": "Bearer abc", "x-good": "yes"}
         assert any("malformed" in rec.message.lower() for rec in caplog.records)
 
@@ -373,13 +373,14 @@ class TestFileExporterWiring:
 
     def test_truncation_applied_to_file_output(self, reset_tracer_provider, tmp_path):
         """Large string attributes must be truncated in the file output
-        too — the ``_TruncatingSpanProcessor`` wrap has to apply uniformly
+        too — the ``TruncatingSpanProcessor`` wrap has to apply uniformly
         across every exporter attached to the provider, not just OTLP."""
         import json as _json
         from unittest.mock import patch
 
         from fin_assist.config.schema import TracingSettings
-        from fin_assist.hub.tracing import _MAX_ATTR_BYTES, setup_tracing
+        from fin_assist.hub.tracing import setup_tracing
+        from fin_assist.tracing_shared import MAX_ATTR_BYTES
 
         path = tmp_path / "traces.jsonl"
         config = TracingSettings(enabled=True, provider="none")
@@ -387,7 +388,7 @@ class TestFileExporterWiring:
             provider = setup_tracing(config)
         assert provider is not None
 
-        oversized = "x" * (_MAX_ATTR_BYTES * 2)
+        oversized = "x" * (MAX_ATTR_BYTES * 2)
         tracer = provider.get_tracer("test")  # type: ignore[attr-defined]
         with tracer.start_as_current_span("big-attr") as span:
             span.set_attribute("huge", oversized)

@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING
 
@@ -116,28 +115,23 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
     )
     provider = TracerProvider(resource=resource)
 
-    # Share the wrappers with the hub so the CLI gets the same noise-
-    # filtering + truncation story.  Importing lazily keeps the
-    # module's cold-start cost near zero when tracing is disabled.
-    from fin_assist.hub.tracing import (
-        _DropSpansProcessor,
-        _TruncatingSpanProcessor,
-        _want_otlp_exporter,
+    from fin_assist.tracing_shared import (
+        DropSpansProcessor,
+        TruncatingSpanProcessor,
+        resolve_endpoint,
+        resolve_headers,
+        want_otlp_exporter,
     )
 
     def _wrap(inner: BatchSpanProcessor):
-        return _DropSpansProcessor(_TruncatingSpanProcessor(inner))
+        return DropSpansProcessor(TruncatingSpanProcessor(inner))
 
     from fin_assist.hub.file_exporter import FileSpanExporter
     from fin_assist.paths import TRACES_PATH
 
     provider.add_span_processor(_wrap(BatchSpanProcessor(FileSpanExporter(str(TRACES_PATH)))))
 
-    # Only construct the OTLP exporter when the operator has opted in
-    # via provider preset or otlp_enabled.  ``_want_otlp_exporter``
-    # consolidates the provider / otlp_enabled decision so the CLI
-    # stays in sync with the hub.
-    if _want_otlp_exporter(config):
+    if want_otlp_exporter(config):
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-untyped]
             OTLPSpanExporter as GRPCSpanExporter,
         )
@@ -146,8 +140,8 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
         )
 
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
-        endpoint = _resolve_endpoint(config)
-        headers = _resolve_headers(dict(config.headers))
+        endpoint = resolve_endpoint(config)
+        headers = resolve_headers(dict(config.headers))
         exporter = (
             exporter_cls(endpoint=endpoint, headers=headers)
             if headers
@@ -171,31 +165,6 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
 
     _installed = True
     return provider
-
-
-def _resolve_endpoint(config: TracingSettings) -> str:
-    from fin_assist.config.schema import TracingSettings as _TS
-
-    default = _TS.model_fields["endpoint"].default
-    if config.endpoint != default:
-        return config.endpoint
-    env = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    return env or config.endpoint
-
-
-def _resolve_headers(cfg_headers: dict[str, str]) -> dict[str, str]:
-    if cfg_headers:
-        return cfg_headers
-    env = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
-    if not env:
-        return {}
-    parsed: dict[str, str] = {}
-    for pair in env.split(","):
-        if "=" not in pair:
-            continue
-        k, _, v = pair.partition("=")
-        parsed[k.strip()] = v.strip()
-    return parsed
 
 
 @contextlib.contextmanager

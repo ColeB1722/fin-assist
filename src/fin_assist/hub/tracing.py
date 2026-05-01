@@ -13,15 +13,6 @@ Configuration precedence (highest wins):
   1. Explicit non-default ``TracingSettings`` value
   2. Standard OTel env vars (``OTEL_EXPORTER_OTLP_*``)
   3. Schema default (``http://localhost:6006/v1/traces``)
-
-Two SpanProcessor wrappers sit between the export pipeline and the
-real exporters:
-
-* Noise filtering — drops framework-internal spans (e.g. ASGI
-  per-chunk response spans) that have no diagnostic value.
-* Attribute hygiene — scrbs noise attributes leaked by upstream
-  instrumentors (e.g. ``logfire.*`` from pydantic-ai) and truncates
-  oversized string attributes to stay under gRPC's 4MB message limit.
 """
 
 from __future__ import annotations
@@ -30,227 +21,22 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from opentelemetry.sdk.trace import SpanProcessor
+from fin_assist.tracing_shared import (
+    DropSpansProcessor,
+    TruncatingSpanProcessor,
+    resolve_endpoint,
+    resolve_headers,
+    want_otlp_exporter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from opentelemetry.sdk.trace import SpanProcessor
+
     from fin_assist.config.schema import TracingSettings
 
 logger = logging.getLogger(__name__)
-
-_MAX_ATTR_BYTES = 50_000
-
-
-# Attribute keys scrubbed from every span before export.  These are noise
-# leaked by upstream instrumentors — they carry no diagnostic value for
-# downstream consumers and bloat span size.
-#
-# * ``logfire.*`` — pydantic-ai's internal tracing front-end emits these
-#   as rendered log messages + JSON schemas, both already available in
-#   dedicated OpenInference fields.
-# * ``final_result`` — pydantic-ai dumps the full ``RunResult`` on the
-#   ``agent run`` span.  Redundantly available as ``output.value``
-#   (OpenInference) and ``pydantic_ai.all_messages``.
-_SCRUB_ATTR_PREFIXES = ("logfire.",)
-_SCRUB_ATTR_NAMES = frozenset({"final_result"})
-
-
-def _scrub_span_attributes(span) -> None:
-    """Delete attribute keys that leak from upstream instrumentors.
-
-    Applied at ``on_end`` before export.  Mutates ``span._attributes``
-    directly because ``set_attribute`` no-ops after ``end()`` and the
-    read-only snapshot passed to multi-processor setups doesn't expose a
-    public write API.
-
-    Also drops ``session.id`` when it equals ``fin_assist.context.id``:
-    both are set to the same value by the executor, so carrying both is
-    redundant.  Kept when the values differ (a future backend may set
-    ``session.id`` to a different value, e.g. a tenant identifier).
-    """
-    attributes = getattr(span, "_attributes", None) or span.attributes
-    if not attributes:
-        return
-
-    for key in list(attributes.keys()):
-        if key in _SCRUB_ATTR_NAMES or any(key.startswith(p) for p in _SCRUB_ATTR_PREFIXES):
-            try:
-                del attributes[key]
-            except (TypeError, KeyError, AttributeError):
-                logger.debug("could not scrub attribute key=%s", key)
-
-    # Deduplicate session.id vs fin_assist.context.id when identical.
-    session_id = attributes.get("session.id") if hasattr(attributes, "get") else None
-    context_id = attributes.get("fin_assist.context.id") if hasattr(attributes, "get") else None
-    if session_id is not None and session_id == context_id:
-        try:
-            del attributes["session.id"]
-        except (TypeError, KeyError, AttributeError):
-            logger.debug("could not dedupe session.id")
-
-
-def _truncate_span_attributes(span) -> None:
-    """Truncate string attributes that exceed the export size limit.
-
-    LLM instrumentation can embed full message history as JSON in span
-    attributes (e.g. ``gen_ai.input.messages``), and tool results can be
-    very large, producing attributes that exceed gRPC's 4MB message limit.
-
-    Replaces any string attribute longer than ``_MAX_ATTR_BYTES`` (50KB)
-    with a truncated marker.  Like ``_scrub_span_attributes``, this
-    mutates ``span._attributes`` directly because the public API is
-    read-only after ``end()``.
-    """
-    attributes = getattr(span, "_attributes", None) or span.attributes
-    if not attributes:
-        return
-    for key, value in list(attributes.items()):
-        if isinstance(value, str) and len(value.encode("utf-8")) > _MAX_ATTR_BYTES:
-            truncated = (
-                value[: _MAX_ATTR_BYTES // 2] + f"\n... [truncated, {len(value)} chars total]"
-            )
-            try:
-                attributes[key] = truncated
-            except (TypeError, AttributeError):
-                # ``attributes`` proxy is read-only (rare — some
-                # BoundedAttributes configurations).  Best-effort: drop
-                # the oversized attribute so the export doesn't blow
-                # past the size limit.
-                logger.debug("could not rewrite oversized attribute key=%s", key)
-
-
-class _TruncatingSpanProcessor(SpanProcessor):
-    """SpanProcessor that scrubs noise attributes and truncates large
-    string attributes before export.
-
-    Processing order at ``on_end``:
-      1. Scrub noise attributes (leaked instrumentor keys, redundant
-         ``session.id``).
-      2. Truncate oversized string attributes.
-      3. Forward to the downstream delegate (the batch exporter).
-
-    Scrubbing before truncation avoids wasting work on attributes that
-    are about to be deleted.
-    """
-
-    def __init__(self, delegate: SpanProcessor) -> None:
-        self._delegate = delegate
-
-    def on_start(self, span, parent_context=None):
-        self._delegate.on_start(span, parent_context)
-
-    def on_end(self, span):
-        _scrub_span_attributes(span)
-        _truncate_span_attributes(span)
-        self._delegate.on_end(span)
-
-    def shutdown(self):
-        self._delegate.shutdown()
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return self._delegate.force_flush(timeout_millis)
-
-
-# Attribute values whose spans we unconditionally drop before export.
-# Keyed by attribute name → set of values that mark the span as noise.
-#
-# Why key on attributes, not span names:
-# -------------------------------------
-# ASGI / FastAPI instrumentation names its per-chunk response spans
-# ``"http send"`` (older versions) or ``"{route} http send"`` (newer),
-# and the string isn't stable across the instrumentor's own refactors.
-# ``asgi.event.type = "http.response.body"`` *is* stable — it's the
-# ASGI-spec event name and shows up verbatim in the instrumentor
-# source.  Keying on it survives instrumentor upgrades.
-_NOISE_ATTRS: dict[str, frozenset[str]] = {
-    "asgi.event.type": frozenset({"http.response.body"}),
-}
-
-
-class _DropSpansProcessor(SpanProcessor):
-    """SpanProcessor that drops framework-noise spans before export.
-
-    Sits at the head of the export chain.  For each finishing span we
-    peek at its attributes; if any ``(name, value)`` pair matches
-    ``_NOISE_ATTRS`` we simply do not forward the span to the
-    downstream delegate, dropping it from every configured exporter
-    (OTLP, file, both) in one shot.
-
-    We can't prevent the span from being *created* — the instrumentor
-    that emits it doesn't check with us first — but suppressing at
-    export-time costs microseconds per span and gives us a single
-    choke point for future noise sources.
-    """
-
-    def __init__(self, delegate: SpanProcessor) -> None:
-        self._delegate = delegate
-
-    def on_start(self, span, parent_context=None):
-        self._delegate.on_start(span, parent_context)
-
-    def on_end(self, span):
-        attrs = getattr(span, "attributes", None) or {}
-        for attr_name, bad_values in _NOISE_ATTRS.items():
-            if attrs.get(attr_name) in bad_values:
-                return  # drop: do not forward to delegate
-        self._delegate.on_end(span)
-
-    def shutdown(self):
-        self._delegate.shutdown()
-
-    def force_flush(self, timeout_millis: int = 30000) -> bool:
-        return self._delegate.force_flush(timeout_millis)
-
-
-def _default_endpoint() -> str:
-    """The schema default for ``TracingSettings.endpoint``.
-
-    Kept as a helper so ``_resolve_endpoint`` can distinguish "user left
-    the schema default" from "user explicitly set this value to the
-    default."  Pydantic doesn't preserve that distinction, but in
-    practice the default is only ever set by schema-default, so
-    equality-with-default is a safe proxy.
-    """
-    from fin_assist.config.schema import TracingSettings
-
-    return TracingSettings.model_fields["endpoint"].default
-
-
-def _resolve_endpoint(config: TracingSettings) -> str:
-    """Resolve the effective OTLP endpoint: explicit config > env > default.
-
-    When the config endpoint equals the schema default we treat it as
-    unset and fall back to ``OTEL_EXPORTER_OTLP_ENDPOINT`` (standard
-    OTel env var).
-    """
-    if config.endpoint != _default_endpoint():
-        return config.endpoint
-
-    env_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if env_endpoint:
-        return env_endpoint
-
-    return config.endpoint
-
-
-def _want_otlp_exporter(config: TracingSettings) -> bool:
-    """Whether to construct the OTLP exporter.
-
-    Resolution order (first match wins):
-
-    1. ``provider="none"`` → always False (file-only mode).
-    2. ``otlp_enabled=False`` → always False (explicit opt-out).
-    3. ``provider`` is any non-None value (e.g. ``"phoenix"``) → True.
-    4. ``provider=None`` (manual mode) → ``otlp_enabled`` (default True).
-    """
-    if config.provider == "none":
-        return False
-    if not config.otlp_enabled:
-        return False
-    if config.provider is not None:
-        return True
-    return config.otlp_enabled
 
 
 def _build_sampler(ratio: float):
@@ -273,34 +59,6 @@ def _build_sampler(ratio: float):
     if ratio <= 0.0:
         return ALWAYS_OFF
     return TraceIdRatioBased(ratio)
-
-
-def _resolve_headers(config_headers: dict[str, str]) -> dict[str, str]:
-    """Resolve OTLP exporter headers: explicit config > OTEL env > empty.
-
-    Parses ``OTEL_EXPORTER_OTLP_HEADERS`` per the OTel spec (comma-
-    separated ``key=value`` pairs).  Config-level headers always win
-    (per-key).  Malformed env pairs are skipped with a warning so a
-    typo doesn't bring down the hub.
-    """
-    if config_headers:
-        return dict(config_headers)
-
-    env = os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
-    if not env:
-        return {}
-
-    parsed: dict[str, str] = {}
-    for pair in env.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-        if "=" not in pair:
-            logger.warning("malformed OTEL_EXPORTER_OTLP_HEADERS pair (no '='): %r", pair)
-            continue
-        key, _, value = pair.partition("=")
-        parsed[key.strip()] = value.strip()
-    return parsed
 
 
 def setup_tracing(
@@ -345,8 +103,8 @@ def setup_tracing(
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
     from opentelemetry.semconv.attributes.service_attributes import SERVICE_NAME
 
-    endpoint = _resolve_endpoint(config)
-    headers = _resolve_headers(dict(config.headers))
+    endpoint = resolve_endpoint(config)
+    headers = resolve_headers(dict(config.headers))
     sampler = _build_sampler(config.sampling_ratio)
 
     resource = Resource.create(
@@ -362,20 +120,20 @@ def setup_tracing(
     provider = TracerProvider(resource=resource, sampler=sampler)
 
     # Construct the OTLP exporter only when the user has opted into it.
-    # ``_want_otlp_exporter`` resolves provider / otlp_enabled
+    # ``want_otlp_exporter`` resolves provider / otlp_enabled
     # into a single boolean.  See that function for the full decision table.
     #
     # Processor stack (outermost → innermost):
-    #   _DropSpansProcessor          ← filters framework noise
-    #   _TruncatingSpanProcessor     ← scrubs + truncates attributes
+    #   DropSpansProcessor          ← filters framework noise
+    #   TruncatingSpanProcessor     ← scrubs + truncates attributes
     #   BatchSpanProcessor           ← ships to the configured exporter
     #
     # The drop processor sits outermost so filtered spans short-circuit
     # before the truncation + batch-queue cost.
     def _wrap(processor: BatchSpanProcessor) -> SpanProcessor:
-        return _DropSpansProcessor(_TruncatingSpanProcessor(processor))
+        return DropSpansProcessor(TruncatingSpanProcessor(processor))
 
-    want_otlp = _want_otlp_exporter(config)
+    want_otlp = want_otlp_exporter(config)
     if want_otlp:
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
         if headers:
