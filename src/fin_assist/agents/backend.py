@@ -311,8 +311,9 @@ class PydanticAIBackend:
         from fin_assist.agents.skills import SkillManager
 
         if self._skill_manager is None and self._spec.skills:
-            self._skill_manager = SkillManager.from_agent_config(
-                self._spec._agent_config,
+            skill_defs = self._spec.get_skill_definitions()
+            self._skill_manager = SkillManager(
+                skills=skill_defs,
                 tool_registry=self._tool_registry,
             )
         return self._skill_manager

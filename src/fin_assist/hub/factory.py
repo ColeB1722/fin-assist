@@ -18,6 +18,7 @@ as a protobuf Struct, which is the idiomatic a2a-sdk pattern.
 from __future__ import annotations
 
 import logging
+from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
 
@@ -93,7 +94,10 @@ class AgentFactory:
         meta_struct = Struct()
         meta_struct.update(meta.model_dump())
 
-        _version = pkg_version("fin-assist")
+        try:
+            _version = pkg_version("fin-assist")
+        except PackageNotFoundError:
+            _version = "0.0.0-dev"
         agent_card = AgentCard(
             name=agent.name,
             description=agent.description,

@@ -214,14 +214,21 @@ class SkillLoader:
         approval_policy = None
         approval_cfg = fin_meta.get("approval")
         if approval_cfg is not None and isinstance(approval_cfg, dict):
-            rules = [
-                ApprovalRule(
-                    pattern=r["pattern"],
-                    mode=r["mode"],
-                    reason=r.get("reason"),
+            raw_rules = approval_cfg.get("rules", [])
+            rules = []
+            for r in raw_rules:
+                if not isinstance(r, dict) or "pattern" not in r or "mode" not in r:
+                    raise ValueError(
+                        f"Invalid approval rule in {path}: "
+                        f"each rule must have 'pattern' and 'mode', got {r}"
+                    )
+                rules.append(
+                    ApprovalRule(
+                        pattern=r["pattern"],
+                        mode=r["mode"],
+                        reason=r.get("reason"),
+                    )
                 )
-                for r in approval_cfg.get("rules", [])
-            ]
             approval_policy = ApprovalPolicy(
                 mode=approval_cfg.get("default", "always"),
                 default=approval_cfg.get("default", "always"),

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
 
 

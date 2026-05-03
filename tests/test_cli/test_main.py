@@ -1123,24 +1123,3 @@ class TestResolveSkill:
         prompt, override = _resolve_skill("nonexistent", None, "hello", config)
         assert prompt == "hello"
         assert override is None
-
-    def test_backward_compat_workflow(self):
-        from fin_assist.cli.main import _resolve_skill
-        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
-
-        config = Config(
-            agents={
-                "git": AgentConfig(
-                    system_prompt="git",
-                    workflows={
-                        "commit": WorkflowConfig(
-                            prompt_template="git-commit",
-                            entry_prompt="Analyze and commit.",
-                        ),
-                    },
-                ),
-            }
-        )
-        prompt, override = _resolve_skill("git", "commit", "commit", config)
-        assert prompt == "Analyze and commit."
-        assert override == "git-commit"

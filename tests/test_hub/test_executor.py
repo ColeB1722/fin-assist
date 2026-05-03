@@ -15,6 +15,7 @@ from fin_assist.agents.backend import RunResult
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.step import StepEvent
 from fin_assist.hub.executor import Executor
+from fin_assist.protobuf import struct_to_dict
 
 
 class _FakeStepHandle:
@@ -272,8 +273,6 @@ class TestExecutorThinkingViaArtifacts:
     """Thinking deltas route through add_artifact with metadata, not status-update messages."""
 
     async def test_thinking_delta_produces_artifact_with_metadata(self) -> None:
-        from fin_assist.protobuf import struct_to_dict
-
         thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[thinking_event, text_event])
@@ -303,8 +302,6 @@ class TestExecutorThinkingViaArtifacts:
         assert thinking_artifacts[0].text == "hmm..."
 
     async def test_text_delta_artifact_has_no_thinking_metadata(self) -> None:
-        from fin_assist.protobuf import struct_to_dict
-
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[text_event])
         context_store = _make_context_store()
@@ -371,8 +368,6 @@ class TestExecutorDeferredApproval:
         assert len(input_required_updates) >= 1
 
     async def test_deferred_event_emits_artifact_with_metadata(self) -> None:
-        from fin_assist.protobuf import struct_to_dict
-
         from fin_assist.agents.tools import DeferredToolCall
 
         deferred_event = StepEvent(
@@ -649,8 +644,6 @@ class TestExecutorCancel:
 
 class TestExecutorToolCallDispatch:
     async def test_tool_call_event_emits_artifact_with_metadata(self) -> None:
-        from fin_assist.protobuf import struct_to_dict
-
         tool_call_event = StepEvent(
             kind="tool_call",
             content=MagicMock(),
@@ -687,8 +680,6 @@ class TestExecutorToolCallDispatch:
         assert meta.get("args", {}).get("path") == "test.py"
 
     async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
-        from fin_assist.protobuf import struct_to_dict
-
         tool_result_event = StepEvent(
             kind="tool_result",
             content="file contents here",

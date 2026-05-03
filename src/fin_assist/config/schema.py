@@ -162,20 +162,6 @@ class SkillConfig(BaseModel):
     serving_modes: list[ServingMode] | None = None
 
 
-class WorkflowConfig(BaseModel):
-    """Per-workflow configuration within an agent.
-
-    .. deprecated::
-        Use ``SkillConfig`` instead.  Workflows are superseded by skills.
-        Kept for backward compatibility during migration.
-    """
-
-    description: str = ""
-    prompt_template: str = ""
-    entry_prompt: str = ""
-    serving_modes: list[ServingMode] | None = None
-
-
 class AgentConfig(BaseModel):
     """Per-agent configuration.
 
@@ -191,7 +177,6 @@ class AgentConfig(BaseModel):
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     tags: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
-    workflows: dict[str, WorkflowConfig] = Field(default_factory=dict)
     skills: dict[str, SkillConfig] = Field(default_factory=dict)
 
 

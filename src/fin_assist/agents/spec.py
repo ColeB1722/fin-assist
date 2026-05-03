@@ -37,7 +37,7 @@ from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
     from fin_assist.agents.skills import SkillDefinition
-    from fin_assist.config.schema import AgentConfig, Config
+    from fin_assist.config.schema import AgentConfig, Config, SkillConfig
     from fin_assist.credentials.store import CredentialStore
 
 _CONTEXT_TYPE_HINTS: dict[str, str] = {
@@ -105,7 +105,7 @@ class AgentSpec:
         return self._config.general.default_model
 
     @property
-    def skills(self) -> dict[str, Any]:
+    def skills(self) -> dict[str, SkillConfig]:
         return self._agent_config.skills
 
     @property

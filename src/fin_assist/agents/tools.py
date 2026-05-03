@@ -87,7 +87,7 @@ class ApprovalPolicy:
 
     def __post_init__(self) -> None:
         if self.default is None:
-            object.__setattr__(self, "default", self.mode)
+            self.default = self.mode
 
     def evaluate(self, args: str = "") -> tuple[Literal["never", "always"], str | None]:
         for rule in self.rules:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fin_assist.agents.skills import SkillCatalog, SkillDefinition, SkillLoader
 from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
 from fin_assist.config.schema import ApprovalConfig, ApprovalRuleConfig, SkillConfig
@@ -37,7 +39,7 @@ class TestSkillDefinition:
         assert skill.approval_policy is None
 
     def test_serving_modes_defaults_none(self) -> None:
-        skill = _make_skill(serving_modes=None)
+        skill = _make_skill()
         assert skill.serving_modes is None
 
 
@@ -292,7 +294,6 @@ class TestSkillMdLoader:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("Just some text without frontmatter.\n")
         loader = SkillLoader()
-        import pytest
 
         with pytest.raises(ValueError, match="YAML frontmatter"):
             loader.load_from_skill_md(skill_dir / "SKILL.md")
@@ -412,28 +413,26 @@ class TestSkillManager:
         mgr.load_skill("commit")
         assert mgr.catalog_text() == ""
 
-    def test_make_load_skill_callable(self) -> None:
-        import asyncio
+    @pytest.mark.asyncio
+    async def test_make_load_skill_callable(self) -> None:
         from fin_assist.agents.skills import SkillManager
 
         mgr = SkillManager(skills=[_make_skill("commit")])
         callable_fn = mgr.make_load_skill_callable()
         assert callable_fn.__name__ == "load_skill"
-        result = asyncio.get_event_loop().run_until_complete(callable_fn("commit"))
+        result = await callable_fn("commit")
         assert "loaded" in result.lower()
 
     def test_from_agent_config(self) -> None:
+        from types import SimpleNamespace
+
         from fin_assist.agents.skills import SkillManager
 
-        agent_config = type(
-            "FakeConfig",
-            (),
-            {
-                "skills": {
-                    "commit": SkillConfig(description="Commit", tools=["git"]),
-                },
+        agent_config = SimpleNamespace(
+            skills={
+                "commit": SkillConfig(description="Commit", tools=["git"]),
             },
-        )()
+        )
         mgr = SkillManager.from_agent_config(agent_config)
         assert len(mgr.available_skills()) == 1
         assert mgr.available_skills()[0].name == "commit"

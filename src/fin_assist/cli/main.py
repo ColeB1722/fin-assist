@@ -133,8 +133,6 @@ def _resolve_skill(
     If no skill is given but ``prompt`` matches a skill name, use that
     skill's ``entry_prompt`` as the effective prompt.
 
-    Falls back to checking workflows for backward compatibility.
-
     Returns (effective_prompt, system_prompt_override).  If no skill matches,
     returns (prompt, None) — i.e. the prompt is used as-is with the default
     system prompt.
@@ -145,24 +143,14 @@ def _resolve_skill(
 
     target = skill_name
 
-    if target is None and (
-        (agent_cfg.skills and prompt in agent_cfg.skills)
-        or (agent_cfg.workflows and prompt in agent_cfg.workflows)
-    ):
+    if target is None and agent_cfg.skills and prompt in agent_cfg.skills:
         target = prompt
 
-    if target is not None:
-        if agent_cfg.skills and target in agent_cfg.skills:
-            skill = agent_cfg.skills[target]
-            effective_prompt = skill.entry_prompt or prompt
-            system_prompt_override = skill.prompt_template or None
-            return effective_prompt, system_prompt_override
-
-        if agent_cfg.workflows and target in agent_cfg.workflows:
-            wf = agent_cfg.workflows[target]
-            effective_prompt = wf.entry_prompt or prompt
-            system_prompt_override = wf.prompt_template or None
-            return effective_prompt, system_prompt_override
+    if target is not None and agent_cfg.skills and target in agent_cfg.skills:
+        skill = agent_cfg.skills[target]
+        effective_prompt = skill.entry_prompt or prompt
+        system_prompt_override = skill.prompt_template or None
+        return effective_prompt, system_prompt_override
 
     return prompt, None
 
@@ -476,21 +464,24 @@ def _list_command(args: argparse.Namespace, config) -> int:
 
         loader = SkillLoader()
         skill_md_files = loader.discover_skill_md_files()
-        config_skills = {}
-        for agent_cfg in config.agents.values():
-            config_skills.update(agent_cfg.skills)
 
-        if not config_skills and not skill_md_files:
+        any_config_skills = any(agent_cfg.skills for agent_cfg in config.agents.values())
+
+        if not any_config_skills and not skill_md_files:
             render_info("No skills configured.")
             return 0
 
-        if config_skills:
+        if any_config_skills:
             console.print("[bold]Config skills:[/bold]")
-            for name, skill_cfg in config_skills.items():
-                tools_str = ", ".join(skill_cfg.tools) if skill_cfg.tools else "none"
-                console.print(f"  [bold]{name}[/bold]  (tools: {tools_str})")
-                if skill_cfg.description:
-                    console.print(f"    {skill_cfg.description}")
+            for agent_name, agent_cfg in config.agents.items():
+                if not agent_cfg.skills:
+                    continue
+                console.print(f"  [bold]{agent_name}:[/bold]")
+                for name, skill_cfg in agent_cfg.skills.items():
+                    tools_str = ", ".join(skill_cfg.tools) if skill_cfg.tools else "none"
+                    console.print(f"    [bold]{name}[/bold]  (tools: {tools_str})")
+                    if skill_cfg.description:
+                        console.print(f"      {skill_cfg.description}")
 
         if skill_md_files:
             console.print("[bold]SKILL.md files:[/bold]")
@@ -569,12 +560,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Name of a skill defined in the agent's config (e.g. commit, pr, summarize).",
     )
-    do_parser.add_argument(
-        "--workflow",
-        default=None,
-        dest="skill",
-        help="Alias for --skill (deprecated).",
-    )
 
     talk_parser = subparsers.add_parser(
         "talk",
@@ -616,12 +601,6 @@ def main(argv: list[str] | None = None) -> int:
         "--skill",
         default=None,
         help="Name of a skill defined in the agent's config.",
-    )
-    talk_parser.add_argument(
-        "--workflow",
-        default=None,
-        dest="skill",
-        help="Alias for --skill (deprecated).",
     )
 
     list_parser = subparsers.add_parser(

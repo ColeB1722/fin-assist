@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fin_assist.llm.prompts import SHELL_INSTRUCTIONS
+from fin_assist.llm import SHELL_INSTRUCTIONS
 
 
 class TestShellInstructions:
