@@ -221,7 +221,6 @@ Use conventional commits format...
 - Positional skill matching: `fin do git commit` → agent=git, skill=commit
 - `/skill:<name>` REPL command loads a skill mid-session
 - `fin list skills` shows all skills grouped by agent
-- `fin list skills` shows all skills grouped by agent
 
 ### When adding a new skill
 

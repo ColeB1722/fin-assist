@@ -14,9 +14,9 @@
 
 ---
 
-## Test Coverage Summary (2026-05-02)
+## Test Coverage Summary (2026-05-03)
 
-**924 tests passing.** (Latest bumps: Skills API v0.1 — `SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`, `ApprovalRule`, `ApprovalPolicy.evaluate()`; code review triage — removed `WorkflowConfig`/`--workflow` dead code, bug fixes, style fixes.)
+**940 tests passing.** (Latest bumps: Skills API v0.1 + skill loading refactor — `SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`, `ApprovalRule`, `ApprovalPolicy.evaluate()`, REPL `/skills` and `/skill:` commands, skill tracing; code review triage — removed `WorkflowConfig`/`--workflow` dead code, bug fixes, style fixes.)
 
 ### Coverage by module
 
@@ -352,7 +352,7 @@ Part 2 (Interactive) — human at TTY
 
 Before a big refactor, run the minimum set most likely to catch regressions:
 
-**Automated** (`just test`): 924 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics + tracing (hub + CLI + pause/resume continuity) + skills API
+**Automated** (`just test`): 940 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics + tracing (hub + CLI + pause/resume continuity) + skills API
 
 **Manual (agent runs)**: A7–A15 (server lifecycle), L1–L4 (platform capabilities), A5 (default from config)
 

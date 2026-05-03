@@ -322,7 +322,7 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
                         skill_result.get("prompt_template") or system_prompt_override
                     )
                 except Exception:
-                    pass
+                    render_info(f"Skill '{resolved_skill}' pre-loading skipped")
 
             if system_prompt_override:
                 from fin_assist.agents.registry import SYSTEM_PROMPTS
@@ -393,10 +393,6 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 )
                 return 1
 
-            fp = FinPrompt(
-                agents=[a.name for a in agents],
-                context_settings=config.context,
-            )
             try:
                 raw_skills = await client.list_skills(args.agent)
             except Exception:
@@ -428,7 +424,7 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                             skill_result.get("prompt_template") or system_prompt_override
                         )
                     except Exception:
-                        pass
+                        render_info(f"Skill '{resolved_skill}' pre-loading skipped")
                 if system_prompt_override:
                     from fin_assist.agents.registry import SYSTEM_PROMPTS
 
