@@ -113,6 +113,20 @@ class FinAssistAttributes:
     """OTel GenAI semantic convention for the agent/model name.  Stable
     since semconv v1.28; the older ``llm_*`` prefix is deprecated."""
 
+    SKILL_ID = "fin_assist.skill.id"
+    """Skill name that was loaded (or attempted).  Set on
+    ``fin_assist.skill_load`` spans and on ``fin_assist.task`` spans
+    when a skill was pre-loaded via CLI or ``skills/invoke``."""
+
+    SKILL_ENTRY_POINT = "fin_assist.skill.entry_point"
+    """The effective prompt sent when a skill was invoked.  Empty when
+    the skill has no ``entry_prompt``."""
+
+    SKILL_TOOLS_UNLOCKED = "fin_assist.skill.tools_unlocked"
+    """Comma-separated list of tool names that a skill load unlocked.
+    Set on ``fin_assist.skill_load`` spans so dashboards can show
+    which capabilities became available."""
+
 
 class TaskStateValues:
     """Valid values for :attr:`FinAssistAttributes.TASK_STATE`.
@@ -158,3 +172,7 @@ class SpanNames:
     APPROVAL_DECIDED = "fin_assist.approval_decided"
     """Emitted at resume time as the first child of the resumed task span.
     Carries the decision and a Link back to the ``approval_request`` span."""
+    SKILL_LOAD = "fin_assist.skill_load"
+    """Emitted when a skill is loaded (via CLI ``/skill:<name>``, ``--skill``
+    flag, or agent-driven ``load_skill`` tool).  Carries the skill name,
+    entry prompt, and unlocked tool list."""

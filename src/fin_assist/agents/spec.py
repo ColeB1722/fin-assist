@@ -37,7 +37,7 @@ from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
     from fin_assist.agents.skills import SkillDefinition
-    from fin_assist.config.schema import AgentConfig, Config, SkillConfig
+    from fin_assist.config.schema import AgentConfig, Config, SkillConfig, ToolPolicyConfig
     from fin_assist.credentials.store import CredentialStore
 
 _CONTEXT_TYPE_HINTS: dict[str, str] = {
@@ -109,7 +109,22 @@ class AgentSpec:
         return self._agent_config.skills
 
     @property
-    def tools(self) -> list[str]:
+    def base_tools(self) -> list[str]:
+        return self._agent_config.base_tools
+
+    @property
+    def tool_policies(self) -> dict[str, ToolPolicyConfig]:
+        return self._agent_config.tool_policies
+
+    @property
+    def skill_tool_names(self) -> list[str]:
+        """Tool names from all skill definitions (union, deduplicated).
+
+        These tools are only available when the skill that provides them
+        is loaded.  The backend uses this together with
+        ``SkillManager.loaded_tool_names`` to gate actual tool
+        registration.
+        """
         seen: set[str] = set()
         result: list[str] = []
         for skill_cfg in self._agent_config.skills.values():
@@ -121,7 +136,8 @@ class AgentSpec:
 
     @property
     def _supported_context_types(self) -> set[str]:
-        return {_CONTEXT_TYPE_HINTS[t] for t in self.tools if t in _CONTEXT_TYPE_HINTS}
+        all_tools = set(self.base_tools) | set(self.skill_tool_names)
+        return {_CONTEXT_TYPE_HINTS[t] for t in all_tools if t in _CONTEXT_TYPE_HINTS}
 
     @property
     def agent_card_metadata(self) -> AgentCardMeta:

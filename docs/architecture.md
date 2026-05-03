@@ -487,7 +487,7 @@ The git agent is the first real end-user agent and the first to use **scoped CLI
 
 - **Purpose**: Git workflows — commit, PR, summarize
 - **Config**: `system_prompt = "git"`, `output_type = "text"`, `serving_modes = ["do"]`
-- **Skills**: `files`, `git`, `gh`, `shell`, `commit`, `pr`, `summarize` — each with its own tools, approval rules, and prompt steering
+- **Skills**: `git`, `gh`, `commit`, `pr`, `summarize` — each with its own tools and prompt steering
 - **Output**: `str` (free-form text response)
 
 #### Scoped CLI Tools
@@ -503,7 +503,7 @@ The LLM chooses the subcommand/args — one tool definition per CLI instead of o
 
 #### Skills
 
-Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, approval rules, context injection, and prompt steering. Skills are loaded additively — the agent sees a catalog and calls `load_skill(name)` to activate them, or they can be pre-loaded via the `--skill` CLI flag.
+Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, context injection text, and prompt steering. Skills are loaded additively — the agent sees a catalog and calls `load_skill(name)` to activate them, or they can be pre-loaded via the `--skill` CLI flag, positional syntax (`fin do git commit`), or the `/skill:<name>` REPL command. Approval policies are defined at the agent level via `tool_policies`.
 
 ```toml
 [agents.git.skills.commit]
@@ -511,14 +511,6 @@ description = "Generate a conventional commit message from current changes."
 tools = ["git", "read_file"]
 prompt_template = "git-commit"
 entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
-approval.default = "always"
-approval.rules = [
-  { pattern = "git diff*", mode = "never" },
-  { pattern = "git status*", mode = "never" },
-  { pattern = "git log*", mode = "never" },
-  { pattern = "git add*", mode = "never" },
-  { pattern = "git commit*", mode = "never" },
-]
 ```
 
 - `fin do git commit` → agent=git, skill=commit (entry_prompt sent as user message, prompt_template injected as context)
@@ -539,32 +531,34 @@ tools = ["read_file"]
 [agents.test.skills.git]
 description = "Git commands with per-subcommand approval."
 tools = ["git"]
-approval.default = "always"
-approval.rules = [
-  { pattern = "git diff*", mode = "never" },
-  { pattern = "git status*", mode = "never" },
-  { pattern = "git log*", mode = "never" },
-]
 
 [agents.git]
 system_prompt = "git"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do"]
+base_tools = ["read_file"]
 
-[agents.git.skills.files]
-description = "Read files from the workspace."
-tools = ["read_file"]
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+  { pattern = "git add*", mode = "never" },
+  { pattern = "git commit*", mode = "never" },
+]
+
+[agents.git.tool_policies.gh]
+default = "always"
+rules = [
+  { pattern = "gh pr view*", mode = "never" },
+  { pattern = "gh pr list*", mode = "never" },
+]
 
 [agents.git.skills.git]
 description = "Git commands with per-subcommand approval."
 tools = ["git"]
-approval.default = "always"
-approval.rules = [
-  { pattern = "git diff*", mode = "never" },
-  { pattern = "git status*", mode = "never" },
-  { pattern = "git log*", mode = "never" },
-]
 
 [agents.git.skills.commit]
 description = "Generate a conventional commit message from current changes."
@@ -838,8 +832,14 @@ fin-assist talk --agent <name>          → multi-turn session with named agent
 fin-assist talk --skill <name>          → multi-turn session with a skill pre-loaded
 fin-assist talk --agent <name> --resume <id>   → resume a saved session
 fin-assist talk --agent <name> --list          → list saved sessions for agent
+fin-assist do <agent> <skill>            → one-shot with positional skill (e.g. fin do git commit)
 fin-assist list tools|skills|prompts|output-types     → list registry entries
-fin-assist                              → enter interactive REPL (future)
+
+REPL commands (during multi-turn chat):
+  /skills         → list available skills for the current agent
+  /skill:<name>   → load a skill mid-session (e.g. /skill:commit)
+  /exit           → end the conversation
+  /help           → show available commands
 
 Context injection: use @-completion in FinPrompt (e.g. @file:path, @git:diff) to inject
 context into prompts — replaces former --file/--git-diff/--git-log CLI flags.
@@ -1116,14 +1116,20 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 
 ### Phase 15: Skills + MCP Integration ✅ (Skills API v0.1 shipped)
 - [x] Skills framework (configurable behaviors per agent)
-- [x] Per-subcommand approval policies (e.g. `git diff` → never, `git push` → always)
+- [x] Agent-level tool policies (replaces per-skill approval)
+- [x] Tool gating — skills must be loaded before their tools are available
+- [x] `base_tools` on `AgentConfig` for always-available safe/read-only tools
+- [x] `skills/invoke` A2A Method Extension for pre-loading skills server-side
+- [x] REPL `/skills` command and `/skill:<name>` pattern for mid-session loading
+- [x] `SkillCompleter` with rapidfuzz fuzzy matching (mirrors `@file:` pattern)
+- [x] Skill tracing (`fin_assist.skill_load` spans, `fin_assist.cli.skill` attribute)
 - [x] Context templates: SKILL.md files with YAML frontmatter + markdown body
 - [x] Skill auto-discovery from `.fin/skills/` and `~/.config/fin/skills/`
 - [x] Dynamic skill loading via `load_skill` tool + catalog in system prompt
 - [x] `fin list skills` command (grouped by agent)
 - [x] `--skill` CLI flag for pre-loading skills
+- [x] Positional skill syntax (`fin do git commit`)
 - [ ] MCP client integration
-- [ ] CLI/TUI components for skill/MCP configuration
 - [ ] Per-project skill/MCP configuration
 
 See the Skills Architecture section below for details on the v0.1 implementation.
@@ -1132,40 +1138,104 @@ See the Skills Architecture section below for details on the v0.1 implementation
 
 ## Skills Architecture
 
-An agent is a collection of skills within an environment (system prompt). A **skill** curates tools, approval rules, context injection text, and prompt steering. Skills are the primary mechanism for organizing agent behavior — all tools attach through skills; `AgentSpec.tools` is derived from the union of skill tool lists.
+An agent is a collection of skills within an environment (system prompt). A **skill** curates tools, context injection text, and prompt steering. Skills are the primary mechanism for organizing agent behavior — tools attach through skills; `AgentSpec.skill_tool_names` derives from the union of skill tool lists, but tools are only *registered* when their skill is loaded.
+
+Approval policies are defined at the **agent level** via `AgentConfig.tool_policies`, not per-skill. This eliminates merge conflicts when multiple skills reference the same tool — each tool has exactly one policy definition.
 
 ### Key Types
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `SkillDefinition` | `agents/skills.py` | Runtime representation of a resolved skill |
+| `SkillDefinition` | `agents/skills.py` | Runtime representation of a resolved skill (no approval_policy) |
 | `SkillCatalog` | `agents/skills.py` | Generates catalog text for the system prompt |
 | `SkillLoader` | `agents/skills.py` | Resolves `SkillConfig` or SKILL.md files into `SkillDefinition` instances |
-| `SkillManager` | `agents/skills.py` | Tracks loaded skills, provides `load_skill` callable, generates catalog |
-| `SkillConfig` | `config/schema.py` | Per-skill TOML config (tools, approval, prompt_template, entry_prompt, context) |
-| `ApprovalConfig` | `config/schema.py` | Per-skill approval config (default mode + rules) |
-| `ApprovalRuleConfig` | `config/schema.py` | Single fnmatch-based approval rule in config |
-| `ApprovalRule` | `agents/tools.py` | Runtime approval rule with `matches(args)` |
+| `SkillManager` | `agents/skills.py` | Tracks loaded skills, provides `load_skill` callable, `loaded_tool_names()`, generates catalog |
+| `SkillConfig` | `config/schema.py` | Per-skill TOML config (tools, prompt_template, entry_prompt, context) — no approval |
+| `ToolPolicyConfig` | `config/schema.py` | Agent-level tool approval policy (default mode + rules) |
+| `ToolPolicyRuleConfig` | `config/schema.py` | Single fnmatch-based approval rule in config |
 | `ApprovalPolicy` | `agents/tools.py` | Policy with `evaluate(args)` — first-match rules, default fallback |
+| `AgentConfig.base_tools` | `config/schema.py` | Always-available safe/read-only tools (default: `["read_file"]`) |
+| `AgentConfig.tool_policies` | `config/schema.py` | Agent-level tool approval policies (dict keyed by tool name) |
 
 ### Skill Lifecycle
 
-1. **Config time** — Skills are defined in `config.toml` under `[agents.<name>.skills.<skill>]` or as SKILL.md files in `.fin/skills/<name>/SKILL.md` or `~/.config/fin/skills/<name>/SKILL.md`.
-2. **Agent startup** — `SkillLoader` resolves all skill configs into `SkillDefinition` instances. `AgentSpec.tools` derives from the union of all skill tools (falls back to flat `tools` list when no skills defined).
-3. **Backend init** — `PydanticAIBackend._get_skill_manager()` creates a `SkillManager` from the spec's skill definitions. If any skills are available but not yet loaded, the `load_skill` tool is registered and the skill catalog is appended to the system prompt.
-4. **Agent-driven loading** — The LLM sees the catalog and calls `load_skill(name)` to activate skills on demand. Pre-loading via `--skill` CLI flag also works.
-5. **Skill activation** — `SkillManager.load_skill()` marks the skill as loaded, removing it from the catalog. The skill's tools are already registered; the catalog update just signals the LLM that the skill is active.
+1. **Config time** — Skills are defined in `config.toml` under `[agents.<name>.skills.<skill>]` or as SKILL.md files in `.fin/skills/<name>/SKILL.md` or `~/.config/fin/skills/<name>/SKILL.md`. Tool approval policies are defined at the agent level under `[agents.<name>.tool_policies.<tool>]`.
+2. **Agent startup** — `SkillLoader` resolves all skill configs into `SkillDefinition` instances. `AgentSpec.skill_tool_names` derives from the union of all skill tool lists. `AgentSpec.base_tools` lists always-available tools.
+3. **Backend init** — `PydanticAIBackend._get_skill_manager()` creates a `SkillManager` from the spec's skill definitions. Only `base_tools` are registered initially. If any skills are available but not yet loaded, the `load_skill` tool is registered and the skill catalog is appended to the system prompt.
+4. **Skill loading** — Skills can be loaded via: (a) `--skill` CLI flag or positional syntax (`fin do git commit`), which calls the `skills/invoke` endpoint server-side; (b) `/skill:<name>` in the REPL; (c) agent-driven `load_skill` tool call. All paths call `SkillManager.load_skill()` which marks the skill as loaded.
+5. **Tool gating** — `_build_pydantic_agent()` registers only `base_tools` + `SkillManager.loaded_tool_names()` tools. Skills that aren't loaded have their tools excluded from the agent. `_build_pydantic_agent()` is called on every `step()`, so loading takes effect on the next turn.
+6. **Agent-level policies** — `_get_agent_tool_policy()` resolves `AgentConfig.tool_policies` into `ApprovalPolicy` instances. Each tool has exactly one policy; no merge conflicts across skills.
+
+### Tool Gating
+
+The key change from the pre-refactor design: **tools are no longer registered all at once**. Before the refactor, `_build_pydantic_agent()` registered the union of all skill tools regardless of load state, and `SkillManager._loaded` only controlled catalog text — the LLM could use any tool at any time, making skill boundaries meaningless.
+
+Now, `_build_pydantic_agent()` registers only:
+- `base_tools` (always available, default `["read_file"]`)
+- `SkillManager.loaded_tool_names()` (tools from loaded skills)
+
+This means the LLM can only use tools from loaded skills. Unloaded skills' tools simply don't exist from the agent's perspective.
+
+### Agent-Level Tool Policies
+
+Instead of per-skill `approval` blocks (which duplicated rules across skills and caused merge conflicts), policies are defined at the agent level:
+
+```toml
+[agents.git]
+system_prompt = "git"
+output_type = "text"
+base_tools = ["read_file"]
+
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+  { pattern = "git add*", mode = "never" },
+  { pattern = "git commit*", mode = "never" },
+]
+
+[agents.git.tool_policies.gh]
+default = "always"
+rules = [
+  { pattern = "gh pr view*", mode = "never" },
+  { pattern = "gh pr list*", mode = "never" },
+]
+```
+
+Each tool has exactly one policy definition — no merging needed, no conflicts possible.
+
+### skills/invoke Endpoint
+
+The `POST /agents/{name}/skills/invoke` endpoint (A2A Method Extension) is the primary server-side skill entry point. It:
+
+1. Validates the skill name against the agent's config
+2. Calls `SkillManager.load_skill()` to mark the skill as loaded
+3. Returns the effective prompt, prompt_template, and tools for the loaded skill
+
+The CLI calls this endpoint before streaming when a skill is resolved via `--skill` flag or positional syntax. The REPL's `/skill:<name>` command also calls this endpoint.
+
+### REPL Skill Commands
+
+- `/skills` — Lists available skills for the current agent (calls `GET /agents/{name}/skills`)
+- `/skill:<name>` — Loads a skill mid-session (calls `POST /agents/{name}/skills/invoke`), e.g. `/skill:commit`
+- `SkillCompleter` provides fuzzy completion after `/skill:`, using rapidfuzz `fuzz.WRatio` (same scorer and pattern as `AtCompleter` for `@file:`)
+
+### Skill Tracing
+
+- **CLI-side**: `cli_root_span(skill="commit")` stamps `fin_assist.cli.skill` on the CLI root span
+- **Hub-side**: `fin_assist.skill_load` span emitted via `_TaskTracer.emit_skill_load_span()` when a skill is loaded during a task (agent-driven `load_skill` tool). Carries `fin_assist.skill.id`, `fin_assist.skill.entry_point`, and `fin_assist.skill.tools_unlocked`.
+- **Task span**: `start_task_span(skill_id="commit")` stamps `fin_assist.skill.id` on the task span when the skill was pre-loaded before the task started
 
 ### Approval Rules
 
-Each skill can define an `ApprovalConfig` that overrides the tool's default `ApprovalPolicy` for tools within that skill. Rules use fnmatch patterns matched against the tool's args string:
+Agent-level `ToolPolicyConfig` defines approval policies per tool. Rules use fnmatch patterns matched against the tool's args string:
 
 ```toml
-[agents.git.skills.git]
-description = "Git commands with per-subcommand approval."
-tools = ["git"]
-approval.default = "always"
-approval.rules = [
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
   { pattern = "git diff*", mode = "never" },
   { pattern = "git status*", mode = "never" },
   { pattern = "git log*", mode = "never" },
@@ -1189,15 +1259,6 @@ metadata:
   fin-assist:
     prompt-template: git-commit
     entry-prompt: Analyze the current changes and generate a commit message.
-    approval:
-      default: always
-      rules:
-        - pattern: "git diff*"
-          mode: never
-        - pattern: "git add*"
-          mode: never
-        - pattern: "git commit*"
-          mode: never
 ---
 ## Guidelines for commit messages
 
@@ -1214,10 +1275,13 @@ Discovery paths (project takes precedence for same-name skills):
 |----------|--------|-----------|
 | Skills are additive | No unloading in v0.1 | Simplicity; once tools are registered, removal is complex |
 | Tools shared across skills | Name collisions = config error | Single tool registry; same tool name must map to same callable |
-| `AgentSpec.tools` derives from skill union | Falls back to flat `tools` list | Backward compat; new configs should use skills |
-| Agent-driven loading | `load_skill` tool + catalog in system prompt | LLM decides when to activate skills; user can pre-load via `--skill` |
-| Approval is conservative at registration | `always` default or any `always` rule → `requires_approval=True` | pydantic-ai sets approval at registration time, not call time |
+| Tool gating by loaded skills | `base_tools` + `loaded_tool_names()` only | Makes skill boundaries meaningful; LLM can't use unloaded tools |
+| Agent-level tool policies | `tool_policies` on `AgentConfig`, not per-skill | Each tool has exactly one policy — no merge/conflict |
+| `base_tools` default `["read_file"]` | Safe/read-only tools always available | Agents always need file reading; no skill load required |
+| Agent-driven + CLI skill loading | `load_skill` tool + `skills/invoke` endpoint + `--skill` flag | Multiple entry points for different workflows |
+| `/skill:<name>` REPL pattern | Mirrors `@file:` pattern with `SkillCompleter` | Consistent UX; fuzzy completion via rapidfuzz |
 | SKILL.md follows agentskills.io | Standard format with `metadata.fin-assist.*` extensions | Interoperability with other agent platforms |
+| Skill tracing via OTel | `fin_assist.skill_load` span + `fin_assist.cli.skill` attribute | Observable skill activations in Phoenix/traces.jsonl |
 
 ### Post-v0.1 Roadmap
 

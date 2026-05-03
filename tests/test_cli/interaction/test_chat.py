@@ -493,3 +493,138 @@ class TestChatLoopDeferredApproval:
         assert stream_fn.call_count == 1
         output = buf.getvalue()
         assert "cancelled" in output.lower()
+
+
+class TestChatLoopSkills:
+    async def test_skills_command_lists_skills(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skills", "/exit"])
+
+        list_fn = AsyncMock(
+            return_value=[
+                {"name": "commit", "description": "Generate a commit", "tools": ["git"]},
+            ]
+        )
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp, list_skills_fn=list_fn)
+
+        output = buf.getvalue()
+        assert "commit" in output
+        assert "Generate a commit" in output
+        stream_fn.assert_not_called()
+
+    async def test_skills_command_no_skills(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skills", "/exit"])
+
+        list_fn = AsyncMock(return_value=[])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp, list_skills_fn=list_fn)
+
+        output = buf.getvalue()
+        assert "No skills" in output
+        stream_fn.assert_not_called()
+
+    async def test_skill_load_invokes_skill(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skill:commit", "/exit"])
+
+        invoke_fn = AsyncMock(
+            return_value={"skill": "commit", "prompt": "commit", "tools": ["git"]}
+        )
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp, invoke_skill_fn=invoke_fn)
+
+        output = buf.getvalue()
+        assert "commit" in output.lower()
+        assert "loaded" in output.lower()
+        invoke_fn.assert_called_once_with("git", "commit")
+        stream_fn.assert_not_called()
+
+    async def test_skill_load_failure_shows_error(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skill:commit", "/exit"])
+
+        invoke_fn = AsyncMock(side_effect=Exception("skill not found"))
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp, invoke_skill_fn=invoke_fn)
+
+        output = buf.getvalue()
+        assert "Failed to load skill" in output
+        stream_fn.assert_not_called()
+
+    async def test_skill_load_empty_name_shows_usage(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skill:", "/exit"])
+
+        invoke_fn = AsyncMock()
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp, invoke_skill_fn=invoke_fn)
+
+        output = buf.getvalue()
+        assert "Usage" in output
+        invoke_fn.assert_not_called()
+
+    async def test_skill_load_no_fn_shows_unavailable(self):
+        stream_fn = AsyncMock()
+        mock_fp = MagicMock()
+        mock_fp.ask = AsyncMock(side_effect=["/skill:commit", "/exit"])
+
+        from io import StringIO
+
+        from rich.console import Console
+
+        buf = StringIO()
+        test_console = Console(file=buf, force_terminal=False)
+
+        with patch("fin_assist.cli.interaction.chat.console", test_console):
+            await run_chat_loop(stream_fn, "git", prompt=mock_fp)
+
+        output = buf.getvalue()
+        assert "not available" in output
+        stream_fn.assert_not_called()

@@ -2,13 +2,12 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-05-02):** 924 tests passing, `just ci` green. Skills API v0.1 fully implemented. Phase 5 documentation verified current. Part 1 manual tests passed (server lifecycle A7-A14, platform capabilities L1-L4). Ready for Part 2 interactive tests (requires human at TTY) and v0.1.0 tag.
+**Current state (2026-05-03):** 940 tests passing, `just ci` green. Skill loading refactor complete (Steps 1–14). Skills now genuinely gate tools, approval policies moved to agent level, REPL `/skills` and `/skill:<name>` commands wired, skill tracing added. Ready for manual review.
 
 **Recent work (this session):**
 
-1. **Phase 5 documentation review** — Verified all docs current: architecture.md has Skills Architecture section, manual-testing.md has 2e/2f, README has skills entry, AGENTS.md has skill authoring section
-2. **Part 1 manual tests** — Server lifecycle (A7-A14) and platform capabilities (L1-L4) all pass. Known cosmetic: OTLP exporter stderr noise when Phoenix not running (devenv tracing default)
-3. **Previous session** — Skills API v0.1 (Phases 0–4) + CodeRabbit review triage (PR #114): removed `WorkflowConfig`/`--workflow` dead code, bug fixes, style fixes, `fin list skills` grouped by agent
+1. **Steps 11–14: Skill loading refactor completion** — Implemented REPL `/skills` + `/skill:<name>` commands with `SkillCompleter` (rapidfuzz fuzzy matching, mirrors `@file:` pattern), skill tracing attributes/spans (`fin_assist.skill_load`, `fin_assist.cli.skill`), and updated all docs (architecture.md Skills Architecture rewrite, AGENTS.md skill authoring section, Phase 15 checklist)
+2. **Steps 1–10, 13 (previous session)** — Config schema migration (`ApprovalConfig` → `ToolPolicyConfig`, `base_tools`, `tool_policies`), `AgentSpec` tool gating, `SkillManager.loaded_tool_names()`, `_build_pydantic_agent()` gates tools by loaded skills, `skills/invoke` + `GET /skills` endpoints, CLI `invoke_skill()`/`list_skills()` client methods, `_resolve_skill()` 3-tuple return, all existing tests updated
 
 **Core platform status:**
 
@@ -43,9 +42,9 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Recommended picks (in priority order):**
 
-1. **Part 2 interactive manual tests** — Run through `docs/manual-testing.md` sections 2a-2f at a TTY. Key tests: approval widget (B1-B7, highest risk), REPL (C1-C16), skills API (S1-S6), shell agent exercise (X1-X6). Part 1 (automated) is done.
-2. **Tag v0.1.0** — After Part 2 interactive test pass.
-3. **MCP tool source (v0.1.1)** — Add `MCPToolset` as a second tool source that registers discovered tools into `ToolRegistry`. The skill→tool binding is source-agnostic, ready for MCP.
+1. **Manual review of skill loading refactor** — Verify tool gating works end-to-end (unloaded skill tools unavailable), `/skills` and `/skill:<name>` in REPL, agent-level policies applied correctly, tracing spans emitted.
+2. **Part 2 interactive manual tests** — Run through `docs/manual-testing.md` sections 2a-2f at a TTY.
+3. **Tag v0.1.0** — After manual review + interactive test pass.
 
 ### Sequenced roadmap
 
@@ -88,13 +87,14 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | — | JSONL file exporter (#105) | ✅ Complete |
 | — | Tracing UX pass (#104) | ✅ Complete |
 | — | PR #103 code review fixes | ✅ Complete |
+| — | Skill loading refactor (tool gating + agent-level policies) | ✅ Complete — Steps 1–14, 940 tests |
 | 9b | Full SSE Streaming | ✅ Covered by a2a-sdk migration |
 | 10 | Non-blocking + interactive tasks | 📐 Superseded by deferred tools |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client | ⬜ Not Started |
 | 14 | Testing Infrastructure (Deep Evals) | ⬜ Queued |
-| 15 | Skills + MCP Integration | ✅ Skills API v0.1 shipped (code review triaged); MCP queued for v0.1.1 |
+| 15 | Skills + MCP Integration | ✅ Skills API v0.1 shipped + skill loading refactor (tool gating, agent-level policies, REPL commands, tracing); MCP queued for v0.1.1 |
 | 16 | Additional Agents | 🔄 Git shipped |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
@@ -168,34 +168,43 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 ---
 
-### Skills API: v0.1 Implementation (shipped 2026-05-01, review triage 2026-05-02)
+### Skills API: v0.1 Implementation (shipped 2026-05-01, review triage 2026-05-02, refactor 2026-05-03)
 
-**Status:** Phases 0–4 complete + code review triage. 924 tests passing, `just ci` green.
+**Status:** Complete including skill loading refactor. 940 tests passing, `just ci` green.
 
 **What was implemented:**
 
 1. **`ApprovalRule` + `ApprovalPolicy.evaluate()`** — fnmatch-based per-subcommand approval rules. First-match semantics with `default` fallback. Replaces the old binary `always`/`never` mode.
 
-2. **`SkillConfig` + `ApprovalConfig` + `ApprovalRuleConfig`** — config schema types for inline TOML skill definitions. Added to `AgentConfig.skills: dict[str, SkillConfig]`.
+2. **`SkillConfig`** — config schema type for inline TOML skill definitions. Added to `AgentConfig.skills: dict[str, SkillConfig]`. No approval field — policies moved to agent level.
 
-3. **`SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`** — runtime types in `agents/skills.py`. `SkillLoader` resolves both inline TOML and SKILL.md files. `SkillManager` tracks loaded skills, provides `load_skill` callable, and generates catalog text.
+3. **`SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`** — runtime types in `agents/skills.py`. `SkillLoader` resolves both inline TOML and SKILL.md files. `SkillManager` tracks loaded skills, provides `load_skill` callable, `loaded_tool_names()`, and generates catalog text.
 
-4. **SKILL.md file loader** — parses YAML frontmatter + markdown body following agentskills.io convention. Discovery from `.fin/skills/` and `~/.config/fin/skills/`. fin-assist extensions under `metadata.fin-assist.*`. Validates required `pattern`/`mode` keys in approval rules.
+4. **SKILL.md file loader** — parses YAML frontmatter + markdown body following agentskills.io convention. Discovery from `.fin/skills/` and `~/.config/fin/skills/`. fin-assist extensions under `metadata.fin-assist.*`.
 
-5. **Config migration** — `config.toml` migrated from `tools`/`workflows` to `skills` with per-skill approval rules. `WorkflowConfig` and `--workflow` CLI flag removed. `--skill` CLI flag.
+5. **Config migration** — `config.toml` migrated from `tools`/`workflows` to `skills` with agent-level `tool_policies`. `WorkflowConfig` and `--workflow` CLI flag removed. `--skill` CLI flag. `base_tools` (default `["read_file"]`) for always-available tools.
 
-6. **Dynamic skill loading** — `load_skill` tool registered when skills exist. Skill catalog injected into system prompt. `SkillManager.load_skill()` marks skills as active.
+6. **Tool gating** — `_build_pydantic_agent()` registers only `base_tools` + `SkillManager.loaded_tool_names()`. Skills not loaded = tools not registered. Called on every `step()`, so loading takes effect next turn.
 
-7. **`fin list skills`** — lists config-defined and SKILL.md-discovered skills, grouped by agent name.
+7. **Agent-level tool policies** — `ToolPolicyConfig`/`ToolPolicyRuleConfig` replace per-skill `ApprovalConfig`. `_get_agent_tool_policy()` resolves policies per tool. Each tool has exactly one policy definition — no merge conflicts.
+
+8. **`skills/invoke` + `GET /skills` endpoints** — `POST /agents/{name}/skills/invoke` pre-loads a skill server-side. `GET /agents/{name}/skills` lists available skills. `HubClient.invoke_skill()` and `HubClient.list_skills()` client methods.
+
+9. **REPL `/skills` + `/skill:<name>`** — `/skills` lists available skills. `/skill:<name>` loads a skill mid-session via `invoke_skill_fn`. `SkillCompleter` with rapidfuzz fuzzy matching on `/skill:` prefix (mirrors `@file:` pattern).
+
+10. **Skill tracing** — `fin_assist.skill_load` span via `_TaskTracer.emit_skill_load_span()`. `fin_assist.skill.id`, `fin_assist.skill.entry_point`, `fin_assist.skill.tools_unlocked` attributes. `fin_assist.cli.skill` on CLI root span. `skill_id` param on `start_task_span()`.
+
+11. **`fin list skills`** — lists config-defined and SKILL.md-discovered skills, grouped by agent name.
 
 **Key design decisions:**
 
 - Skills are additive (no unloading in v0.1)
 - Tools shared across skills; name collisions = config error
-- `AgentSpec.tools` derives from the union of all skill tools (empty list if no skills defined)
-- Approval is conservative: if default="always" or any rule has mode="always", tool gets `requires_approval=True`. Fine-grained per-subcommand evaluation at executor level in v0.1.1
-- `_CONTEXT_TYPE_MAP` → `_CONTEXT_TYPE_HINTS` module-level constant
-- Dead code removed: `format_context()`, `build_user_message()`, `WorkflowConfig`
+- Tool gating: `base_tools` + `loaded_tool_names()` only — LLM can't use unloaded tools
+- Agent-level `tool_policies` replace per-skill `approval` — each tool has exactly one policy
+- `base_tools` default `["read_file"]` — agents always need file reading
+- `_build_pydantic_agent()` called on every `step()` — skill loading takes effect next turn
+- `/skill:<name>` mirrors `@file:` pattern with `SkillCompleter` + rapidfuzz
 
 **Bug fixes shipped alongside:**
 

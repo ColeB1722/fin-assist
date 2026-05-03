@@ -296,3 +296,59 @@ class TestApprovalWaitSpan:
         wait = spans["cli.approval_wait"]
         root_span_id = root["context"]["span_id"]
         assert wait["parent_id"] == root_span_id
+
+
+class TestCLIRootSpanSkillAttribute:
+    """``cli_root_span`` stamps ``fin_assist.cli.skill`` when a skill is
+    pre-loaded via ``--skill`` or positional skill syntax.
+    """
+
+    def test_skill_attribute_on_span(self, reset_tracer_provider, tmp_path):
+        import json as _json
+        from unittest.mock import patch
+
+        from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
+        from fin_assist.config.schema import TracingSettings
+
+        path = tmp_path / "s.jsonl"
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
+        assert provider is not None
+
+        with cli_root_span("do", agent="git", skill="commit"):
+            pass
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        span = next(
+            _json.loads(line)
+            for line in path.read_text().splitlines()
+            if _json.loads(line)["name"] == "cli.do"
+        )
+        attrs = span["attributes"]
+        assert attrs.get("fin_assist.cli.skill") == "commit"
+
+    def test_skill_attribute_absent_when_empty(self, reset_tracer_provider, tmp_path):
+        import json as _json
+        from unittest.mock import patch
+
+        from fin_assist.cli.tracing import cli_root_span, setup_cli_tracing
+        from fin_assist.config.schema import TracingSettings
+
+        path = tmp_path / "s.jsonl"
+        config = TracingSettings(enabled=True, provider="none")
+        with patch("fin_assist.paths.TRACES_PATH", path):
+            provider = setup_cli_tracing(config)
+        assert provider is not None
+
+        with cli_root_span("do", agent="git"):
+            pass
+        provider.force_flush(5000)  # type: ignore[attr-defined]
+
+        span = next(
+            _json.loads(line)
+            for line in path.read_text().splitlines()
+            if _json.loads(line)["name"] == "cli.do"
+        )
+        attrs = span["attributes"]
+        assert "fin_assist.cli.skill" not in attrs

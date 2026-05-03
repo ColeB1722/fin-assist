@@ -448,11 +448,15 @@ class PydanticAIBackend:
         )
         pydantic_tools: list[Tool] = []
         has_approval_tools = False
+        skill_mgr = self._get_skill_manager()
         if self._tool_registry:
-            tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
-            approval_overrides = self._get_skill_approval_overrides()
+            active_tool_names = set(self._spec.base_tools)
+            if skill_mgr is not None:
+                active_tool_names.update(skill_mgr.loaded_tool_names())
+
+            tool_defs = self._tool_registry.get_for_agent(sorted(active_tool_names))
             for td in tool_defs:
-                effective_policy = approval_overrides.get(td.name, td.approval_policy)
+                effective_policy = self._get_agent_tool_policy(td.name) or td.approval_policy
                 needs_approval = effective_policy is not None and self._policy_requires_approval(
                     effective_policy
                 )
@@ -472,7 +476,6 @@ class PydanticAIBackend:
                         Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
                     )
 
-        skill_mgr = self._get_skill_manager()
         if skill_mgr is not None and skill_mgr.available_skills():
             pydantic_tools.append(
                 Tool(
@@ -504,20 +507,26 @@ class PydanticAIBackend:
             tools=pydantic_tools,
         )
 
-    def _get_skill_approval_overrides(self) -> dict[str, ApprovalPolicy]:
-        """Build per-tool approval overrides from skill definitions.
+    def _get_agent_tool_policy(self, tool_name: str) -> ApprovalPolicy | None:
+        """Look up the agent-level tool policy for a tool.
 
-        When a skill defines an approval config for its tools, it overrides
-        the tool's default ``ApprovalPolicy``.  If multiple skills reference
-        the same tool, the last skill's policy wins (this is rare and would
-        be a config validation error in a future version).
+        Agent-level ``tool_policies`` take precedence over the tool's
+        default ``ApprovalPolicy``.  Returns ``None`` when no agent-level
+        policy is defined for the tool.
         """
-        overrides: dict[str, ApprovalPolicy] = {}
-        for skill_def in self._spec.get_skill_definitions():
-            if skill_def.approval_policy is not None:
-                for tool_name in skill_def.tools:
-                    overrides[tool_name] = skill_def.approval_policy
-        return overrides
+        from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
+
+        policy_cfg = self._spec.tool_policies.get(tool_name)
+        if policy_cfg is None:
+            return None
+        rules = [
+            ApprovalRule(pattern=r.pattern, mode=r.mode, reason=r.reason) for r in policy_cfg.rules
+        ]
+        return ApprovalPolicy(
+            mode=policy_cfg.default,
+            default=policy_cfg.default,
+            rules=rules,
+        )
 
     @staticmethod
     def _policy_requires_approval(policy: ApprovalPolicy) -> bool:
@@ -568,10 +577,9 @@ class PydanticAIBackend:
         return FallbackModel(*models)
 
     def _get_approval_reason(self, tool_name: str) -> str | None:
-        overrides = self._get_skill_approval_overrides()
-        skill_policy = overrides.get(tool_name)
-        if skill_policy is not None:
-            return skill_policy.reason
+        agent_policy = self._get_agent_tool_policy(tool_name)
+        if agent_policy is not None:
+            return agent_policy.reason
         if self._tool_registry is None:
             return None
         td = self._tool_registry.get(tool_name)

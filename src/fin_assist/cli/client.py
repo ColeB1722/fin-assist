@@ -293,6 +293,37 @@ class HubClient:
         return False, None, None
 
     # ------------------------------------------------------------------
+    # Skill endpoints (hub-specific, not part of A2A protocol)
+    # ------------------------------------------------------------------
+
+    async def list_skills(self, agent_name: str) -> list[dict[str, Any]]:
+        """Fetch the list of available skills for an agent."""
+        http = self._get_http()
+        response = await http.get(f"{self.base_url}/agents/{agent_name}/skills")
+        response.raise_for_status()
+        data = response.json()
+        return data.get("skills", [])
+
+    async def invoke_skill(
+        self,
+        agent_name: str,
+        skill_name: str,
+        prompt: str = "",
+    ) -> dict[str, Any]:
+        """Invoke a skill on an agent, pre-loading it server-side.
+
+        Returns the server response containing the effective prompt,
+        prompt_template, and tools for the loaded skill.
+        """
+        http = self._get_http()
+        response = await http.post(
+            f"{self.base_url}/agents/{agent_name}/skills/invoke",
+            json={"skill": skill_name, "prompt": prompt},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 

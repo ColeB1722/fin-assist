@@ -5,8 +5,7 @@ from __future__ import annotations
 import pytest
 
 from fin_assist.agents.skills import SkillCatalog, SkillDefinition, SkillLoader
-from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
-from fin_assist.config.schema import ApprovalConfig, ApprovalRuleConfig, SkillConfig
+from fin_assist.config.schema import SkillConfig, ToolPolicyConfig
 
 
 def _make_skill(name: str = "test", **overrides) -> SkillDefinition:
@@ -33,10 +32,6 @@ class TestSkillDefinition:
         assert skill.tools == ["git", "read_file"]
         assert skill.prompt_template == "git-commit"
         assert skill.entry_prompt == "Analyze changes and commit"
-
-    def test_approval_policy_defaults_none(self) -> None:
-        skill = _make_skill()
-        assert skill.approval_policy is None
 
     def test_serving_modes_defaults_none(self) -> None:
         skill = _make_skill()
@@ -113,38 +108,13 @@ class TestSkillLoader:
         assert skill.prompt_template == "git-commit"
         assert skill.entry_prompt == "Analyze and commit"
 
-    def test_load_from_config_with_approval(self) -> None:
-        config = SkillConfig(
-            description="Git skill",
-            tools=["git"],
-            approval=ApprovalConfig(
-                default="always",
-                rules=[
-                    ApprovalRuleConfig(pattern="git diff", mode="never"),
-                    ApprovalRuleConfig(
-                        pattern="git push *", mode="always", reason="Push needs approval"
-                    ),
-                ],
-            ),
-        )
-        loader = SkillLoader()
-        skill = loader.load_from_config("git", config)
-        assert skill.approval_policy is not None
-        assert skill.approval_policy.default == "always"
-        assert len(skill.approval_policy.rules) == 2
-
-        mode, _ = skill.approval_policy.evaluate("git diff")
-        assert mode == "never"
-
-        mode, reason = skill.approval_policy.evaluate("git push origin main")
-        assert mode == "always"
-        assert reason == "Push needs approval"
-
     def test_load_from_config_without_approval(self) -> None:
         config = SkillConfig(description="Read-only skill", tools=["read_file"])
         loader = SkillLoader()
         skill = loader.load_from_config("read", config)
-        assert skill.approval_policy is None
+        assert (
+            not hasattr(skill, "approval_policy") or getattr(skill, "approval_policy", None) is None
+        )
 
     def test_load_all_from_agent_config(self) -> None:
         skills_config = {
@@ -206,36 +176,6 @@ class TestSkillMdLoader:
         loader = SkillLoader()
         skill = loader.load_from_skill_md(skill_dir / "SKILL.md")
         assert skill.name == "my-skill"
-
-    def test_parse_with_approval_rules(self, tmp_path) -> None:
-        skill_dir = tmp_path / "git"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\n"
-            "name: git\n"
-            "allowed-tools:\n"
-            "  - git\n"
-            "metadata:\n"
-            "  fin-assist:\n"
-            "    approval:\n"
-            "      default: always\n"
-            "      rules:\n"
-            "        - pattern: 'git diff'\n"
-            "          mode: never\n"
-            "        - pattern: 'git push *'\n"
-            "          mode: always\n"
-            "          reason: Pushing needs approval\n"
-            "---\n"
-            "Git workflow instructions.\n"
-        )
-        loader = SkillLoader()
-        skill = loader.load_from_skill_md(skill_dir / "SKILL.md")
-        assert skill.approval_policy is not None
-        mode, _ = skill.approval_policy.evaluate("git diff")
-        assert mode == "never"
-        mode, reason = skill.approval_policy.evaluate("git push origin main")
-        assert mode == "always"
-        assert reason == "Pushing needs approval"
 
     def test_parse_with_fin_assist_extensions(self, tmp_path) -> None:
         skill_dir = tmp_path / "commit"
@@ -369,6 +309,36 @@ class TestSkillManager:
         assert "commit" in mgr.catalog_text()
         mgr.load_skill("commit")
         assert mgr.catalog_text() == ""
+
+    def test_loaded_tool_names_empty(self) -> None:
+        from fin_assist.agents.skills import SkillManager
+
+        mgr = SkillManager(skills=[_make_skill("commit", tools=["git"])])
+        assert mgr.loaded_tool_names() == []
+
+    def test_loaded_tool_names_after_load(self) -> None:
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [
+            _make_skill("commit", tools=["git", "read_file"]),
+            _make_skill("pr", tools=["gh"]),
+        ]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        assert mgr.loaded_tool_names() == ["git", "read_file"]
+
+    def test_loaded_tool_names_deduplicates(self) -> None:
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [
+            _make_skill("commit", tools=["git", "read_file"]),
+            _make_skill("pr", tools=["git", "gh"]),
+        ]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        mgr.load_skill("pr")
+        names = mgr.loaded_tool_names()
+        assert names == ["git", "read_file", "gh"]
 
     @pytest.mark.asyncio
     async def test_make_load_skill_callable(self) -> None:

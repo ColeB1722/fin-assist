@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 INVOCATION_ID_KEY = "fin_assist.cli.invocation_id"
 COMMAND_KEY = "fin_assist.cli.command"
 AGENT_KEY = "fin_assist.cli.agent"
+SKILL_KEY = "fin_assist.cli.skill"
 
 # Module-level guard so repeated ``setup_cli_tracing`` calls (e.g. in
 # tests or multi-command invocations) don't try to install a second
@@ -178,6 +179,7 @@ def cli_root_span(
     command: str,
     *,
     agent: str = "",
+    skill: str = "",
     extra_attributes: dict[str, str] | None = None,
 ) -> Iterator[None]:
     """Open the ``cli.<command>`` root span for one ``fin`` invocation.
@@ -219,6 +221,8 @@ def cli_root_span(
         AGENT_KEY: agent,
         INVOCATION_ID_KEY: invocation_id,
     }
+    if skill:
+        attributes[SKILL_KEY] = skill
     if extra_attributes:
         attributes.update(extra_attributes)
 

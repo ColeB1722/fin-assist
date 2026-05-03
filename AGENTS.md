@@ -159,20 +159,25 @@ This split is **project-specific**, not an industry standard — but we apply it
 
 ## Skill Authoring
 
-Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, approval rules, context injection, and prompt steering.
+Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, context injection text, and prompt steering. Approval policies are defined at the agent level via `tool_policies`, not per-skill.
 
 ### Inline TOML skills
 
 Define skills in `config.toml` under `[agents.<name>.skills.<skill>]`:
 
 ```toml
+[agents.git]
+base_tools = ["read_file"]
+
 [agents.git.skills.commit]
 description = "Generate a conventional commit message from current changes."
 tools = ["git", "read_file"]
 prompt_template = "git-commit"
 entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
-approval.default = "always"
-approval.rules = [
+
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
   { pattern = "git diff*", mode = "never" },
   { pattern = "git add*", mode = "never" },
   { pattern = "git commit*", mode = "never" },
@@ -199,11 +204,6 @@ metadata:
   fin-assist:
     prompt-template: git-commit
     entry-prompt: Analyze the current changes and commit.
-    approval:
-      default: always
-      rules:
-        - pattern: "git diff*"
-          mode: never
 ---
 ## Guidelines
 
@@ -213,10 +213,14 @@ Use conventional commits format...
 ### Key points
 
 - Skills are **additive** — once loaded, a skill's tools stay active for the session
+- Tools are **gated** — only `base_tools` + loaded skills' tools are registered; unloaded skills' tools are not available
 - Tools are **shared** across skills — name collisions are a config validation error
-- `AgentSpec.tools` derives from the **union of all skill tools** (falls back to flat `tools` list when no skills defined)
+- **Agent-level** `tool_policies` define approval per tool, not per skill (eliminates merge conflicts)
+- `AgentSpec.base_tools` lists always-available safe/read-only tools (default: `["read_file"]`)
 - `--skill` CLI flag pre-loads a skill: `fin do git --skill commit`
 - Positional skill matching: `fin do git commit` → agent=git, skill=commit
+- `/skill:<name>` REPL command loads a skill mid-session
+- `fin list skills` shows all skills grouped by agent
 - `fin list skills` shows all skills grouped by agent
 
 ### When adding a new skill

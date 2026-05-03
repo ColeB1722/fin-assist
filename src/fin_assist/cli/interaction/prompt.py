@@ -42,6 +42,7 @@ SLASH_COMMANDS: list[SlashCommand] = [
     SlashCommand("/exit", "End the conversation"),
     SlashCommand("/help", "Show this help message"),
     SlashCommand("/sessions", "List saved sessions for this agent"),
+    SlashCommand("/skills", "List available skills for this agent"),
 ]
 
 
@@ -84,6 +85,48 @@ class SlashCompleter(Completer):
             yield Completion(
                 name,
                 start_position=-len(word),
+                display=name,
+                display_meta=desc,
+            )
+
+
+_SKILL_MIN_SCORE = 40
+_SKILL_MAX_RESULTS = 20
+
+
+class SkillCompleter(Completer):
+    """Fuzzy completer for skill names, activated by ``/skill:`` prefix.
+
+    Mirrors the ``AtCompleter`` pattern: when the input contains
+    ``/skill:``, everything after the colon is fuzzy-matched against
+    the skill candidate list using rapidfuzz.
+    """
+
+    def __init__(self, skills: list[tuple[str, str]]) -> None:
+        self._candidates: list[tuple[str, str]] = skills
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent):  # noqa: ANN201
+        text = document.text_before_cursor
+        skill_pos = text.rfind("/skill:")
+        if skill_pos == -1:
+            return
+
+        skill_prefix = text[skill_pos + len("/skill:") :]
+        prefix_len = len(skill_prefix)
+
+        names = [name for name, _ in self._candidates]
+        matches = process.extract(
+            skill_prefix,
+            names,
+            scorer=fuzz.WRatio,
+            limit=_SKILL_MAX_RESULTS,
+            score_cutoff=_SKILL_MIN_SCORE if skill_prefix else 0,
+        )
+        for name, _score, idx in matches:
+            _, desc = self._candidates[idx]
+            yield Completion(
+                name,
+                start_position=-prefix_len if prefix_len else 0,
                 display=name,
                 display_meta=desc,
             )
@@ -267,11 +310,13 @@ class FinPrompt:
         agents: list[str] | None = None,
         history_path: Path = HISTORY_PATH,
         context_settings: ContextSettings | None = None,
+        skills: list[tuple[str, str]] | None = None,
     ) -> None:
         self.agents = agents or []
         self.history_path = history_path
         self._context_settings = context_settings
         self._file_finder: FileFinder | None = None
+        self._skills = skills or []
 
     @property
     def context_settings(self) -> ContextSettings | None:
@@ -291,7 +336,8 @@ class FinPrompt:
             context_settings=self._context_settings,
             file_finder=self._get_file_finder(),
         )
-        return _CombinedCompleter(slash_completer, at_completer)
+        skill_completer = SkillCompleter(self._skills) if self._skills else None
+        return _CombinedCompleter(slash_completer, at_completer, skill_completer)
 
     def _build_session(self) -> PromptSession[str]:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -328,17 +374,21 @@ class FinPrompt:
 class _CombinedCompleter(Completer):
     """Delegate to the first completer that yields results.
 
-    Tries slash completer first (for ``/`` prefix), then at completer
-    (for ``@`` prefix).  If neither matches, yields nothing.
+    Tries skill completer first (for ``/skill:`` prefix), then slash
+    completer (for ``/`` prefix), then at completer (for ``@`` prefix).
+    If none matches, yields nothing.
     """
 
-    def __init__(self, slash: Completer, at: Completer) -> None:
+    def __init__(self, slash: Completer, at: Completer, skill: Completer | None = None) -> None:
         self._slash = slash
         self._at = at
+        self._skill = skill
 
     def get_completions(self, document: Document, complete_event: CompleteEvent):  # noqa: ANN201
-        text = document.text_before_cursor.lstrip()
-        if text.startswith("/"):
+        text = document.text_before_cursor
+        if "/skill:" in text and self._skill is not None:
+            yield from self._skill.get_completions(document, complete_event)
+        elif text.lstrip().startswith("/"):
             yield from self._slash.get_completions(document, complete_event)
-        elif "@" in document.text_before_cursor:
+        elif "@" in text:
             yield from self._at.get_completions(document, complete_event)

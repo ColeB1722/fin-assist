@@ -1027,9 +1027,10 @@ class TestResolveSkill:
         from fin_assist.config.schema import Config
 
         config = Config()
-        prompt, override = _resolve_skill("test", None, "hello", config)
+        prompt, override, skill = _resolve_skill("test", None, "hello", config)
         assert prompt == "hello"
         assert override is None
+        assert skill is None
 
     def test_explicit_skill_name_resolves(self):
         from fin_assist.cli.main import _resolve_skill
@@ -1049,9 +1050,10 @@ class TestResolveSkill:
                 ),
             }
         )
-        prompt, override = _resolve_skill("git", "commit", "commit", config)
+        prompt, override, skill = _resolve_skill("git", "commit", "commit", config)
         assert prompt == "Analyze current changes and commit."
         assert override == "git-commit"
+        assert skill == "commit"
 
     def test_prompt_matches_skill_name(self):
         from fin_assist.cli.main import _resolve_skill
@@ -1069,8 +1071,9 @@ class TestResolveSkill:
                 ),
             }
         )
-        prompt, override = _resolve_skill("git", None, "commit", config)
+        prompt, override, skill = _resolve_skill("git", None, "commit", config)
         assert prompt == "Analyze current changes and commit."
+        assert skill == "commit"
 
     def test_prompt_does_not_match_skill(self):
         from fin_assist.cli.main import _resolve_skill
@@ -1088,9 +1091,10 @@ class TestResolveSkill:
                 ),
             }
         )
-        prompt, override = _resolve_skill("git", None, "status check", config)
+        prompt, override, skill = _resolve_skill("git", None, "status check", config)
         assert prompt == "status check"
         assert override is None
+        assert skill is None
 
     def test_skill_without_entry_prompt_uses_original(self):
         from fin_assist.cli.main import _resolve_skill
@@ -1108,15 +1112,17 @@ class TestResolveSkill:
                 ),
             }
         )
-        prompt, override = _resolve_skill("git", "commit", "commit", config)
+        prompt, override, skill = _resolve_skill("git", "commit", "commit", config)
         assert prompt == "commit"
         assert override == "git-commit"
+        assert skill == "commit"
 
     def test_unknown_agent_returns_prompt_unchanged(self):
         from fin_assist.cli.main import _resolve_skill
         from fin_assist.config.schema import Config
 
         config = Config()
-        prompt, override = _resolve_skill("nonexistent", None, "hello", config)
+        prompt, override, skill = _resolve_skill("nonexistent", None, "hello", config)
         assert prompt == "hello"
         assert override is None
+        assert skill is None

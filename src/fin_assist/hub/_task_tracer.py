@@ -127,6 +127,7 @@ class _TaskTracer:
         context_id: str | None,
         user_input: str,
         links: list[Any] | None = None,
+        skill_id: str | None = None,
     ) -> None:
         """Create and activate the root ``fin_assist.task`` span."""
         attributes: dict[str, Any] = {
@@ -138,6 +139,9 @@ class _TaskTracer:
             SpanAttributes.INPUT_VALUE: user_input,
             FinAssistAttributes.TASK_STATE: TaskStateValues.RUNNING,
         }
+
+        if skill_id:
+            attributes[FinAssistAttributes.SKILL_ID] = skill_id
 
         invocation_id = self.read_invocation_id_from_baggage()
         if invocation_id:
@@ -367,3 +371,36 @@ class _TaskTracer:
         )
         self.paused_approval_span_ctx = approval_span.get_span_context()
         approval_span.end()
+
+    def emit_skill_load_span(
+        self,
+        *,
+        skill_id: str,
+        entry_point: str = "",
+        tools_unlocked: list[str] | None = None,
+    ) -> None:
+        """Emit a ``fin_assist.skill_load`` span as a child of the task span.
+
+        Called when a skill is loaded via the ``skills/invoke`` endpoint
+        or the agent-driven ``load_skill`` tool.  The span captures the
+        skill name, effective prompt, and list of tools that became
+        available.
+        """
+        parent = self.current_step_span or self.task_span
+        parent_context = trace_api.set_span_in_context(parent) if parent else None
+
+        attributes: dict[str, Any] = {
+            SpanAttributes.OPENINFERENCE_SPAN_KIND: OpenInferenceSpanKindValues.CHAIN.value,
+            FinAssistAttributes.SKILL_ID: skill_id,
+            FinAssistAttributes.SKILL_ENTRY_POINT: entry_point,
+        }
+        if tools_unlocked:
+            attributes[FinAssistAttributes.SKILL_TOOLS_UNLOCKED] = ",".join(tools_unlocked)
+
+        span = self._active_tracer.start_span(
+            SpanNames.SKILL_LOAD,
+            context=parent_context,
+            attributes=attributes,
+        )
+        span.end()
+        logger.info("skill_load_span emitted skill_id=%s", skill_id)

@@ -6,6 +6,8 @@ Each sub-app is a FastAPI application that handles:
 
 - ``GET /.well-known/agent-card.json`` — agent card with extensions
 - ``POST /`` — JSON-RPC endpoint (message/send, tasks/get, etc.)
+- ``POST /skills/invoke`` — skill invocation endpoint (pre-load skills)
+- ``GET /skills`` — list available skills for this agent
 
 AgentCardMeta transport
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -20,7 +22,7 @@ from __future__ import annotations
 import logging
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes.agent_card_routes import create_agent_card_routes
@@ -35,6 +37,7 @@ from a2a.types import (
     AgentSkill,
 )
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from google.protobuf.struct_pb2 import Struct
 
 from fin_assist.agents.backend import PydanticAIBackend
@@ -153,10 +156,63 @@ class AgentFactory:
         app.routes.extend(create_jsonrpc_routes(request_handler, rpc_url="/"))
 
         app.state.agent_card = agent_card
+        app.state.agent_spec = agent
+        app.state.backend = backend
+
+        @app.get("/skills")
+        async def list_skills() -> JSONResponse:
+            spec: AgentSpec = app.state.agent_spec
+            skills_data: list[dict[str, Any]] = []
+            for skill_name, skill_cfg in spec.skills.items():
+                skills_data.append(
+                    {
+                        "name": skill_name,
+                        "description": skill_cfg.description,
+                        "tools": skill_cfg.tools,
+                        "entry_prompt": skill_cfg.entry_prompt or None,
+                        "prompt_template": skill_cfg.prompt_template or None,
+                        "serving_modes": skill_cfg.serving_modes,
+                    }
+                )
+            return JSONResponse({"skills": skills_data})
+
+        @app.post("/skills/invoke")
+        async def invoke_skill(request: dict[str, Any]) -> JSONResponse:
+            skill_name = request.get("skill")
+            prompt = request.get("prompt", "")
+            if not skill_name:
+                return JSONResponse({"error": "Missing 'skill' field"}, status_code=400)
+
+            spec: AgentSpec = app.state.agent_spec
+            if skill_name not in spec.skills:
+                available = list(spec.skills.keys())
+                return JSONResponse(
+                    {"error": f"Unknown skill '{skill_name}'", "available": available},
+                    status_code=404,
+                )
+
+            skill_cfg = spec.skills[skill_name]
+            effective_prompt = prompt or skill_cfg.entry_prompt or skill_name
+
+            be = app.state.backend
+            if hasattr(be, "_get_skill_manager"):
+                mgr = be._get_skill_manager()
+                if mgr is not None:
+                    mgr.load_skill(skill_name)
+
+            return JSONResponse(
+                {
+                    "skill": skill_name,
+                    "prompt": effective_prompt,
+                    "prompt_template": skill_cfg.prompt_template or None,
+                    "tools": skill_cfg.tools,
+                }
+            )
+
         logger.info(
-            "agent mounted name=%s tools=%s skills=%s serving_modes=%s",
+            "agent mounted name=%s base_tools=%s skills=%s serving_modes=%s",
             agent.name,
-            list(agent.tools),
+            list(agent.base_tools),
             list(agent.skills.keys()),
             list(meta.serving_modes),
         )

@@ -1,9 +1,12 @@
 r"""Skills API — the core abstraction for tool organization in fin-assist.
 
 An agent is a collection of skills within an environment.  A skill curates
-tools, approval rules, context injection text, and prompt steering.  Skills
-are loaded additively — once loaded, a skill's tools stay active for the
-session.
+tools, context injection text, and prompt steering.  Skills are loaded
+additively — once loaded, a skill's tools stay active for the session.
+
+Approval policies are defined at the agent level via
+``AgentConfig.tool_policies``, not per-skill.  This eliminates merge
+conflicts when multiple skills reference the same tool.
 
 Key types:
 
@@ -18,8 +21,8 @@ Design decisions (see architecture.md for full rationale):
 1. Skills are additive.  No skill unloading in v0.1.
 2. Tools are shared across skills.  Name collisions (two different
    ``ToolDefinition``\s with the same name) are a config error.
-3. Approval policies on skills override the tool's default policy for
-   tools within that skill.
+3. Approval policies are agent-level, not skill-level.  Each tool has
+   exactly one policy definition — no merge/conflict.
 4. Agent-driven loading: the agent sees a catalog and calls
    ``load_skill(name)`` to activate skills.
 """
@@ -32,7 +35,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
 from fin_assist.paths import DATA_DIR
 
 if TYPE_CHECKING:
@@ -57,12 +59,14 @@ class SkillDefinition:
     Created by ``SkillLoader`` from either a ``SkillConfig`` (config.toml)
     or a SKILL.md file.  Contains all the information the backend needs
     to register tools and inject context.
+
+    Approval policies are defined at the agent level via
+    ``AgentConfig.tool_policies``, not on the skill.
     """
 
     name: str
     description: str
     tools: list[str]
-    approval_policy: ApprovalPolicy | None = None
     prompt_template: str = ""
     entry_prompt: str = ""
     context: str = ""
@@ -128,23 +132,10 @@ class SkillLoader:
 
     def load_from_config(self, name: str, config: SkillConfig) -> SkillDefinition:
         """Resolve a ``SkillConfig`` into a ``SkillDefinition``."""
-        approval_policy = None
-        if config.approval is not None:
-            rules = [
-                ApprovalRule(pattern=r.pattern, mode=r.mode, reason=r.reason)
-                for r in config.approval.rules
-            ]
-            approval_policy = ApprovalPolicy(
-                mode=config.approval.default,
-                default=config.approval.default,
-                rules=rules,
-            )
-
         return SkillDefinition(
             name=name,
             description=config.description,
             tools=config.tools,
-            approval_policy=approval_policy,
             prompt_template=config.prompt_template,
             entry_prompt=config.entry_prompt,
             context=config.context,
@@ -176,7 +167,6 @@ class SkillLoader:
             allowed-tools (list[str]): Tool names this skill uses
 
         fin-assist extensions live under ``metadata.fin-assist``:
-            metadata.fin-assist.approval (dict): ApprovalConfig fields
             metadata.fin-assist.prompt-template (str): System prompt template
             metadata.fin-assist.entry-prompt (str): Entry prompt for do mode
             metadata.fin-assist.serving-modes (list[str]): Mode restrictions
@@ -198,30 +188,6 @@ class SkillLoader:
         metadata = frontmatter.get("metadata", {})
         fin_meta = metadata.get("fin-assist", {}) if isinstance(metadata, dict) else {}
 
-        approval_policy = None
-        approval_cfg = fin_meta.get("approval")
-        if approval_cfg is not None and isinstance(approval_cfg, dict):
-            raw_rules = approval_cfg.get("rules", [])
-            rules = []
-            for r in raw_rules:
-                if not isinstance(r, dict) or "pattern" not in r or "mode" not in r:
-                    raise ValueError(
-                        f"Invalid approval rule in {path}: "
-                        f"each rule must have 'pattern' and 'mode', got {r}"
-                    )
-                rules.append(
-                    ApprovalRule(
-                        pattern=r["pattern"],
-                        mode=r["mode"],
-                        reason=r.get("reason"),
-                    )
-                )
-            approval_policy = ApprovalPolicy(
-                mode=approval_cfg.get("default", "always"),
-                default=approval_cfg.get("default", "always"),
-                rules=rules,
-            )
-
         prompt_template = fin_meta.get("prompt-template", "")
         entry_prompt = fin_meta.get("entry-prompt", "")
         serving_modes = fin_meta.get("serving-modes")
@@ -230,7 +196,6 @@ class SkillLoader:
             name=name,
             description=description,
             tools=tools,
-            approval_policy=approval_policy,
             prompt_template=prompt_template,
             entry_prompt=entry_prompt,
             context=body,
@@ -309,6 +274,17 @@ class SkillManager:
 
     def loaded_skills(self) -> list[SkillDefinition]:
         return [self._skills[n] for n in sorted(self._loaded) if n in self._skills]
+
+    def loaded_tool_names(self) -> list[str]:
+        """Return deduplicated tool names from all loaded skills."""
+        seen: set[str] = set()
+        result: list[str] = []
+        for skill in self.loaded_skills():
+            for tool_name in skill.tools:
+                if tool_name not in seen:
+                    seen.add(tool_name)
+                    result.append(tool_name)
+        return result
 
     def available_skills(self) -> list[SkillDefinition]:
         return self._catalog.available_skills()
