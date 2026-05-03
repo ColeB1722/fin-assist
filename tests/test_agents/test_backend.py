@@ -20,7 +20,19 @@ from fin_assist.agents.backend import (
 )
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.step import StepEvent, StepHandle
-from fin_assist.config.schema import AgentConfig
+from fin_assist.config.schema import (
+    AgentConfig,
+    SkillConfig,
+    ToolPolicyConfig,
+    ToolPolicyRuleConfig,
+)
+
+
+def _skills(*tool_lists: list[str]) -> dict[str, SkillConfig]:
+    result: dict[str, SkillConfig] = {}
+    for i, tools in enumerate(tool_lists):
+        result[f"skill_{i}"] = SkillConfig(tools=tools)
+    return result
 
 
 def _make_spec(mock_config, mock_credentials) -> AgentSpec:
@@ -30,6 +42,30 @@ def _make_spec(mock_config, mock_credentials) -> AgentSpec:
             description="Default agent",
             system_prompt="chain-of-thought",
             output_type="text",
+        ),
+        config=mock_config,
+        credentials=mock_credentials,
+    )
+
+
+def _make_spec_with_tools(
+    mock_config,
+    mock_credentials,
+    base_tools: list[str] | None = None,
+    skill_tools: list[str] | None = None,
+) -> AgentSpec:
+    """Create a spec with base_tools and/or a single skill for tool-gating tests."""
+    skills = {}
+    if skill_tools:
+        skills["main"] = SkillConfig(tools=skill_tools)
+    return AgentSpec(
+        name="default",
+        agent_config=AgentConfig(
+            description="Default agent",
+            system_prompt="chain-of-thought",
+            output_type="text",
+            base_tools=base_tools or ["read_file"],
+            skills=skills,
         ),
         config=mock_config,
         credentials=mock_credentials,
@@ -488,7 +524,7 @@ class TestPydanticAIBackendRunSteps:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                base_tools=["run_shell"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -569,7 +605,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Default agent",
                 system_prompt="chain-of-thought",
                 output_type="text",
-                tools=["read_file"],
+                base_tools=["read_file"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -605,7 +641,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Minimal agent",
                 system_prompt="chain-of-thought",
                 output_type="text",
-                tools=["read_file"],
+                base_tools=["read_file"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -635,7 +671,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                base_tools=["run_shell"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -668,7 +704,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                base_tools=["run_shell"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -684,6 +720,129 @@ class TestPydanticAIBackendBuildPydanticAgent:
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
         agent = backend._build_pydantic_agent()
         assert agent.output_type is str
+
+    def test_skill_tools_not_registered_when_not_loaded(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(
+                description="Test agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                base_tools=["read_file"],
+                skills={"git_skill": SkillConfig(tools=["git"])},
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert "read_file" in tool_names
+        assert "git" not in tool_names
+
+    def test_skill_tools_registered_after_load(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="read_file",
+                description="Read a file",
+                callable=lambda path: f"content of {path}",
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(
+                description="Test agent",
+                system_prompt="chain-of-thought",
+                output_type="text",
+                base_tools=["read_file"],
+                skills={"git_skill": SkillConfig(tools=["git"])},
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        skill_mgr = backend._get_skill_manager()
+        assert skill_mgr is not None
+        skill_mgr.load_skill("git_skill")
+        agent = backend._build_pydantic_agent()
+        tool_names = _tool_names_from_agent(agent)
+        assert "read_file" in tool_names
+        assert "git" in tool_names
+
+    def test_agent_tool_policy_overrides_default(self, mock_config, mock_credentials) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="always", reason="Default"),
+            )
+        )
+        spec = AgentSpec(
+            name="git",
+            agent_config=AgentConfig(
+                description="Git agent",
+                system_prompt="git",
+                output_type="text",
+                base_tools=["git"],
+                tool_policies={
+                    "git": ToolPolicyConfig(
+                        default="always",
+                        rules=[
+                            ToolPolicyRuleConfig(pattern="git diff*", mode="never"),
+                        ],
+                    ),
+                },
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        policy = backend._get_agent_tool_policy("git")
+        assert policy is not None
+        mode, _ = policy.evaluate("git diff HEAD~1")
+        assert mode == "never"
+        mode, _ = policy.evaluate("git push")
+        assert mode == "always"
 
 
 # -- PydanticAIBackend.build_deferred_results -----------------------------------
@@ -744,7 +903,48 @@ class TestPydanticAIBackendBuildDeferredResults:
 
 
 class TestPydanticAIBackendGetApprovalReason:
-    def test_returns_reason_from_tool_policy(self, mock_config, mock_credentials) -> None:
+    def test_returns_reason_from_agent_tool_policy(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+            )
+        )
+        spec = AgentSpec(
+            name="git",
+            agent_config=AgentConfig(
+                description="Git agent",
+                system_prompt="git",
+                output_type="text",
+                base_tools=["git"],
+                tool_policies={
+                    "git": ToolPolicyConfig(
+                        default="always",
+                        rules=[
+                            ToolPolicyRuleConfig(
+                                pattern="git push*", mode="always", reason="Push needs approval"
+                            ),
+                        ],
+                    ),
+                },
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_reason("git") is None
+        policy = backend._get_agent_tool_policy("git")
+        assert policy is not None
+        mode, reason = policy.evaluate("git push origin main")
+        assert mode == "always"
+        assert reason == "Push needs approval"
+
+    def test_returns_reason_from_tool_default_policy(self, mock_config, mock_credentials) -> None:
         from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
 
         registry = ToolRegistry()
@@ -765,7 +965,7 @@ class TestPydanticAIBackendGetApprovalReason:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                base_tools=["run_shell"],
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -783,7 +983,7 @@ class TestPydanticAIBackendGetApprovalReason:
         registry = ToolRegistry()
         spec = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=[]),
+            agent_config=AgentConfig(skills={}),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -806,7 +1006,7 @@ class TestPydanticAIBackendGetApprovalReason:
         )
         spec = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file"]),
+            agent_config=AgentConfig(base_tools=["read_file"]),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -841,6 +1041,30 @@ class TestPydanticAIBackendBuildModel:
             backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
             result = backend._build_model()
             assert result is mock_model
+
+    def test_passes_base_url_to_create_model(self, mock_config, mock_credentials) -> None:
+        from fin_assist.config.schema import ProviderConfig
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.general.default_model = "claude-sonnet-4-6"
+        mock_config.providers = {
+            "anthropic": ProviderConfig(base_url="https://proxy.example.com/v1"),
+        }
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        mock_model = MagicMock()
+        with patch(
+            "fin_assist.llm.model_registry.ProviderRegistry.create_model",
+            return_value=mock_model,
+        ) as mock_create:
+            backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+            backend._build_model()
+            mock_create.assert_called_once_with(
+                "anthropic",
+                "claude-sonnet-4-6",
+                api_key="sk-test",
+                base_url="https://proxy.example.com/v1",
+            )
 
 
 class TestExtractToolResultText:

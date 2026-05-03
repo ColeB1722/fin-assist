@@ -36,7 +36,6 @@ class GeneralSettings(BaseModel):
     default_model: str = "claude-sonnet-4-6"
     default_agent: str | None = None
     thinking_effort: ThinkingEffort = "medium"
-    keybinding: str = "ctrl-enter"
 
 
 class ContextSettings(BaseModel):
@@ -44,7 +43,6 @@ class ContextSettings(BaseModel):
 
     max_file_size: int = 100_000
     max_history_items: int = 50
-    include_git_status: bool = True
     include_env_vars: list[str] = ["PATH", "HOME", "USER", "PWD"]
 
 
@@ -64,10 +62,12 @@ class TracingSettings(BaseModel):
     * ``provider`` — human-readable preset that replaces raw OTel env
       vars for the common case.  ``"phoenix"`` exports to Phoenix at the
       default OTLP/HTTP endpoint (both OTLP and file sinks active).
-      ``"none"`` is file-only mode (no OTLP exporter constructed).
-      ``None`` (unset) falls back to manual mode where ``otlp_enabled``
-      and explicit endpoint/OTel env vars control the decision.
-      Set via ``FIN_TRACING__PROVIDER=phoenix``.
+      Connection failures are handled gracefully: a one-time info log
+      on first failure, then silent — spans continue to the JSONL
+      file sink regardless.  ``"none"`` is file-only mode (no OTLP
+      exporter constructed).  ``None`` (unset) falls back to manual
+      mode where ``otlp_enabled`` and explicit endpoint/OTel env vars
+      control the decision.  Set via ``FIN_TRACING__PROVIDER=phoenix``.
     * ``otlp_enabled`` — whether to build the OTLP exporter at all.
       Defaults to ``True`` so both sinks are active by default.  Set to
       ``False`` for file-only mode when you don't want TCP connect
@@ -115,22 +115,54 @@ class ServerSettings(BaseModel):
     log_path: str = str(DATA_DIR / "hub.log")
 
 
-class WorkflowConfig(BaseModel):
-    """Per-workflow configuration within an agent.
+class ToolPolicyRuleConfig(BaseModel):
+    """A single fnmatch-based approval rule in config.
 
-    Workflows are prompt-steered sub-tasks an agent can perform.  They define
-    a description (for discovery), a prompt template name or inline text, an
-    entry prompt sent as the initial user message, and optional serving-mode
-    overrides.
+    Maps to ``ApprovalRule`` in ``agents/tools.py``.  The ``pattern``
+    field is matched against the tool's args string using fnmatch.
+    """
 
-    This is level 2 of the workflow spectrum (prompt steering).  Future
-    extensions (level 3) may add ``tool_scope`` and ``approval_override``
-    fields — see the Skills API vision in architecture.md.
+    pattern: str
+    mode: Literal["never", "always"]
+    reason: str | None = None
+
+
+class ToolPolicyConfig(BaseModel):
+    """Per-tool approval configuration at the agent level.
+
+    Defines the approval policy for a specific tool within an agent.
+    ``default`` sets the fallback mode when no rule matches; ``rules``
+    are checked in order with first-match semantics.
+
+    This replaces the former per-skill ``approval`` blocks.  Moving
+    policies to the agent level eliminates merge conflicts when multiple
+    skills reference the same tool.
+    """
+
+    default: Literal["never", "always"] = "always"
+    rules: list[ToolPolicyRuleConfig] = []
+
+
+class SkillConfig(BaseModel):
+    """Per-skill configuration within an agent.
+
+    A skill is a named collection of tools, context injection text, and
+    prompt steering.  Skills are loaded additively — once loaded, a
+    skill's tools stay active for the session.  Approval policies are
+    defined at the agent level via ``AgentConfig.tool_policies``, not
+    per-skill.
+
+    Skills can be defined inline in ``config.toml`` or as SKILL.md files
+    in ``.fin/skills/<name>/SKILL.md`` or
+    ``~/.config/fin/skills/<name>/SKILL.md``.  SKILL.md takes precedence
+    for same-name skills.
     """
 
     description: str = ""
+    tools: list[str] = []
     prompt_template: str = ""
     entry_prompt: str = ""
+    context: str = ""
     serving_modes: list[ServingMode] | None = None
 
 
@@ -148,8 +180,9 @@ class AgentConfig(BaseModel):
     thinking: ThinkingEffort = "medium"
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     tags: list[str] = Field(default_factory=list)
-    tools: list[str] = Field(default_factory=list)
-    workflows: dict[str, WorkflowConfig] = Field(default_factory=dict)
+    base_tools: list[str] = Field(default_factory=lambda: ["read_file"])
+    tool_policies: dict[str, ToolPolicyConfig] = Field(default_factory=dict)
+    skills: dict[str, SkillConfig] = Field(default_factory=dict)
 
 
 _DEFAULT_AGENTS: dict[str, AgentConfig] = {}

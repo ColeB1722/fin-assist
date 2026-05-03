@@ -8,43 +8,15 @@ from typing import TYPE_CHECKING
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.text import Text
 
 from fin_assist.paths import CREDENTIALS_FILE, SESSIONS_DIR
 
 if TYPE_CHECKING:
-    from fin_assist.agents.metadata import AgentResult
     from fin_assist.cli.client import DiscoveredAgent
 
 
 console = Console()
-
-
-def render_command(
-    command: str,
-    warnings: list[str] | None = None,
-    metadata: dict | None = None,
-) -> None:
-    """Render a shell command result as a highlighted code block."""
-    syntax = Syntax(command, "bash", theme="monokai", line_numbers=False)
-    panel = Panel(
-        syntax,
-        title="Generated Command",
-        border_style="green",
-        expand=False,
-    )
-    console.print(panel)
-
-    if warnings:
-        render_warnings(warnings)
-
-    if metadata:
-        accept_action = metadata.get("accept_action")
-        if accept_action == "insert_command":
-            console.print(
-                "[dim]Press Enter or click [bold]execute[/bold] to run this command[/dim]"
-            )
 
 
 def render_response(
@@ -110,11 +82,6 @@ def render_error(message: str) -> None:
     console.print(f"[bold red]Error:[/bold red] {message}")
 
 
-def render_success(message: str) -> None:
-    """Render a success message."""
-    console.print(f"[bold green]Success:[/bold green] {message}")
-
-
 def render_info(message: str) -> None:
     """Render an informational message."""
     console.print(f"[dim]{message}[/dim]")
@@ -134,42 +101,6 @@ def render_thinking(thinking: list[str]) -> None:
             )
         )
     console.print()
-
-
-def render_markdown(text: str) -> None:
-    """Render text as markdown without a panel wrapper."""
-    console.print(Markdown(text))
-
-
-def render_agent_output(
-    result: AgentResult,
-    *,
-    show_thinking: bool = False,
-    agent_name: str = "agent",
-) -> None:
-    """Render an agent result using the shared widget pipeline.
-
-    Composes auth, text, thinking, and warning widgets based on
-    ``AgentResult``.
-
-    Thinking is rendered only for successful, non-auth-required results
-    when ``show_thinking`` is ``True``.
-    """
-    if result.auth_required:
-        render_auth_required(result.output)
-        return
-
-    if not result.success:
-        render_error(result.output or "Unknown error")
-        return
-
-    if show_thinking and result.thinking:
-        render_thinking(result.thinking)
-
-    render_response(result.output, agent_name=agent_name)
-
-    if result.warnings:
-        render_warnings(result.warnings)
 
 
 def render_agent_card(agent: DiscoveredAgent) -> None:
@@ -208,7 +139,11 @@ def render_session_list(agent_name: str) -> None:
         return
     console.print(f"[bold]Saved sessions for {agent_name}:[/bold]")
     for session_file in files:
-        session = json.loads(session_file.read_text())
+        try:
+            session = json.loads(session_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            console.print(f"  [dim]{session_file.stem}  (corrupted)[/dim]")
+            continue
         sid = session.get("session_id", "unknown")
         cid = session.get("context_id", "unknown")
         cid_display = f"{cid[:8]}..." if len(cid) > 8 else cid

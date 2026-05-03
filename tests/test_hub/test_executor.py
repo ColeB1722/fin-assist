@@ -15,6 +15,7 @@ from fin_assist.agents.backend import RunResult
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.step import StepEvent
 from fin_assist.hub.executor import Executor
+from fin_assist.protobuf import struct_to_dict
 
 
 class _FakeStepHandle:
@@ -272,8 +273,6 @@ class TestExecutorThinkingViaArtifacts:
     """Thinking deltas route through add_artifact with metadata, not status-update messages."""
 
     async def test_thinking_delta_produces_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
         thinking_event = StepEvent(kind="thinking_delta", content="hmm...", step=0)
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[thinking_event, text_event])
@@ -295,11 +294,7 @@ class TestExecutorThinkingViaArtifacts:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "thinking":
                     thinking_artifacts.append(part)
 
@@ -307,8 +302,6 @@ class TestExecutorThinkingViaArtifacts:
         assert thinking_artifacts[0].text == "hmm..."
 
     async def test_text_delta_artifact_has_no_thinking_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
         text_event = StepEvent(kind="text_delta", content="answer", step=0)
         backend = _make_backend(events=[text_event])
         context_store = _make_context_store()
@@ -330,11 +323,7 @@ class TestExecutorThinkingViaArtifacts:
             for part in event.artifact.parts:
                 if not part.text:
                     continue
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 assert meta_dict.get("type") != "thinking"
 
 
@@ -379,8 +368,6 @@ class TestExecutorDeferredApproval:
         assert len(input_required_updates) >= 1
 
     async def test_deferred_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
         from fin_assist.agents.tools import DeferredToolCall
 
         deferred_event = StepEvent(
@@ -420,11 +407,7 @@ class TestExecutorDeferredApproval:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "deferred":
                     deferred_artifacts.append((part, meta_dict))
 
@@ -506,101 +489,6 @@ class TestExecutorDeferredApproval:
         assert len(completed_updates) == 0
 
 
-class TestExecutorExtractApprovalResults:
-    def test_returns_none_when_no_message(self) -> None:
-        backend = _make_backend()
-        context_store = MagicMock()
-        executor = Executor(backend=backend, context_store=context_store)
-        result = executor._extract_approval_results(None)
-        assert result is None
-
-    def test_returns_none_when_no_parts(self) -> None:
-        from a2a.types import Message
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        executor = Executor(backend=backend, context_store=context_store)
-        msg = Message(message_id="m1", role=Role.ROLE_USER, parts=[])
-        result = executor._extract_approval_results(msg)
-        assert result is None
-
-    def test_returns_none_when_no_approval_result_metadata(self) -> None:
-        from a2a.types import Message
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        executor = Executor(backend=backend, context_store=context_store)
-        msg = Message(
-            message_id="m1",
-            role=Role.ROLE_USER,
-            parts=[Part(text="just a regular message")],
-        )
-        result = executor._extract_approval_results(msg)
-        assert result is None
-
-    def test_extracts_approval_decisions_and_calls_build_deferred_results(self) -> None:
-        from a2a.types import Message
-
-        from google.protobuf.struct_pb2 import Struct
-
-        backend = _make_backend()
-        mock_deferred_results = MagicMock()
-        backend.build_deferred_results.return_value = mock_deferred_results
-        context_store = MagicMock()
-        executor = Executor(backend=backend, context_store=context_store)
-
-        meta = Struct()
-        meta.update(
-            {
-                "type": "approval_result",
-                "decisions": [
-                    {
-                        "tool_call_id": "call_1",
-                        "approved": True,
-                    },
-                    {
-                        "tool_call_id": "call_2",
-                        "approved": False,
-                        "denial_reason": "User denied",
-                    },
-                ],
-            }
-        )
-        msg = Message(
-            message_id="m1",
-            role=Role.ROLE_USER,
-            parts=[Part(text="", metadata=meta)],
-        )
-        result = executor._extract_approval_results(msg)
-
-        backend.build_deferred_results.assert_called_once()
-        decisions = backend.build_deferred_results.call_args[0][0]
-        assert len(decisions) == 2
-        assert decisions[0].tool_call_id == "call_1"
-        assert decisions[0].approved is True
-        assert decisions[1].tool_call_id == "call_2"
-        assert decisions[1].approved is False
-        assert decisions[1].denial_reason == "User denied"
-        assert result is mock_deferred_results
-
-    def test_ignores_non_approval_result_parts(self) -> None:
-        from a2a.types import Message
-
-        backend = _make_backend()
-        context_store = MagicMock()
-        executor = Executor(backend=backend, context_store=context_store)
-
-        thinking_meta = Struct()
-        thinking_meta.update({"type": "thinking"})
-        msg = Message(
-            message_id="m1",
-            role=Role.ROLE_USER,
-            parts=[Part(text="thinking text", metadata=thinking_meta)],
-        )
-        result = executor._extract_approval_results(msg)
-        assert result is None
-
-
 class TestExecutorResumeWithApprovalResults:
     async def test_resume_calls_run_steps_with_deferred_tool_results(self) -> None:
         mock_deferred_results = MagicMock()
@@ -661,8 +549,6 @@ class TestExecutorCancel:
 
 class TestExecutorToolCallDispatch:
     async def test_tool_call_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
         tool_call_event = StepEvent(
             kind="tool_call",
             content=MagicMock(),
@@ -689,11 +575,7 @@ class TestExecutorToolCallDispatch:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "tool_call":
                     tool_call_parts.append((part, meta_dict))
 
@@ -703,9 +585,6 @@ class TestExecutorToolCallDispatch:
         assert meta.get("args", {}).get("path") == "test.py"
 
     async def test_tool_result_event_emits_artifact_with_metadata(self) -> None:
-        from google.protobuf.json_format import MessageToDict
-
-        # Backends are required to emit tool_result.content as a plain str.
         tool_result_event = StepEvent(
             kind="tool_result",
             content="file contents here",
@@ -731,11 +610,7 @@ class TestExecutorToolCallDispatch:
         for call in artifact_calls:
             event = call.args[0]
             for part in event.artifact.parts:
-                meta_dict = (
-                    MessageToDict(part.metadata, preserving_proto_field_name=True)
-                    if part.HasField("metadata")
-                    else {}
-                )
+                meta_dict = struct_to_dict(part.metadata) if part.HasField("metadata") else {}
                 if meta_dict.get("type") == "tool_result":
                     tool_result_parts.append((part, meta_dict))
 

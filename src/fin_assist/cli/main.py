@@ -121,37 +121,33 @@ async def _get_agent_or_error(
     return None, agents
 
 
-def _resolve_workflow(
+def _resolve_skill(
     agent_name: str,
-    workflow_name: str | None,
+    skill_name: str | None,
     prompt: str,
     config,
-) -> tuple[str, str | None]:
-    """Resolve a workflow for an agent and return (effective_prompt, system_prompt_override).
+) -> tuple[str, str | None, str | None]:
+    """Resolve a skill for an agent.
 
-    If ``workflow_name`` is given explicitly, look it up in the agent's config.
-    If no workflow is given but ``prompt`` matches a workflow name, use that
-    workflow's ``entry_prompt`` as the effective prompt.
-
-    Returns (effective_prompt, system_prompt_override).  If no workflow matches,
-    returns (prompt, None) — i.e. the prompt is used as-is with the default
-    system prompt.
+    Returns (effective_prompt, system_prompt_override, resolved_skill_name).
+    If no skill matches, returns (prompt, None, None).
     """
     agent_cfg = config.agents.get(agent_name)
-    if agent_cfg is None or not agent_cfg.workflows:
-        return prompt, None
+    if agent_cfg is None:
+        return prompt, None, None
 
-    target = workflow_name
-    if target is None and prompt in agent_cfg.workflows:
+    target = skill_name
+
+    if target is None and agent_cfg.skills and prompt in agent_cfg.skills:
         target = prompt
 
-    if target is None or target not in agent_cfg.workflows:
-        return prompt, None
+    if target is not None and agent_cfg.skills and target in agent_cfg.skills:
+        skill = agent_cfg.skills[target]
+        effective_prompt = skill.entry_prompt or prompt
+        system_prompt_override = skill.prompt_template or None
+        return effective_prompt, system_prompt_override, target
 
-    wf = agent_cfg.workflows[target]
-    effective_prompt = wf.entry_prompt or prompt
-    system_prompt_override = wf.prompt_template or None
-    return effective_prompt, system_prompt_override
+    return prompt, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -311,18 +307,28 @@ async def _do_command(args: argparse.Namespace, config, config_path: Path | None
             if not prompt:
                 return 0
 
-            prompt, system_prompt_override = _resolve_workflow(
+            prompt, system_prompt_override, resolved_skill = _resolve_skill(
                 args.agent,
-                args.workflow,
+                args.skill,
                 prompt,
                 config,
             )
+
+            if resolved_skill:
+                try:
+                    skill_result = await client.invoke_skill(args.agent, resolved_skill, prompt)
+                    prompt = skill_result.get("prompt", prompt)
+                    system_prompt_override = (
+                        skill_result.get("prompt_template") or system_prompt_override
+                    )
+                except Exception:
+                    render_info(f"Skill '{resolved_skill}' pre-loading skipped")
 
             if system_prompt_override:
                 from fin_assist.agents.registry import SYSTEM_PROMPTS
 
                 override_text = SYSTEM_PROMPTS.get(system_prompt_override, system_prompt_override)
-                prompt = f"[Workflow context]\n{override_text}\n\n[Request]\n{prompt}"
+                prompt = f"[Skill context]\n{override_text}\n\n[Request]\n{prompt}"
 
             prompt = resolve_at_references(prompt, context_settings=config.context)
             result, deferred_calls = await render_stream(
@@ -387,26 +393,45 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 )
                 return 1
 
+            try:
+                raw_skills = await client.list_skills(args.agent)
+            except Exception:
+                raw_skills = []
+            skill_candidates = [
+                (s["name"], s.get("description", "")) for s in raw_skills if s.get("name")
+            ]
             fp = FinPrompt(
                 agents=[a.name for a in agents],
                 context_settings=config.context,
+                skills=skill_candidates,
             )
             message = args.message
 
             if message:
-                message, system_prompt_override = _resolve_workflow(
+                message, system_prompt_override, resolved_skill = _resolve_skill(
                     args.agent,
-                    args.workflow,
+                    args.skill,
                     message,
                     config,
                 )
+                if resolved_skill:
+                    try:
+                        skill_result = await client.invoke_skill(
+                            args.agent, resolved_skill, message
+                        )
+                        message = skill_result.get("prompt", message)
+                        system_prompt_override = (
+                            skill_result.get("prompt_template") or system_prompt_override
+                        )
+                    except Exception:
+                        render_info(f"Skill '{resolved_skill}' pre-loading skipped")
                 if system_prompt_override:
                     from fin_assist.agents.registry import SYSTEM_PROMPTS
 
                     override_text = SYSTEM_PROMPTS.get(
                         system_prompt_override, system_prompt_override
                     )
-                    message = f"[Workflow context]\n{override_text}\n\n[Request]\n{message}"
+                    message = f"[Skill context]\n{override_text}\n\n[Request]\n{message}"
 
             final_context_id = await run_chat_loop(
                 client.stream_agent,
@@ -416,6 +441,8 @@ async def _talk_command(args: argparse.Namespace, config, config_path: Path | No
                 initial_message=message if not args.edit else None,
                 edit_message=message if args.edit else None,
                 show_thinking=args.show_thinking,
+                invoke_skill_fn=client.invoke_skill,
+                list_skills_fn=client.list_skills,
             )
     except Exception:
         return 1
@@ -458,6 +485,37 @@ def _list_command(args: argparse.Namespace, config) -> int:
             console.print(f"    {tool.description}")
         return 0
 
+    if resource == "skills":
+        from fin_assist.agents.skills import SkillLoader
+
+        loader = SkillLoader()
+        skill_md_files = loader.discover_skill_md_files()
+
+        any_config_skills = any(agent_cfg.skills for agent_cfg in config.agents.values())
+
+        if not any_config_skills and not skill_md_files:
+            render_info("No skills configured.")
+            return 0
+
+        if any_config_skills:
+            console.print("[bold]Config skills:[/bold]")
+            for agent_name, agent_cfg in config.agents.items():
+                if not agent_cfg.skills:
+                    continue
+                console.print(f"  [bold]{agent_name}:[/bold]")
+                for name, skill_cfg in agent_cfg.skills.items():
+                    tools_str = ", ".join(skill_cfg.tools) if skill_cfg.tools else "none"
+                    console.print(f"    [bold]{name}[/bold]  (tools: {tools_str})")
+                    if skill_cfg.description:
+                        console.print(f"      {skill_cfg.description}")
+
+        if skill_md_files:
+            console.print("[bold]SKILL.md files:[/bold]")
+            for name, path in sorted(skill_md_files.items()):
+                console.print(f"  [bold]{name}[/bold]  ({path})")
+
+        return 0
+
     if resource == "prompts":
         from fin_assist.agents.registry import SYSTEM_PROMPTS
 
@@ -480,7 +538,9 @@ def _list_command(args: argparse.Namespace, config) -> int:
             console.print(f"  [bold]{name}[/bold]  →  {type_obj.__name__}")
         return 0
 
-    render_error(f"Unknown resource '{resource}'. Choose from: tools, prompts, output-types")
+    render_error(
+        f"Unknown resource '{resource}'. Choose from: tools, skills, prompts, output-types"
+    )
     return 1
 
 
@@ -522,9 +582,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Show agent thinking/reasoning in the output.",
     )
     do_parser.add_argument(
-        "--workflow",
+        "--skill",
         default=None,
-        help="Name of a workflow defined in the agent's config (e.g. commit, pr, summarize).",
+        help="Name of a skill defined in the agent's config (e.g. commit, pr, summarize).",
     )
 
     talk_parser = subparsers.add_parser(
@@ -564,9 +624,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Show agent thinking/reasoning in the chat output.",
     )
     talk_parser.add_argument(
-        "--workflow",
+        "--skill",
         default=None,
-        help="Name of a workflow defined in the agent's config.",
+        help="Name of a skill defined in the agent's config.",
     )
 
     list_parser = subparsers.add_parser(
@@ -576,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
     list_parser.set_defaults(agent=None)
     list_parser.add_argument(
         "resource",
-        choices=["tools", "prompts", "output-types"],
+        choices=["tools", "skills", "prompts", "output-types"],
         help="Which platform resource to list.",
     )
 
@@ -625,8 +685,9 @@ def main(argv: list[str] | None = None) -> int:
                     "Add an [agents.*] section to config.toml.\n"
                     "Example:\n\n"
                     "  [agents.default]\n"
-                    '  system_prompt = "chain-of-thought"\n'
-                    '  tools = ["read_file", "git", "run_shell"]'
+                    '  system_prompt = "chain-of-thought"\n\n'
+                    "  [agents.default.skills.files]\n"
+                    '  tools = ["read_file"]'
                 )
             else:
                 names = ", ".join(config.agents)
@@ -651,16 +712,17 @@ def main(argv: list[str] | None = None) -> int:
         setup_cli_tracing(config.tracing)
 
     agent_attr = args.agent or ""
+    skill_attr = getattr(args, "skill", None) or ""
 
     match args.command:
         case "agents":
             with cli_root_span("agents"):
                 return asyncio.run(_agents_command(args, config, config_path))
         case "do":
-            with cli_root_span("do", agent=agent_attr):
+            with cli_root_span("do", agent=agent_attr, skill=skill_attr):
                 return asyncio.run(_do_command(args, config, config_path))
         case "talk":
-            with cli_root_span("talk", agent=agent_attr):
+            with cli_root_span("talk", agent=agent_attr, skill=skill_attr):
                 return asyncio.run(_talk_command(args, config, config_path))
         case "list":
             with cli_root_span("list"):

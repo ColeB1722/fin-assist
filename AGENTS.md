@@ -51,7 +51,7 @@ After design is sketched, write tests BEFORE writing implementation code:
 src/fin_assist/       - Main package
 ├── hub/              - Agent Hub server (FastAPI + a2a-sdk)
 ├── cli/              - CLI client (primary client)
-├── agents/           - Agent protocol, registry, implementations
+├── agents/           - Agent protocol, registry, skills
 ├── llm/              - pydantic-ai integration
 ├── context/          - Context gathering
 ├── credentials/      - API key management
@@ -156,6 +156,79 @@ This split is **project-specific**, not an industry standard — but we apply it
 3. Read `AGENTS.md` - dev patterns (this file)
 4. Check "Implementation Progress" table
 5. Continue from "Next Session" section
+
+## Skill Authoring
+
+Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, context injection text, and prompt steering. Approval policies are defined at the agent level via `tool_policies`, not per-skill.
+
+### Inline TOML skills
+
+Define skills in `config.toml` under `[agents.<name>.skills.<skill>]`:
+
+```toml
+[agents.git]
+base_tools = ["read_file"]
+
+[agents.git.skills.commit]
+description = "Generate a conventional commit message from current changes."
+tools = ["git", "read_file"]
+prompt_template = "git-commit"
+entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
+
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git add*", mode = "never" },
+  { pattern = "git commit*", mode = "never" },
+]
+```
+
+### SKILL.md files
+
+For skills with substantial context, create a SKILL.md file following the agentskills.io open standard:
+
+- **Project skills**: `.fin/skills/<name>/SKILL.md`
+- **User skills**: `~/.config/fin/skills/<name>/SKILL.md`
+
+Project-level skills take precedence for same-name skills.
+
+```markdown
+---
+name: commit
+description: Generate a conventional commit message.
+allowed-tools:
+  - git
+  - read_file
+metadata:
+  fin-assist:
+    prompt-template: git-commit
+    entry-prompt: Analyze the current changes and commit.
+---
+## Guidelines
+
+Use conventional commits format...
+```
+
+### Key points
+
+- Skills are **additive** — once loaded, a skill's tools stay active for the session
+- Tools are **gated** — only `base_tools` + loaded skills' tools are registered; unloaded skills' tools are not available
+- Tools are **shared** across skills — name collisions are a config validation error
+- **Agent-level** `tool_policies` define approval per tool, not per skill (eliminates merge conflicts)
+- `AgentSpec.base_tools` lists always-available safe/read-only tools (default: `["read_file"]`)
+- `--skill` CLI flag pre-loads a skill: `fin do git --skill commit`
+- Positional skill matching: `fin do git commit` → agent=git, skill=commit
+- `/skill:<name>` REPL command loads a skill mid-session
+- `fin list skills` shows all skills grouped by agent
+
+### When adding a new skill
+
+1. Add the skill to `config.toml` under the appropriate agent
+2. If the skill needs a new tool, add it to `create_default_registry()` in `agents/tools.py`
+3. Write tests in `tests/test_agents/test_skills.py` (loader, catalog, manager)
+4. Run `just ci` to verify
+5. Update `docs/architecture.md` if the skill introduces new patterns
 
 ## Before Committing
 

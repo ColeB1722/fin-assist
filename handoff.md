@@ -2,14 +2,12 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-04-30):** 880 tests passing, `just ci` green. PR #103 (OTel tracing) review comments addressed in code, awaiting merge. All Tier 1 features shipped. Tracing fully integrated: hub + CLI spans, JSONL file sink, HITL two-span trace continuity, noise suppression, attribute hygiene. Code review follow-up issue [#111](https://github.com/ColeB1722/fin-assist/issues/111) open.
+**Current state (2026-05-03):** 940 tests passing, `just ci` green. Skill loading refactor complete (Steps 1–14). Skills now genuinely gate tools, approval policies moved to agent level, REPL `/skills` and `/skill:<name>` commands wired, skill tracing added. Ready for manual review.
 
-**Recent refactoring (this session):**
+**Recent work (this session):**
 
-1. **`tracing_shared.py`** — extracted shared span processors, config resolvers, and constants from `hub/tracing.py` and `cli/tracing.py` into a new public module. Eliminated cross-module private imports and duplicated logic. Dependency graph changed from `cli/ → hub/` to `cli/ → tracing_shared/ ← hub/`.
-2. **`get_user_input` fix** — removed test-induced fallback path (`getattr(context.message, ...)`) from executor; fixed `_make_request_context` helper in `test_tracing.py` to stub on the context object where the real a2a-sdk API puts it.
-3. **Executor prep extract** — extracted `_extract_user_input()` (static method) and `_detect_resume()` + `_ResumeInfo` dataclass from `execute()`, shrinking the method by ~15 lines and untangling user-input extraction and resume detection into named, testable units.
-4. **`_TaskTracer` extraction** — moved all OTel span lifecycle from `executor.py` into `hub/_task_tracer.py`. `_ExecutionContext` went from 13 fields (6 tracing, 7 business) to 8 (7 business + 1 `tracer` reference). Executor lost 8 tracing methods and 50+ lines of inline span setup. `execute()` dropped from ~135 lines of interleaved logic to ~50 lines of pure business flow. All 880 tests pass unchanged.
+1. **Steps 11–14: Skill loading refactor completion** — Implemented REPL `/skills` + `/skill:<name>` commands with `SkillCompleter` (rapidfuzz fuzzy matching, mirrors `@file:` pattern), skill tracing attributes/spans (`fin_assist.skill_load`, `fin_assist.cli.skill`), and updated all docs (architecture.md Skills Architecture rewrite, AGENTS.md skill authoring section, Phase 15 checklist)
+2. **Steps 1–10, 13 (previous session)** — Config schema migration (`ApprovalConfig` → `ToolPolicyConfig`, `base_tools`, `tool_policies`), `AgentSpec` tool gating, `SkillManager.loaded_tool_names()`, `_build_pydantic_agent()` gates tools by loaded skills, `skills/invoke` + `GET /skills` endpoints, CLI `invoke_skill()`/`list_skills()` client methods, `_resolve_skill()` 3-tuple return, all existing tests updated
 
 **Core platform status:**
 
@@ -29,11 +27,13 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Remaining tracked items:**
 
-- `_CONTEXT_TYPE_MAP` centralization — `AgentSpec._CONTEXT_TYPE_MAP` hardcodes tool→context mappings; tests read the private attribute
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
-- `build_user_message`/`format_context` helpers in `llm/prompts.py` are dead code
 - `supported_context_types` published in agent cards, never consumed by clients
-- Scoped CLI tools approval=always is not final state — per-subcommand approval is Phase A of Skills API
+- Skill composability (skills invoking skills) — v0.2
+- Agent-to-agent orchestration — v0.2
+- MCP tool source — v0.1.1
+- Per-subcommand approval evaluation at executor level — v0.1.1
+- Eval harness — v0.3
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
 
 ---
@@ -42,24 +42,19 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 **Recommended picks (in priority order):**
 
-1. **`fin-assist trace replay <file>`** — POST loop that re-ships JSONL lines at an OTLP endpoint so a captured trace can be re-rendered in a fresh backend. ~50 LOC. Not filed yet.
-2. **Skills API Phase A — Subcommand approval rules.** Extend `ApprovalPolicy` with per-subcommand rules. `git diff` stops prompting; `git push` still asks. ~200 LOC. See "Design Sketches: Skills API" below.
-3. **Retry-aware tool spans** ([#108](https://github.com/ColeB1722/fin-assist/issues/108)) — smaller; naturally follows from parallel-tool-span refactor.
-4. **Re-parent `running tool` under `fin_assist.tool_execution`** — currently siblings under `fin_assist.step`, which double-counts `tool.name` queries. Needs SpanProcessor.on_start hook. No issue filed.
+1. **Manual review of skill loading refactor** — Verify tool gating works end-to-end (unloaded skill tools unavailable), `/skills` and `/skill:<name>` in REPL, agent-level policies applied correctly, tracing spans emitted.
+2. **Part 2 interactive manual tests** — Run through `docs/manual-testing.md` sections 2a-2f at a TTY.
+3. **Tag v0.1.0** — After manual review + interactive test pass.
 
 ### Sequenced roadmap
 
 | # | Work | Status |
 |---|------|--------|
 | 1 | Tracing: OTel + OpenInference bridge | ✅ Complete — follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109) |
-| 2 | Eval harness (per-agent, not platform-level) | ⬜ Queued — rides on tracing; Phoenix eval primitives consume OTel traces |
-| 3 | Skills API | 📐 Phase A sketch resolved; see below |
-
-### Alternative picks
-
-1. **Phase 4 design discussions** — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
-2. **Tech debt** — `_CONTEXT_TYPE_MAP`, dead code in `llm/prompts.py`, AgentBackend simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
-3. **Other open issues** — `gh issue list`
+| 2 | Skills API v0.1 | ✅ Complete — Phases 0–4 + code review triage shipped (924 tests) |
+| 3 | MCP tool source (v0.1.1) | ⬜ Queued — skill→tool binding is source-agnostic |
+| 4 | Eval harness (per-agent) | ⬜ Queued — rides on tracing |
+| 5 | Skill composability + agent-to-agent (v0.2) | ⬜ Queued |
 
 ---
 
@@ -85,20 +80,21 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | — | ContextSettings forwarded to tool callables | ✅ Complete |
 | — | PR #87 self-review triage | ✅ Complete |
 | — | Phase 4 architecture discussions | 📐 Filed as #89–#94 |
-| — | Documentation sync | ✅ Complete |
+| — | Documentation sync | ✅ Complete (architecture.md, manual-testing.md, README, AGENTS.md) |
 | — | Git agent (#79) | ✅ Complete |
 | — | Phoenix/OTel tracing (PR #103) | ✅ Complete |
 | — | Telemetry Hardening Phase 2 | ✅ Complete |
 | — | JSONL file exporter (#105) | ✅ Complete |
 | — | Tracing UX pass (#104) | ✅ Complete |
 | — | PR #103 code review fixes | ✅ Complete |
+| — | Skill loading refactor (tool gating + agent-level policies) | ✅ Complete — Steps 1–14, 940 tests |
 | 9b | Full SSE Streaming | ✅ Covered by a2a-sdk migration |
 | 10 | Non-blocking + interactive tasks | 📐 Superseded by deferred tools |
 | 11 | Multiplexer Integration | ⬜ Not Started |
 | 12 | Fish Plugin | ⬜ Not Started |
 | 13 | TUI Client | ⬜ Not Started |
 | 14 | Testing Infrastructure (Deep Evals) | ⬜ Queued |
-| 15 | Skills + MCP Integration | 📐 Phase A sketch resolved |
+| 15 | Skills + MCP Integration | ✅ Skills API v0.1 shipped + skill loading refactor (tool gating, agent-level policies, REPL commands, tracing); MCP queued for v0.1.1 |
 | 16 | Additional Agents | 🔄 Git shipped |
 | 17 | Multi-Agent Workflows | ⬜ Not Started |
 | 18 | Documentation | ⬜ Not Started |
@@ -172,7 +168,78 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 ---
 
-### Skills API: sequenced refactor (Phase 15 breakdown)
+### Skills API: v0.1 Implementation (shipped 2026-05-01, review triage 2026-05-02, refactor 2026-05-03)
+
+**Status:** Complete including skill loading refactor. 940 tests passing, `just ci` green.
+
+**What was implemented:**
+
+1. **`ApprovalRule` + `ApprovalPolicy.evaluate()`** — fnmatch-based per-subcommand approval rules. First-match semantics with `default` fallback. Replaces the old binary `always`/`never` mode.
+
+2. **`SkillConfig`** — config schema type for inline TOML skill definitions. Added to `AgentConfig.skills: dict[str, SkillConfig]`. No approval field — policies moved to agent level.
+
+3. **`SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`** — runtime types in `agents/skills.py`. `SkillLoader` resolves both inline TOML and SKILL.md files. `SkillManager` tracks loaded skills, provides `load_skill` callable, `loaded_tool_names()`, and generates catalog text.
+
+4. **SKILL.md file loader** — parses YAML frontmatter + markdown body following agentskills.io convention. Discovery from `.fin/skills/` and `~/.config/fin/skills/`. fin-assist extensions under `metadata.fin-assist.*`.
+
+5. **Config migration** — `config.toml` migrated from `tools`/`workflows` to `skills` with agent-level `tool_policies`. `WorkflowConfig` and `--workflow` CLI flag removed. `--skill` CLI flag. `base_tools` (default `["read_file"]`) for always-available tools.
+
+6. **Tool gating** — `_build_pydantic_agent()` registers only `base_tools` + `SkillManager.loaded_tool_names()`. Skills not loaded = tools not registered. Called on every `step()`, so loading takes effect next turn.
+
+7. **Agent-level tool policies** — `ToolPolicyConfig`/`ToolPolicyRuleConfig` replace per-skill `ApprovalConfig`. `_get_agent_tool_policy()` resolves policies per tool. Each tool has exactly one policy definition — no merge conflicts.
+
+8. **`skills/invoke` + `GET /skills` endpoints** — `POST /agents/{name}/skills/invoke` pre-loads a skill server-side. `GET /agents/{name}/skills` lists available skills. `HubClient.invoke_skill()` and `HubClient.list_skills()` client methods.
+
+9. **REPL `/skills` + `/skill:<name>`** — `/skills` lists available skills. `/skill:<name>` loads a skill mid-session via `invoke_skill_fn`. `SkillCompleter` with rapidfuzz fuzzy matching on `/skill:` prefix (mirrors `@file:` pattern).
+
+10. **Skill tracing** — `fin_assist.skill_load` span via `_TaskTracer.emit_skill_load_span()`. `fin_assist.skill.id`, `fin_assist.skill.entry_point`, `fin_assist.skill.tools_unlocked` attributes. `fin_assist.cli.skill` on CLI root span. `skill_id` param on `start_task_span()`.
+
+11. **`fin list skills`** — lists config-defined and SKILL.md-discovered skills, grouped by agent name.
+
+**Key design decisions:**
+
+- Skills are additive (no unloading in v0.1)
+- Tools shared across skills; name collisions = config error
+- Tool gating: `base_tools` + `loaded_tool_names()` only — LLM can't use unloaded tools
+- Agent-level `tool_policies` replace per-skill `approval` — each tool has exactly one policy
+- `base_tools` default `["read_file"]` — agents always need file reading
+- `_build_pydantic_agent()` called on every `step()` — skill loading takes effect next turn
+- `/skill:<name>` mirrors `@file:` pattern with `SkillCompleter` + rapidfuzz
+
+**Bug fixes shipped alongside:**
+
+- FileHistory dir creation (#54/#51) — `prompt.py:_build_session()` now creates parent dir
+- Malformed session file crash (#81) — `display.py:render_session_list()` catches JSONDecodeError
+- AgentCard version from package metadata (#78) — `factory.py` uses `importlib.metadata.version()`
+- `MessageToDict` consolidation (#86) — all direct calls replaced with `struct_to_dict()` from `protobuf.py`
+
+**New files:**
+- `src/fin_assist/agents/skills.py`
+- `tests/test_agents/test_skills.py`
+- `tests/test_agents/test_approval_policy_evaluate.py`
+
+**Modified files (key):**
+- `src/fin_assist/agents/tools.py` — `ApprovalRule`, `ApprovalPolicy.evaluate()`, simplified `__post_init__`
+- `src/fin_assist/agents/spec.py` — `skills` property (`dict[str, SkillConfig]`), derived `tools`, `_CONTEXT_TYPE_HINTS`, `get_skill_definitions()`
+- `src/fin_assist/agents/backend.py` — skill-based approval overrides, `load_skill` tool, catalog in prompt, public API for skill manager
+- `src/fin_assist/agents/skills.py` — YAML approval rule validation
+- `src/fin_assist/config/schema.py` — `SkillConfig`, `ApprovalConfig`, `ApprovalRuleConfig`; removed `WorkflowConfig`
+- `src/fin_assist/cli/main.py` — `_resolve_skill`, `--skill` flag, `fin list skills` grouped by agent
+- `src/fin_assist/hub/factory.py` — `PackageNotFoundError` fallback, version from metadata
+- `config.toml` — migrated to skills format
+
+**Post-v0.1 roadmap:**
+
+| Version | Feature |
+|---------|---------|
+| v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
+| v0.1.1 | Per-subcommand approval evaluation at executor level |
+| v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
+| v0.3 | Eval harness |
+
+---
+
+### Skills API: Original Design Sketch (for reference)
 
 **Status:** Sketch resolved 2026-04-27. Ready to start Phase A.
 
@@ -182,7 +249,7 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 - Scoped CLI prototype + TODO for per-subcommand approval: `src/fin_assist/agents/tools.py:213`, `src/fin_assist/agents/tools.py:295`
 - Current `ApprovalPolicy` shape (only `never`/`always`, no rules): `src/fin_assist/agents/tools.py:40`
-- `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99`
+- `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99` *(field removed — tools now derive from skill union)*
 - Skills API vision: `docs/architecture.md:991`–`:1007`
 
 ---
@@ -385,6 +452,6 @@ Phases 1–8b: repo setup, LLM module, credentials, context module, agent protoc
 - `AgentSpec` is pure config; all LLM coupling in `PydanticAIBackend`
 - Platform types in `agents/` have zero `hub/` imports by design
 - `@`-completion is the sole user-driven context path; `--file`/`--git-diff` removed
-- Scoped CLI tools (`git`, `gh`) are the prototype for Skills API
+- Scoped CLI tools (`git`, `gh`) support per-subcommand approval via skills
 - JSONL trace sink always-on when tracing enabled, writes to `$FIN_DATA_DIR/traces.jsonl`
 - `OTEL_INSTRUMENTATION_A2A_SDK_ENABLED=false` set in `__init__.py` to suppress a2a-sdk noise

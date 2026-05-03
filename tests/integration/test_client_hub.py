@@ -20,8 +20,17 @@ from a2a.types import Part
 from fin_assist.agents.spec import AgentSpec
 from fin_assist.agents.step import StepEvent
 from fin_assist.agents.tools import DeferredToolCall
-from fin_assist.cli.client import HubClient
+from fin_assist.cli.client import HubClient, StreamEvent
 from tests.integration.conftest import FakeBackend, FakeStepHandle, _make_hub_client
+
+
+async def _stream_result(client: HubClient, agent: str, prompt: str, **kwargs) -> StreamEvent:
+    """Return the terminal event from ``stream_agent()``."""
+    terminal_kinds = {"completed", "failed", "auth_required", "input_required"}
+    async for event in client.stream_agent(agent, prompt, **kwargs):
+        if event.kind in terminal_kinds:
+            return event
+    return StreamEvent(kind="failed", result=None)
 
 
 # -----------------------------------------------------------------------
@@ -64,14 +73,22 @@ class TestOneShotDispatch:
     """Covers manual tests A4/A5: ``fin do default "hello"`` returns a result."""
 
     async def test_run_default_agent(self, hub_client: HubClient) -> None:
-        result = await hub_client.run_agent("default", "hello")
-        assert result.success is True
-        assert "response from default" in result.output
+        events = []
+        async for event in hub_client.stream_agent("default", "hello"):
+            events.append(event)
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].result.success is True
+        assert "response from default" in completed[0].result.output
 
     async def test_run_shell_agent(self, hub_client: HubClient) -> None:
-        result = await hub_client.run_agent("shell", "list files")
-        assert result.success is True
-        assert "response from shell" in result.output
+        events = []
+        async for event in hub_client.stream_agent("shell", "list files"):
+            events.append(event)
+        completed = [e for e in events if e.kind == "completed"]
+        assert len(completed) == 1
+        assert completed[0].result.success is True
+        assert "response from shell" in completed[0].result.output
 
 
 class TestUnknownAgent:
@@ -79,7 +96,8 @@ class TestUnknownAgent:
 
     async def test_unknown_agent_raises(self, hub_client: HubClient) -> None:
         with pytest.raises(AgentCardResolutionError):
-            await hub_client.run_agent("nonexistent", "hi")
+            async for _ in hub_client.stream_agent("nonexistent", "hi"):
+                pass
 
 
 # -----------------------------------------------------------------------
@@ -100,9 +118,10 @@ class TestAuthRequired:
         await client.close()
 
     async def test_auth_required_result(self, auth_client: HubClient) -> None:
-        result = await auth_client.run_agent("default", "hello")
-        assert result.auth_required is True
-        assert result.success is False
+        event = await _stream_result(auth_client, "default", "hello")
+        assert event.kind == "auth_required"
+        assert event.result.auth_required is True
+        assert event.result.success is False
 
     async def test_recovery_after_credential_fix(self, fake_agents: list[AgentSpec]) -> None:
         def bad_factory(spec: AgentSpec) -> FakeBackend:
@@ -112,15 +131,15 @@ class TestAuthRequired:
             return FakeBackend(response="all good")
 
         bad_client = _make_hub_client(fake_agents, backend_factory=bad_factory)
-        result = await bad_client.run_agent("default", "hello")
+        event = await _stream_result(bad_client, "default", "hello")
         await bad_client.close()
-        assert result.auth_required is True
+        assert event.result.auth_required is True
 
         good_client = _make_hub_client(fake_agents, backend_factory=good_factory)
-        result = await good_client.run_agent("default", "hello")
+        event = await _stream_result(good_client, "default", "hello")
         await good_client.close()
-        assert result.success is True
-        assert result.output == "all good"
+        assert event.result.success is True
+        assert event.result.output == "all good"
 
 
 # -----------------------------------------------------------------------
@@ -198,20 +217,23 @@ class TestStreamingRoundTrip:
 
 
 class TestMultiTurnConversation:
-    """Exercise ``send_message()`` with ``context_id`` for multi-turn."""
+    """Exercise multi-turn conversation via ``stream_agent()`` with ``context_id``."""
 
     async def test_context_id_returned(self, hub_client: HubClient) -> None:
-        result = await hub_client.send_message("default", "first message")
-        assert result.context_id is not None
+        event = await _stream_result(hub_client, "default", "first message")
+        assert event.result is not None
+        assert event.result.context_id is not None
 
     async def test_multi_turn_preserves_context(self, hub_client: HubClient) -> None:
-        first = await hub_client.send_message("default", "first message")
-        assert first.context_id is not None
+        first = await _stream_result(hub_client, "default", "first message")
+        assert first.result is not None
+        assert first.result.context_id is not None
 
-        second = await hub_client.send_message(
-            "default", "second message", context_id=first.context_id
+        second = await _stream_result(
+            hub_client, "default", "second message", context_id=first.result.context_id
         )
-        assert second.success is True
+        assert second.result is not None
+        assert second.result.success is True
 
 
 # -----------------------------------------------------------------------

@@ -60,7 +60,7 @@ from pydantic_ai.messages import TextPart as PydanticTextPart
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.serialization import unwrap_payload, wrap_payload
 from fin_assist.agents.step import StepEvent
-from fin_assist.agents.tools import ApprovalDecision, DeferredToolCall
+from fin_assist.agents.tools import ApprovalDecision, ApprovalPolicy, DeferredToolCall
 
 _message_ta = TypeAdapter(list[ModelMessage])
 
@@ -305,6 +305,18 @@ class PydanticAIBackend:
         self._spec = agent_spec
         self._tool_registry = tool_registry
         self._registry: Any = None
+        self._skill_manager: Any | None = None
+
+    def _get_skill_manager(self):
+        from fin_assist.agents.skills import SkillManager
+
+        if self._skill_manager is None and self._spec.skills:
+            skill_defs = self._spec.get_skill_definitions()
+            self._skill_manager = SkillManager(
+                skills=skill_defs,
+                tool_registry=self._tool_registry,
+            )
+        return self._skill_manager
 
     def install_tracing(
         self,
@@ -436,10 +448,19 @@ class PydanticAIBackend:
         )
         pydantic_tools: list[Tool] = []
         has_approval_tools = False
+        skill_mgr = self._get_skill_manager()
         if self._tool_registry:
-            tool_defs = self._tool_registry.get_for_agent(self._spec.tools)
+            active_tool_names = set(self._spec.base_tools)
+            if skill_mgr is not None:
+                active_tool_names.update(skill_mgr.loaded_tool_names())
+
+            tool_defs = self._tool_registry.get_for_agent(sorted(active_tool_names))
             for td in tool_defs:
-                if td.approval_policy is not None and td.approval_policy.mode == "always":
+                effective_policy = self._get_agent_tool_policy(td.name) or td.approval_policy
+                needs_approval = effective_policy is not None and self._policy_requires_approval(
+                    effective_policy
+                )
+                if needs_approval:
                     has_approval_tools = True
                     pydantic_tools.append(
                         Tool(
@@ -455,21 +476,71 @@ class PydanticAIBackend:
                         Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
                     )
 
+        if skill_mgr is not None and skill_mgr.available_skills():
+            pydantic_tools.append(
+                Tool(
+                    skill_mgr.make_load_skill_callable(),
+                    takes_ctx=False,
+                    name="load_skill",
+                    description=(
+                        "Load a skill by name to activate its tools and context. "
+                        "Use this to discover and activate skills from the catalog."
+                    ),
+                )
+            )
+
         base_output_type = self._spec.output_type
         output_type = (
             [base_output_type, DeferredToolRequests] if has_approval_tools else base_output_type
         )
 
-        # pydantic-ai's ``Agent`` accepts ``tools=()`` (default) or a non-empty
-        # sequence.  It does **not** accept ``tools=None`` (raises TypeError).
-        # Passing ``pydantic_tools`` directly is safe: an empty list is
-        # equivalent to the default tuple.
+        instructions = self._spec.system_prompt
+        if skill_mgr is not None:
+            catalog = skill_mgr.catalog_text()
+            if catalog:
+                instructions = f"{instructions}\n\n{catalog}"
+
         return Agent(
             output_type=output_type,
-            instructions=self._spec.system_prompt,
+            instructions=instructions,
             capabilities=capabilities,
             tools=pydantic_tools,
         )
+
+    def _get_agent_tool_policy(self, tool_name: str) -> ApprovalPolicy | None:
+        """Look up the agent-level tool policy for a tool.
+
+        Agent-level ``tool_policies`` take precedence over the tool's
+        default ``ApprovalPolicy``.  Returns ``None`` when no agent-level
+        policy is defined for the tool.
+        """
+        from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
+
+        policy_cfg = self._spec.tool_policies.get(tool_name)
+        if policy_cfg is None:
+            return None
+        rules = [
+            ApprovalRule(pattern=r.pattern, mode=r.mode, reason=r.reason) for r in policy_cfg.rules
+        ]
+        return ApprovalPolicy(
+            mode=policy_cfg.default,
+            default=policy_cfg.default,
+            rules=rules,
+        )
+
+    @staticmethod
+    def _policy_requires_approval(policy: ApprovalPolicy) -> bool:
+        """Check if an approval policy requires approval for any invocation.
+
+        Returns True if the default mode is "always" or any rule has mode
+        "always".  This is conservative — some subcommands may not need
+        approval, but pydantic-ai sets approval at registration time, not
+        at call time.  Fine-grained per-subcommand evaluation will be
+        integrated at the executor level in a future version.
+        """
+        if policy.default == "always":
+            return True
+        return any(rule.mode == "always" for rule in policy.rules)
 
     def _build_model(self) -> Model:
         from pydantic_ai.models.fallback import FallbackModel
@@ -488,18 +559,27 @@ class PydanticAIBackend:
             provider_name = enabled_providers[0]
             model_name = self._spec.get_model_name(provider_name, default_model)
             api_key = self._spec.get_api_key(provider_name)
-            return self._get_registry().create_model(provider_name, model_name, api_key=api_key)
+            base_url = self._spec.get_base_url(provider_name)
+            return self._get_registry().create_model(
+                provider_name, model_name, api_key=api_key, base_url=base_url
+            )
 
         models = []
         for provider_name in enabled_providers:
             model_name = self._spec.get_model_name(provider_name, default_model)
             api_key = self._spec.get_api_key(provider_name)
-            model = self._get_registry().create_model(provider_name, model_name, api_key=api_key)
+            base_url = self._spec.get_base_url(provider_name)
+            model = self._get_registry().create_model(
+                provider_name, model_name, api_key=api_key, base_url=base_url
+            )
             models.append(model)
 
         return FallbackModel(*models)
 
     def _get_approval_reason(self, tool_name: str) -> str | None:
+        agent_policy = self._get_agent_tool_policy(tool_name)
+        if agent_policy is not None:
+            return agent_policy.reason
         if self._tool_registry is None:
             return None
         td = self._tool_registry.get(tool_name)

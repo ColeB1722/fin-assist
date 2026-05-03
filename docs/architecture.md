@@ -18,7 +18,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 
 ## Design Principles
 
-1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval, tools) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
+1. **Config-driven agents** — Agent behavior (system prompt, output type, thinking, serving modes, approval, skills) is defined in TOML config, not Python subclasses. New agents are config entries, not new classes.
 2. **Protocol-native** — Built on A2A via a2a-sdk v1.0 for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **Platform owns abstractions, backends adapt them** — Shared agentic capabilities (tools, approval, context, step events, tracing) are framework-agnostic platform types in `agents/`. LLM frameworks plug in via backend implementations that adapt platform concepts to their APIs. The platform never imports from backends.
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
@@ -39,7 +39,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 - **[README.md](../README.md)** — canonical architecture **diagrams** (4 inline Mermaid blocks: System Context, Hub Internals, Backend + Shared Services, Request Flow). Regenerate rendered images with `just diagrams`. GitHub renders the Mermaid natively.
 - **`docs/architecture.md`** (this file) — architecture **prose**: design principles, component contracts, per-subsystem deep dives, phase history, design-decision rationale. The ASCII overview diagrams below are redundant with the Mermaid diagrams in README and are retained as prose references only — treat the README Mermaid as authoritative if they disagree.
 - **`handoff.md`** — rolling multi-session development log: current phase status, design sketches in flight, next-session pointers.
-- **`AGENTS.md`** / **`CLAUDE.md`** — development patterns (SDD → TDD workflow, test quality standards, commit rules).
+- **`AGENTS.md`** — development patterns (SDD → TDD workflow, test quality standards, commit rules).
 
 When a structural change to the system lands, update **both** the README Mermaid blocks **and** the relevant architecture.md prose in the same commit. To prevent reoccurrence of the ContextProviders-style drift the audit uncovered, any claim in this document that a subsystem is "integrated" or a design decision is "Resolved" must have a citation to a real call site (file:line) somewhere in `src/` — not just to a test or a TOML field.
 
@@ -126,7 +126,9 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  ├──────────────────────────────────────────────────────────────────────┤   │
 │  │  REPL Mode (second layer)                                             │   │
 │  │  • fin-assist (no args)      — enter interactive REPL                 │   │
-│  │  • /switch <agent>           — switch active agent                   │   │
+│  │  • /exit                      — exit REPL                            │   │
+│  │  • /help                      — show available commands               │   │
+│  │  • /sessions                  — list saved sessions                   │   │
 │  │  • Dynamic prompts from agent card metadata                          │   │
 │  ├──────────────────────────────────────────────────────────────────────┤   │
 │  │  A2A Client (httpx + a2a-sdk ClientFactory)                           │   │
@@ -245,10 +247,11 @@ fin-assist/
 │       │   ├── __init__.py
 │       │   ├── spec.py              # AgentSpec — pure config, zero framework deps
 │       │   ├── backend.py           # AgentBackend protocol + PydanticAIBackend + StreamHandle
+│       │   ├── skills.py            # SkillDefinition, SkillCatalog, SkillLoader, SkillManager
 │       │   ├── results.py           # CommandResult and other result models
 │       │   ├── serialization.py     # wrap_payload / unwrap_payload for ContextStore serialization
 │       │   ├── step.py              # StepEvent, StepHandle — platform-level step event types
-│       │   ├── tools.py             # ToolRegistry, ToolDefinition, ApprovalPolicy, DeferredToolCall, create_default_registry
+│       │   ├── tools.py             # ToolRegistry, ToolDefinition, ApprovalPolicy, ApprovalRule, DeferredToolCall, create_default_registry
 │       │   ├── registry.py          # OUTPUT_TYPES, SYSTEM_PROMPTS
 │       │   ├── metadata.py          # AgentCardMeta, ServingMode, MissingCredentialsError
 │       │
@@ -286,9 +289,6 @@ fin-assist/
 │       │   └── connect.py          # /connect dialog
 │       │
 │       ├── multiplexer/            # Future: tmux/zellij integration
-│       │   └── ...
-│       │
-│       ├── skills/                  # Future: Skills framework
 │       │   └── ...
 │       │
 │       └── mcp/                    # Future: MCP client integration
@@ -336,7 +336,7 @@ Static metadata declared by each agent and published in the A2A agent card as an
 from typing import Literal
 from pydantic import BaseModel
 
-ServingMode = Literal["do", "talk", "do_talk"]
+ServingMode = Literal["do", "talk"]
 
 class AgentCardMeta(BaseModel):
     """Static UI/capability metadata published in the agent card.
@@ -347,14 +347,14 @@ class AgentCardMeta(BaseModel):
     supports_thinking: bool = True       # Show thinking effort selector?
     supports_model_selection: bool = True # Show model/provider selector?
     supported_providers: list[str] | None = None  # None = all providers
-    requires_approval: bool = False      # Does this agent require user approval before action?
+    supported_context_types: list[str] = Field(default_factory=list)  # Context types this agent can use
     color_scheme: str | None = None      # Optional theming hint for client
     tags: list[str] = Field(default_factory=list)  # Categorization tags
 ```
 
-> **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk", "do_talk"]` covers all modes.
+> **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk"]` covers both modes.
 
-> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `AgentSpec.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
+> **Phase 11 (TUI client):** `supported_context_types: list[str]` is now part of `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `AgentSpec.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card.
 
 ### Agent Architecture
 
@@ -397,7 +397,7 @@ class AgentSpec:
     @property
     def agent_card_metadata(self) -> AgentCardMeta: ...
     @property
-    def tools(self) -> list[str]: ...
+    def tools(self) -> list[str]: ...        # derived from skill union
 
     def check_credentials(self) -> list[str]:
         """Names of enabled providers with missing API keys (empty = all present)."""
@@ -451,7 +451,8 @@ Agents are defined entirely in `config.toml`, not as separate Python classes. A 
 #### Current Agent: `test` (`[agents.test]`)
 
 - **Purpose**: Development test agent with file, shell, and git tools
-- **Config**: `system_prompt = "test"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`, `tools = ["read_file", "git", "run_shell"]`
+- **Config**: `system_prompt = "test"`, `output_type = "text"`, `serving_modes = ["do", "talk"]`, `thinking = "medium"`
+- **Skills**: `files`, `git`, `history`, `shell` — each with its own tools and approval rules
 - **Output**: `str` (free-form text response)
 
 #### SDD Agent (`[agents.sdd]`) — future
@@ -478,16 +479,15 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git", "run_shell"]
 ```
 
 ### Git Agent (`[agents.git]`)
 
-The git agent is the first real end-user agent and the first to use **scoped CLI tools** and **workflows**.
+The git agent is the first real end-user agent and the first to use **scoped CLI tools** and **skills**.
 
 - **Purpose**: Git workflows — commit, PR, summarize
-- **Config**: `system_prompt = "git"`, `output_type = "text"`, `serving_modes = ["do"]`, `tools = ["read_file", "git", "gh", "run_shell"]`
-- **Workflows**: `commit`, `pr`, `summarize` — each with its own `entry_prompt` and `prompt_template`
+- **Config**: `system_prompt = "git"`, `output_type = "text"`, `serving_modes = ["do"]`
+- **Skills**: `git`, `gh`, `commit`, `pr`, `summarize` — each with its own tools and prompt steering
 - **Output**: `str` (free-form text response)
 
 #### Scoped CLI Tools
@@ -496,29 +496,26 @@ Instead of per-subcommand tool wrappers (`git_diff`, `git_log`), the platform pr
 
 | Tool | Prefix | Approval | Description |
 |------|--------|----------|-------------|
-| `git` | `git` | `always` | Run any git subcommand |
-| `gh` | `gh` | `always` | Run any GitHub CLI subcommand |
+| `git` | `git` | Per-skill rules | Run any git subcommand |
+| `gh` | `gh` | Per-skill rules | Run any GitHub CLI subcommand |
 
-The LLM chooses the subcommand/args — one tool definition per CLI instead of one per subcommand. This saves prompt tokens and maps naturally to the **API + CLI + Skills** pattern (see Phase 15).
+The LLM chooses the subcommand/args — one tool definition per CLI instead of one per subcommand. This saves prompt tokens and maps naturally to the **API + CLI + Skills** pattern.
 
-> **Note**: Approval is currently `always` for all scoped CLI tools. Per-subcommand approval (e.g. `git diff` → never, `git push` → always) is a planned Skills API enhancement. See the Skills API issue for details.
+#### Skills
 
-#### Workflows
-
-Workflows are config-driven prompt-steering primitives. They allow an agent to expose named sub-tasks with their own entry prompts and system prompt templates:
+Skills are the primary mechanism for organizing agent behavior. Each skill bundles tools, context injection text, and prompt steering. Skills are loaded additively — the agent sees a catalog and calls `load_skill(name)` to activate them, or they can be pre-loaded via the `--skill` CLI flag, positional syntax (`fin do git commit`), or the `/skill:<name>` REPL command. Approval policies are defined at the agent level via `tool_policies`.
 
 ```toml
-[agents.git.workflows.commit]
+[agents.git.skills.commit]
 description = "Generate a conventional commit message from current changes."
+tools = ["git", "read_file"]
 prompt_template = "git-commit"
 entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
 ```
 
-- `fin do git commit` → agent=git, workflow=commit (entry_prompt sent as user message, prompt_template injected as context)
-- `fin do git --workflow commit` → same, explicit workflow flag
-- `fin do git` → agent=git, no workflow (LLM routes based on user input)
-
-This is level 2 of the workflow spectrum (prompt steering). Future extensions may add tool scoping and per-subcommand approval overrides — see the Skills API vision below.
+- `fin do git commit` → agent=git, skill=commit (entry_prompt sent as user message, prompt_template injected as context)
+- `fin do git --skill commit` → same, explicit skill flag
+- `fin do git` → agent=git, no skill (LLM routes based on user input, may call `load_skill` from catalog)
 
 ```toml
 [agents.test]
@@ -526,27 +523,58 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git", "shell_history", "run_shell"]
+
+[agents.test.skills.files]
+description = "Read files from the workspace."
+tools = ["read_file"]
+
+[agents.test.skills.git]
+description = "Git commands with per-subcommand approval."
+tools = ["git"]
 
 [agents.git]
 system_prompt = "git"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do"]
-tools = ["read_file", "git", "gh", "run_shell"]
+base_tools = ["read_file"]
 
-[agents.git.workflows.commit]
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+  { pattern = "git add*", mode = "never" },
+  { pattern = "git commit*", mode = "never" },
+]
+
+[agents.git.tool_policies.gh]
+default = "always"
+rules = [
+  { pattern = "gh pr view*", mode = "never" },
+  { pattern = "gh pr list*", mode = "never" },
+]
+
+[agents.git.skills.git]
+description = "Git commands with per-subcommand approval."
+tools = ["git"]
+
+[agents.git.skills.commit]
 description = "Generate a conventional commit message from current changes."
+tools = ["git", "read_file"]
 prompt_template = "git-commit"
 entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
 
-[agents.git.workflows.pr]
+[agents.git.skills.pr]
 description = "Create a pull request from current branch to main."
+tools = ["git", "gh", "read_file"]
 prompt_template = "git-pr"
 entry_prompt = "Analyze the current branch changes and create a pull request."
 
-[agents.git.workflows.summarize]
+[agents.git.skills.summarize]
 description = "Summarize current changes without executing any commands."
+tools = ["git", "read_file"]
 prompt_template = "git-summarize"
 entry_prompt = "Summarize the current staged and unstaged changes."
 serving_modes = ["do", "talk"]
@@ -572,6 +600,10 @@ SYSTEM_PROMPTS: dict[str, str] = {
     "chain-of-thought": CHAIN_OF_THOUGHT_INSTRUCTIONS,
     "shell": SHELL_INSTRUCTIONS,
     "test": TEST_INSTRUCTIONS,
+    "git": GIT_INSTRUCTIONS,
+    "git-commit": GIT_COMMIT_INSTRUCTIONS,
+    "git-pr": GIT_PR_INSTRUCTIONS,
+    "git-summarize": GIT_SUMMARIZE_INSTRUCTIONS,
 }
 ```
 
@@ -676,7 +708,8 @@ Static (discovery time):                    Dynamic (per-response):
 │       thinking,      │                    │                          │
 │       model_select,  │                    └──────────────────────────┘
 │       color_scheme,  │
-│       requires_approval │
+│       supported_     │
+│       context_types  │
 │     }                │
 │   }                  │
 └──────────────────────┘
@@ -686,15 +719,17 @@ Static (discovery time):                    Dynamic (per-response):
 
 ```python
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Literal, Any
+from dataclasses import dataclass, field
+from typing import Literal, object
 
 @dataclass
 class ContextItem:
     id: str
-    type: Literal["file", "git_diff", "history", "env"]
+    type: Literal["file", "git_diff", "git_log", "git_status", "history", "env"]
     content: str
-    metadata: dict[str, Any]
+    metadata: dict[str, object]
+    status: ItemStatus = "ready"
+    error_reason: str | None = None
 
 class ContextProvider(ABC):
     @abstractmethod
@@ -789,14 +824,22 @@ fin-assist serve                        → start agent hub on 127.0.0.1:4096
 fin-assist agents                       → list available agents (GET /agents)
 fin-assist do "prompt"                  → one-shot query to default_agent from config
 fin-assist do --agent <name> "prompt"   → one-shot query to named agent
+fin-assist do --skill <name> "prompt"   → one-shot query with a skill pre-loaded
 fin-assist do --edit                    → open input panel pre-filled with prompt
 fin-assist do                           → no prompt → opens input panel
-fin-assist talk                          → multi-turn session with default_agent
+fin-assist talk                         → multi-turn session with default_agent
 fin-assist talk --agent <name>          → multi-turn session with named agent
+fin-assist talk --skill <name>          → multi-turn session with a skill pre-loaded
 fin-assist talk --agent <name> --resume <id>   → resume a saved session
 fin-assist talk --agent <name> --list          → list saved sessions for agent
-fin-assist list tools|prompts|output-types     → list registry entries
-fin-assist                              → enter interactive REPL (future)
+fin-assist do <agent> <skill>            → one-shot with positional skill (e.g. fin do git commit)
+fin-assist list tools|skills|prompts|output-types     → list registry entries
+
+REPL commands (during multi-turn chat):
+  /skills         → list available skills for the current agent
+  /skill:<name>   → load a skill mid-session (e.g. /skill:commit)
+  /exit           → end the conversation
+  /help           → show available commands
 
 Context injection: use @-completion in FinPrompt (e.g. @file:path, @git:diff) to inject
 context into prompts — replaces former --file/--git-diff/--git-log CLI flags.
@@ -905,7 +948,24 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git", "shell_history", "run_shell"]
+
+[agents.test.skills.files]
+description = "Read files from the workspace."
+tools = ["read_file"]
+
+[agents.test.skills.git]
+description = "Git commands with per-subcommand approval."
+tools = ["git"]
+approval.default = "always"
+approval.rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+]
+
+[agents.test.skills.shell]
+description = "Execute arbitrary shell commands (requires approval)."
+tools = ["run_shell"]
 
 [providers.anthropic]
 # API key stored separately in credentials
@@ -968,10 +1028,10 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 ### Phase 7: Agent Hub Server ✅
 - [x] Extend `BaseAgent` with `AgentCardMeta` dataclass
 - [x] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
-- [x] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
+- [x] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC ~~(superseded by `InMemoryTaskStore` (a2a-sdk) + `ContextStore` (`hub/context_store.py`))~~
 - [x] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
-- [x] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
-- [x] Implement `hub/worker.py` — FinAssistWorker with `auth-required` state for missing credentials
+- [x] Implement `hub/app.py` — parent FastAPI app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
+- [x] Implement `hub/worker.py` — FinAssistWorker with `auth-required` state for missing credentials ~~(superseded by `Executor` (`hub/executor.py`))~~
 - [x] Implement `hub/logging.py` — RotatingFileHandler for background hub
 - [x] Wire entry point — `fin-assist serve` starts the hub via uvicorn
 - [x] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD, worker auth-required
@@ -991,13 +1051,13 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Wire `FinPrompt` into `chat.py` and `approve.py` (replaces `rich.prompt.Prompt`)
 - [x] Agent name tab completion via `agents` parameter
 - [x] Persistent input history (`~/.local/share/fin/history`)
-- [x] Slash-command fuzzy completion (`/exit`, `/quit`, `/q`, `/switch`, `/help`)
+- [x] Slash-command fuzzy completion (`/exit`, `/help`, `/sessions`)
 - [x] `prompt-toolkit>=3.0` added as explicit dependency
 - [x] Tests — 8 new tests for `FinPrompt`
 
 ### Config-Driven Redesign 📐
 - [x] Step 1: `ServingMode` enum + `serving_modes` field on `AgentCardMeta`
-- [x] Step 2: Output type + prompt registries (`OUTPUT_TYPE_REGISTRY`, `PROMPT_REGISTRY`)
+- [x] Step 2: Output type + prompt registries (`OUTPUT_TYPES`, `SYSTEM_PROMPTS`)
 - [x] Step 3: Per-agent TOML config sections (`AgentConfig` in `config/schema.py`)
 - [x] Step 4: Collapse to single `ConfigAgent` class (remove `BaseAgent` ABC, `DefaultAgent`, `ShellAgent`). Later split into `AgentSpec` (pure config) + `PydanticAIBackend` (framework glue) — see commit `a16ba70`.
 - [x] Step 5: Direct `Worker[Context]` implementation (close #68)
@@ -1054,26 +1114,186 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [ ] Create eval suite for `AgentSpec` (default and shell configs)
 - [ ] Per-agent eval configuration
 
-### Phase 15: Skills + MCP Integration ⬜
-- [ ] Skills framework (configurable behaviors per agent)
-- [ ] Per-subcommand approval policies (e.g. `git diff` → never, `git push` → always)
-- [ ] Context templates: markdown files encoding domain knowledge injected when a skill is activated
-- [ ] Skill auto-discovery from `~/.config/fin/skills/` or MCP servers
+### Phase 15: Skills + MCP Integration ✅ (Skills API v0.1 shipped)
+- [x] Skills framework (configurable behaviors per agent)
+- [x] Agent-level tool policies (replaces per-skill approval)
+- [x] Tool gating — skills must be loaded before their tools are available
+- [x] `base_tools` on `AgentConfig` for always-available safe/read-only tools
+- [x] `skills/invoke` A2A Method Extension for pre-loading skills server-side
+- [x] REPL `/skills` command and `/skill:<name>` pattern for mid-session loading
+- [x] `SkillCompleter` with rapidfuzz fuzzy matching (mirrors `@file:` pattern)
+- [x] Skill tracing (`fin_assist.skill_load` spans, `fin_assist.cli.skill` attribute)
+- [x] Context templates: SKILL.md files with YAML frontmatter + markdown body
+- [x] Skill auto-discovery from `.fin/skills/` and `~/.config/fin/skills/`
+- [x] Dynamic skill loading via `load_skill` tool + catalog in system prompt
+- [x] `fin list skills` command (grouped by agent)
+- [x] `--skill` CLI flag for pre-loading skills
+- [x] Positional skill syntax (`fin do git commit`)
 - [ ] MCP client integration
-- [ ] CLI/TUI components for skill/MCP configuration
 - [ ] Per-project skill/MCP configuration
 
-The Skills API generalizes the scoped CLI tools + workflow config pattern established by the git agent. A "skill" is the full package: a scoped CLI tool (capability), workflow definitions (behavior), and context templates (knowledge). This follows the **API + CLI + Skills** architectural pattern — CLI tools provide deterministic execution, skills provide workflow intelligence.
+See the Skills Architecture section below for details on the v0.1 implementation.
 
-Progression:
-1. **Now**: Agent-scoped `WorkflowConfig` + scoped CLI tools (`git`, `gh`) with `approval=always`
-2. **Next**: Per-subcommand approval policies, global workflow registry for cross-agent reuse
-3. **Full Skills API**: Declarative skill registration, context injection, auto-discovery, skill composition
+---
 
-See the Skills API GitHub issue for the full vision.
+## Skills Architecture
+
+An agent is a collection of skills within an environment (system prompt). A **skill** curates tools, context injection text, and prompt steering. Skills are the primary mechanism for organizing agent behavior — tools attach through skills; `AgentSpec.skill_tool_names` derives from the union of skill tool lists, but tools are only *registered* when their skill is loaded.
+
+Approval policies are defined at the **agent level** via `AgentConfig.tool_policies`, not per-skill. This eliminates merge conflicts when multiple skills reference the same tool — each tool has exactly one policy definition.
+
+### Key Types
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `SkillDefinition` | `agents/skills.py` | Runtime representation of a resolved skill (no approval_policy) |
+| `SkillCatalog` | `agents/skills.py` | Generates catalog text for the system prompt |
+| `SkillLoader` | `agents/skills.py` | Resolves `SkillConfig` or SKILL.md files into `SkillDefinition` instances |
+| `SkillManager` | `agents/skills.py` | Tracks loaded skills, provides `load_skill` callable, `loaded_tool_names()`, generates catalog |
+| `SkillConfig` | `config/schema.py` | Per-skill TOML config (tools, prompt_template, entry_prompt, context) — no approval |
+| `ToolPolicyConfig` | `config/schema.py` | Agent-level tool approval policy (default mode + rules) |
+| `ToolPolicyRuleConfig` | `config/schema.py` | Single fnmatch-based approval rule in config |
+| `ApprovalPolicy` | `agents/tools.py` | Policy with `evaluate(args)` — first-match rules, default fallback |
+| `AgentConfig.base_tools` | `config/schema.py` | Always-available safe/read-only tools (default: `["read_file"]`) |
+| `AgentConfig.tool_policies` | `config/schema.py` | Agent-level tool approval policies (dict keyed by tool name) |
+
+### Skill Lifecycle
+
+1. **Config time** — Skills are defined in `config.toml` under `[agents.<name>.skills.<skill>]` or as SKILL.md files in `.fin/skills/<name>/SKILL.md` or `~/.config/fin/skills/<name>/SKILL.md`. Tool approval policies are defined at the agent level under `[agents.<name>.tool_policies.<tool>]`.
+2. **Agent startup** — `SkillLoader` resolves all skill configs into `SkillDefinition` instances. `AgentSpec.skill_tool_names` derives from the union of all skill tool lists. `AgentSpec.base_tools` lists always-available tools.
+3. **Backend init** — `PydanticAIBackend._get_skill_manager()` creates a `SkillManager` from the spec's skill definitions. Only `base_tools` are registered initially. If any skills are available but not yet loaded, the `load_skill` tool is registered and the skill catalog is appended to the system prompt.
+4. **Skill loading** — Skills can be loaded via: (a) `--skill` CLI flag or positional syntax (`fin do git commit`), which calls the `skills/invoke` endpoint server-side; (b) `/skill:<name>` in the REPL; (c) agent-driven `load_skill` tool call. All paths call `SkillManager.load_skill()` which marks the skill as loaded.
+5. **Tool gating** — `_build_pydantic_agent()` registers only `base_tools` + `SkillManager.loaded_tool_names()` tools. Skills that aren't loaded have their tools excluded from the agent. `_build_pydantic_agent()` is called on every `step()`, so loading takes effect on the next turn.
+6. **Agent-level policies** — `_get_agent_tool_policy()` resolves `AgentConfig.tool_policies` into `ApprovalPolicy` instances. Each tool has exactly one policy; no merge conflicts across skills.
+
+### Tool Gating
+
+The key change from the pre-refactor design: **tools are no longer registered all at once**. Before the refactor, `_build_pydantic_agent()` registered the union of all skill tools regardless of load state, and `SkillManager._loaded` only controlled catalog text — the LLM could use any tool at any time, making skill boundaries meaningless.
+
+Now, `_build_pydantic_agent()` registers only:
+- `base_tools` (always available, default `["read_file"]`)
+- `SkillManager.loaded_tool_names()` (tools from loaded skills)
+
+This means the LLM can only use tools from loaded skills. Unloaded skills' tools simply don't exist from the agent's perspective.
+
+### Agent-Level Tool Policies
+
+Instead of per-skill `approval` blocks (which duplicated rules across skills and caused merge conflicts), policies are defined at the agent level:
+
+```toml
+[agents.git]
+system_prompt = "git"
+output_type = "text"
+base_tools = ["read_file"]
+
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+  { pattern = "git add*", mode = "never" },
+  { pattern = "git commit*", mode = "never" },
+]
+
+[agents.git.tool_policies.gh]
+default = "always"
+rules = [
+  { pattern = "gh pr view*", mode = "never" },
+  { pattern = "gh pr list*", mode = "never" },
+]
+```
+
+Each tool has exactly one policy definition — no merging needed, no conflicts possible.
+
+### skills/invoke Endpoint
+
+The `POST /agents/{name}/skills/invoke` endpoint (A2A Method Extension) is the primary server-side skill entry point. It:
+
+1. Validates the skill name against the agent's config
+2. Calls `SkillManager.load_skill()` to mark the skill as loaded
+3. Returns the effective prompt, prompt_template, and tools for the loaded skill
+
+The CLI calls this endpoint before streaming when a skill is resolved via `--skill` flag or positional syntax. The REPL's `/skill:<name>` command also calls this endpoint.
+
+### REPL Skill Commands
+
+- `/skills` — Lists available skills for the current agent (calls `GET /agents/{name}/skills`)
+- `/skill:<name>` — Loads a skill mid-session (calls `POST /agents/{name}/skills/invoke`), e.g. `/skill:commit`
+- `SkillCompleter` provides fuzzy completion after `/skill:`, using rapidfuzz `fuzz.WRatio` (same scorer and pattern as `AtCompleter` for `@file:`)
+
+### Skill Tracing
+
+- **CLI-side**: `cli_root_span(skill="commit")` stamps `fin_assist.cli.skill` on the CLI root span
+- **Hub-side**: `fin_assist.skill_load` span emitted via `_TaskTracer.emit_skill_load_span()` when a skill is loaded during a task (agent-driven `load_skill` tool). Carries `fin_assist.skill.id`, `fin_assist.skill.entry_point`, and `fin_assist.skill.tools_unlocked`.
+- **Task span**: `start_task_span(skill_id="commit")` stamps `fin_assist.skill.id` on the task span when the skill was pre-loaded before the task started
+
+### Approval Rules
+
+Agent-level `ToolPolicyConfig` defines approval policies per tool. Rules use fnmatch patterns matched against the tool's args string:
+
+```toml
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*", mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*", mode = "never" },
+]
+```
+
+`ApprovalPolicy.evaluate(args)` checks rules in first-match order. If no rule matches, the `default` mode is used. This is conservative in v0.1: if `default="always"` or any rule has `mode="always"`, the tool gets `requires_approval=True` at registration time. Fine-grained per-subcommand evaluation at the executor level is planned for v0.1.1.
+
+### SKILL.md Format
+
+SKILL.md files follow the agentskills.io open standard: YAML frontmatter between `---` delimiters + markdown body. fin-assist extensions live under `metadata.fin-assist.*`:
+
+```markdown
+---
+name: commit
+description: Generate a conventional commit message.
+allowed-tools:
+  - git
+  - read_file
+metadata:
+  fin-assist:
+    prompt-template: git-commit
+    entry-prompt: Analyze the current changes and generate a commit message.
+---
+## Guidelines for commit messages
+
+Use conventional commits format. Keep the subject line under 50 characters.
+```
+
+Discovery paths (project takes precedence for same-name skills):
+- Project: `.fin/skills/<name>/SKILL.md`
+- User: `~/.config/fin/skills/<name>/SKILL.md`
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Skills are additive | No unloading in v0.1 | Simplicity; once tools are registered, removal is complex |
+| Tools shared across skills | Name collisions = config error | Single tool registry; same tool name must map to same callable |
+| Tool gating by loaded skills | `base_tools` + `loaded_tool_names()` only | Makes skill boundaries meaningful; LLM can't use unloaded tools |
+| Agent-level tool policies | `tool_policies` on `AgentConfig`, not per-skill | Each tool has exactly one policy — no merge/conflict |
+| `base_tools` default `["read_file"]` | Safe/read-only tools always available | Agents always need file reading; no skill load required |
+| Agent-driven + CLI skill loading | `load_skill` tool + `skills/invoke` endpoint + `--skill` flag | Multiple entry points for different workflows |
+| `/skill:<name>` REPL pattern | Mirrors `@file:` pattern with `SkillCompleter` | Consistent UX; fuzzy completion via rapidfuzz |
+| SKILL.md follows agentskills.io | Standard format with `metadata.fin-assist.*` extensions | Interoperability with other agent platforms |
+| Skill tracing via OTel | `fin_assist.skill_load` span + `fin_assist.cli.skill` attribute | Observable skill activations in Phoenix/traces.jsonl |
+
+### Post-v0.1 Roadmap
+
+| Version | Feature |
+|---------|---------|
+| v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
+| v0.1.1 | Per-subcommand approval evaluation at executor level |
+| v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
+| v0.3 | Eval harness |
 
 ### Phase 16: Additional Agents ⬜
-- [x] Git agent (`[agents.git]`) — commit, PR, summarize workflows with scoped `git`/`gh` tools
+- [x] Git agent (`[agents.git]`) — commit, PR, summarize skills with scoped `git`/`gh` tools
 - [ ] Create `agents/sdd.py` (design brainstorming)
 - [ ] Define `SketchResult` model
 - [ ] Implement tools: `read_file`, `write_file`, `list_docs`
@@ -1118,7 +1338,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | gRPC transport | Future | Open | A2A protocol supports gRPC; a2a-sdk v1.0 supports it, not yet used by fin-assist |
 | Agent architecture | Redesign | **Resolved** | Config-driven: single `Agent` class, behavior from `AgentConfig` in TOML |
 | ShellAgent vs DefaultAgent | Redesign | **Resolved** | Merged into a single `AgentSpec` (pure config); `ShellAgent` behavior is `[agents.shell]` config. Framework glue isolated in `PydanticAIBackend`. |
-| `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk", "do_talk"]` — more expressive |
+| `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk"]` — more expressive |
 | Private `AgentWorker` import (#68) | Redesign | **Resolved** | Direct `Worker[list[ModelMessage]]` implementation using public APIs |
 | Thinking configuration | Redesign | **Resolved** | Per-agent `thinking` field in `AgentConfig`, not `DefaultAgent` override |
 | Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[general] default_agent` config; agent arg optional |
@@ -1177,8 +1397,8 @@ url = "http://127.0.0.1:5002"
 **Why defer:** No external agents exist yet. The change is small and well-understood (~50 lines), but designing the config schema without a real external process to validate against risks over-fitting. Once a toy Rust/Gleam agent exists, the schema will be obvious. The discovery endpoint is already forward-compatible — agent entries include a `url` field that can point externally.
 
 ### Near-term (Phases 13-15)
-- **Skills API** — Scoped CLI tools + workflow config + context templates + per-subcommand approval (generalizes git agent pattern)
-- **MCP integration** — Natural language interface to configurable MCP tools/servers
+- **Skills API v0.1** — ✅ Shipped. Skills bundle tools, approval rules, context injection, and prompt steering. Per-subcommand approval via fnmatch rules. SKILL.md file format. Dynamic `load_skill` tool.
+- **MCP integration (v0.1.1)** — Natural language interface to configurable MCP tools/servers; skill→tool binding is source-agnostic
 - **Additional agents** — SDD, TDD, code review, shell completion, computer use, journaling
 - **Multi-agent workflows** — Agent-to-agent via A2A, orchestration patterns
 
@@ -1231,7 +1451,7 @@ url = "http://127.0.0.1:5002"
 | Streaming | Token-by-token via `TaskUpdater.add_artifact(append=True)` + SSE | Progressive output via `SendStreamingMessage`; Rich `Live` rendering on client |
 | Task storage | `InMemoryTaskStore` (ephemeral) | a2a-sdk managed; tasks lost on server restart; acceptable for personal local-first tool |
 | Conversation storage | SQLite `ContextStore` | Persists pydantic-ai message history across tasks; `context_id` for threading |
-| `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk", "do_talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
+| `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
 | Default agent shortcut | `fin do "prompt"` → `[general] default_agent` config | Reduces friction for common case; agent arg optional; reads from config not hardcoded |
 | Context for `do` | Implemented via `@`-completion in FinPrompt (replaces `--file`/`--git-diff` CLI flags) | No TUI required; context injected inline before sending |
 | Context for `talk` | Implemented via `@`-completion in FinPrompt | Uses `ContextProvider.search()`; user injects context before sending |

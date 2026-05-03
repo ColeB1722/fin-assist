@@ -1,15 +1,16 @@
 """Shared OpenTelemetry utilities for CLI and hub.
 
-This module contains span processors and config resolution helpers used by
-both the CLI and hub processes.  Extracted from ``hub/tracing.py`` so the
-CLI can import from a public API without depending on private hub internals.
+This module contains span processors, the graceful OTLP exporter wrapper,
+and config resolution helpers used by both the CLI and hub processes.
+Extracted from ``hub/tracing.py`` so the CLI can import from a public API
+without depending on private hub internals.
 
 The constants (``MAX_ATTR_BYTES``, ``NOISE_ATTRS``, etc.) are documented as
 the "spec" for non-Python clients (e.g. a future Rust TUI) that need to
 implement compatible span processing logic.
 
 Span Processor Stack
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~
 Two SpanProcessor wrappers sit between the export pipeline and the real
 exporters:
 
@@ -21,6 +22,20 @@ exporters:
 
 Both CLI and hub use the same processor stack so traces from both processes
 have consistent attribute hygiene.
+
+Graceful OTLP Exporter
+~~~~~~~~~~~~~~~~~~~~~~
+``_GracefulOTLPExporter`` wraps the real OTLP exporter and catches all
+exceptions from ``export()``, returning ``SpanExportResult.FAILURE``
+instead of letting them propagate to the SDK's ``BatchSpanProcessor``.
+The SDK's exception handler produces multi-line tracebacks on every batch
+flush when Phoenix isn't running; the wrapper suppresses that noise while
+still allowing the file sink (``FileSpanExporter``) to work normally.
+
+A one-time INFO log on first failure tells the operator the endpoint is
+unreachable and where spans continue to be written (the JSONL file sink).
+Subsequent failures are silent.  The ``_failed`` flag resets on successful
+export so mid-session Phoenix restarts are handled gracefully.
 """
 
 from __future__ import annotations
@@ -30,6 +45,7 @@ import os
 from typing import TYPE_CHECKING
 
 from opentelemetry.sdk.trace import SpanProcessor
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 if TYPE_CHECKING:
     from fin_assist.config.schema import TracingSettings
@@ -209,6 +225,65 @@ class DropSpansProcessor(SpanProcessor):
         self._delegate.on_end(span)
 
     def shutdown(self):
+        self._delegate.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return self._delegate.force_flush(timeout_millis)
+
+
+class _GracefulOTLPExporter(SpanExporter):
+    """SpanExporter wrapper that catches OTLP connection errors gracefully.
+
+    When Phoenix (or any OTLP backend) is unreachable, the real
+    ``OTLPSpanExporter`` raises ``ConnectionError`` on every batch flush.
+    The SDK's ``BatchSpanProcessor._export()`` catches this via
+    ``except Exception`` and logs it via ``logger.exception()``, producing
+    multi-line tracebacks that spam the terminal.
+
+    This wrapper intercepts exceptions *before* they reach the SDK:
+
+    .. code-block:: text
+
+       Before:  SDK._export() → OTLPSpanExporter.export() → ConnectionError
+                → SDK catches → logger.exception() → TRACEBACK SPAM
+
+       After:   SDK._export() → _GracefulOTLPExporter.export()
+                → OTLPSpanExporter.export() → ConnectionError
+                → wrapper catches → returns FAILURE silently → NO TRACEBACK
+
+    Behaviour:
+
+    * First failure: one-time ``logger.info`` naming the endpoint and the
+      file-sink path so the operator knows spans are still being captured.
+    * Subsequent failures: silent (``SpanExportResult.FAILURE`` returned).
+    * Successful export resets ``_failed`` so a mid-session Phoenix restart
+      triggers a fresh one-time log if it goes down again.
+    * ``shutdown()`` and ``force_flush()`` delegate to the real exporter.
+    """
+
+    def __init__(self, delegate: SpanExporter, *, endpoint: str, file_sink_path: str) -> None:
+        self._delegate = delegate
+        self._endpoint = endpoint
+        self._file_sink_path = file_sink_path
+        self._failed = False
+
+    def export(self, spans) -> SpanExportResult:
+        try:
+            result = self._delegate.export(spans)
+            if self._failed:
+                self._failed = False
+            return result
+        except Exception:
+            if not self._failed:
+                logger.info(
+                    "OTLP export to %s failed — spans continue to file sink at %s",
+                    self._endpoint,
+                    self._file_sink_path,
+                )
+                self._failed = True
+            return SpanExportResult.FAILURE
+
+    def shutdown(self) -> None:
         self._delegate.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:

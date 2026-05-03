@@ -38,13 +38,19 @@ class ProviderRegistry:
 
         match self.get_kind(provider):
             case "anthropic":
-                return AnthropicModel(model_name, provider=AnthropicProvider(api_key=api_key))
+                return AnthropicModel(
+                    model_name, provider=AnthropicProvider(api_key=api_key, base_url=base_url)
+                )
             case "openai":
-                return OpenAIChatModel(model_name, provider=OpenAIProvider(api_key=api_key))
+                return OpenAIChatModel(
+                    model_name, provider=OpenAIProvider(api_key=api_key, base_url=base_url)
+                )
             case "openrouter":
                 return OpenRouterModel(model_name, provider=OpenRouterProvider(api_key=api_key))
             case "google":
-                return GoogleModel(model_name, provider=GoogleProvider(api_key=api_key))
+                return GoogleModel(
+                    model_name, provider=GoogleProvider(api_key=api_key, base_url=base_url)
+                )
             case "custom":
                 return OpenAIChatModel(
                     model_name, provider=OpenAIProvider(base_url=base_url, api_key=api_key)

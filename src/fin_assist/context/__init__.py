@@ -2,8 +2,8 @@
 
 Both context paths are fully wired:
 
-- **Model-driven** (tool calls): ``read_file``, ``git_diff``,
-  ``git_log``, ``shell_history`` are registered in the ``ToolRegistry``
+- **Model-driven** (tool calls): ``read_file``, ``git``, ``gh``,
+  ``shell_history``, ``run_shell`` are registered in the ``ToolRegistry``
   via ``create_default_registry()`` in ``agents/tools.py``.
 
 - **User-driven** (``@``-completion): ``@file:``, ``@git:diff``,
@@ -13,8 +13,6 @@ Both context paths are fully wired:
 
 Not yet wired:
 - ``Environment`` provider not exposed as a tool (intentional — sensitive).
-- ``build_user_message``/``format_context`` helpers in ``llm/prompts.py``
-  not called from the request path (``@``-completion bypasses them).
 """
 
 from __future__ import annotations

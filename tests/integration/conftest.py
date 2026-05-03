@@ -20,7 +20,7 @@ from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.agents.spec import AgentSpec
 from fin_assist.agents.step import StepEvent
 from fin_assist.cli.client import HubClient
-from fin_assist.config.schema import AgentConfig
+from fin_assist.config.schema import AgentConfig, SkillConfig
 from fin_assist.hub.app import create_hub_app
 
 
@@ -135,7 +135,7 @@ def _make_agent_specs(mock_config: MagicMock, mock_credentials: MagicMock) -> li
         output_type="command",
         thinking="off",
         serving_modes=["do"],
-        tools=["run_shell"],
+        skills={"shell": SkillConfig(tools=["run_shell"])},
         tags=["shell", "one-shot"],
     )
     default_config = AgentConfig(
@@ -164,12 +164,6 @@ def _make_agent_specs(mock_config: MagicMock, mock_credentials: MagicMock) -> li
 @pytest.fixture
 def fake_agents(mock_config: MagicMock, mock_credentials: MagicMock) -> list[AgentSpec]:
     return _make_agent_specs(mock_config, mock_credentials)
-
-
-@pytest.fixture
-def fake_backend_factory() -> type[FakeBackend]:
-    """Return the ``FakeBackend`` class itself; tests can subclass or wrap."""
-    return FakeBackend
 
 
 @pytest.fixture

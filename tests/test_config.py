@@ -17,7 +17,6 @@ from fin_assist.config.schema import (
     ProviderConfig,
     ServerSettings,
     TracingSettings,
-    WorkflowConfig,
 )
 from fin_assist.paths import DATA_DIR
 
@@ -42,7 +41,6 @@ class TestGeneralSettings:
         assert settings.default_model == "claude-sonnet-4-6"
         assert settings.default_agent is None
         assert settings.thinking_effort == "medium"
-        assert settings.keybinding == "ctrl-enter"
 
     def test_general_settings_custom_values(self) -> None:
         """Test GeneralSettings with explicit values."""
@@ -51,13 +49,11 @@ class TestGeneralSettings:
             default_model="llama3",
             default_agent="test",
             thinking_effort="low",
-            keybinding="ctrl-space",
         )
         assert settings.default_provider == "ollama"
         assert settings.default_model == "llama3"
         assert settings.default_agent == "test"
         assert settings.thinking_effort == "low"
-        assert settings.keybinding == "ctrl-space"
 
 
 class TestContextSettings:
@@ -68,7 +64,6 @@ class TestContextSettings:
         settings = ContextSettings()
         assert settings.max_file_size == 100_000
         assert settings.max_history_items == 50
-        assert settings.include_git_status is True
         assert settings.include_env_vars == ["PATH", "HOME", "USER", "PWD"]
 
     def test_context_settings_custom_values(self) -> None:
@@ -76,12 +71,10 @@ class TestContextSettings:
         settings = ContextSettings(
             max_file_size=50_000,
             max_history_items=100,
-            include_git_status=False,
             include_env_vars=["PATH", "HOME"],
         )
         assert settings.max_file_size == 50_000
         assert settings.max_history_items == 100
-        assert settings.include_git_status is False
         assert settings.include_env_vars == ["PATH", "HOME"]
 
 
@@ -245,13 +238,11 @@ class TestConfig:
             {
                 "FIN_GENERAL__DEFAULT_PROVIDER": "openrouter",
                 "FIN_GENERAL__DEFAULT_MODEL": "gpt-4o",
-                "FIN_GENERAL__KEYBINDING": "ctrl-space",
             },
         ):
             config = Config()
             assert config.general.default_provider == "openrouter"
             assert config.general.default_model == "gpt-4o"
-            assert config.general.keybinding == "ctrl-space"
 
     def test_config_reads_nested_server_env_vars(self) -> None:
         """Test that Config reads FIN_SERVER__ env vars for server settings."""
@@ -274,12 +265,10 @@ class TestConfig:
             os.environ,
             {
                 "FIN_CONTEXT__MAX_FILE_SIZE": "50000",
-                "FIN_CONTEXT__INCLUDE_GIT_STATUS": "false",
             },
         ):
             config = Config()
             assert config.context.max_file_size == 50_000
-            assert config.context.include_git_status is False
 
     def test_config_explicit_values_override_env_vars(self) -> None:
         """Test that explicit values override environment variables."""
@@ -514,7 +503,7 @@ class TestAgentConfig:
         assert ac.thinking == "medium"
         assert ac.serving_modes == ["do", "talk"]
         assert ac.tags == []
-        assert ac.workflows == {}
+        assert ac.skills == {}
 
     def test_shell_config(self) -> None:
         ac = AgentConfig(
@@ -550,50 +539,6 @@ class TestAgentConfig:
         )
         config, _ = load_config(config_file)
         assert config.agents["shell"].serving_modes == ["do"]
-
-    def test_config_workflows_from_toml(self, tmp_path: Path) -> None:
-        config_file = tmp_path / "config.toml"
-        config_file.write_text(
-            "[agents.git]\n"
-            'system_prompt = "git"\n'
-            'serving_modes = ["do"]\n'
-            "\n"
-            "[agents.git.workflows.commit]\n"
-            'description = "Generate a commit message."\n'
-            'prompt_template = "git-commit"\n'
-            'entry_prompt = "Analyze the current changes."\n'
-            "\n"
-            "[agents.git.workflows.summarize]\n"
-            'description = "Summarize changes."\n'
-            'entry_prompt = "Summarize current diffs."\n'
-            'serving_modes = ["do", "talk"]\n'
-        )
-        config, _ = load_config(config_file)
-        git = config.agents["git"]
-        assert "commit" in git.workflows
-        assert git.workflows["commit"].prompt_template == "git-commit"
-        assert git.workflows["commit"].entry_prompt == "Analyze the current changes."
-        assert git.workflows["commit"].serving_modes is None
-        assert git.workflows["summarize"].serving_modes == ["do", "talk"]
-
-
-class TestWorkflowConfig:
-    def test_defaults(self) -> None:
-        wf = WorkflowConfig()
-        assert wf.description == ""
-        assert wf.prompt_template == ""
-        assert wf.entry_prompt == ""
-        assert wf.serving_modes is None
-
-    def test_custom_values(self) -> None:
-        wf = WorkflowConfig(
-            description="Commit workflow",
-            prompt_template="git-commit",
-            entry_prompt="Generate a commit message.",
-            serving_modes=["do"],
-        )
-        assert wf.description == "Commit workflow"
-        assert wf.serving_modes == ["do"]
 
 
 class TestServerSettingsDataDir:
