@@ -64,10 +64,12 @@ class TracingSettings(BaseModel):
     * ``provider`` — human-readable preset that replaces raw OTel env
       vars for the common case.  ``"phoenix"`` exports to Phoenix at the
       default OTLP/HTTP endpoint (both OTLP and file sinks active).
-      ``"none"`` is file-only mode (no OTLP exporter constructed).
-      ``None`` (unset) falls back to manual mode where ``otlp_enabled``
-      and explicit endpoint/OTel env vars control the decision.
-      Set via ``FIN_TRACING__PROVIDER=phoenix``.
+      Connection failures are handled gracefully: a one-time info log
+      on first failure, then silent — spans continue to the JSONL
+      file sink regardless.  ``"none"`` is file-only mode (no OTLP
+      exporter constructed).  ``None`` (unset) falls back to manual
+      mode where ``otlp_enabled`` and explicit endpoint/OTel env vars
+      control the decision.  Set via ``FIN_TRACING__PROVIDER=phoenix``.
     * ``otlp_enabled`` — whether to build the OTLP exporter at all.
       Defaults to ``True`` so both sinks are active by default.  Set to
       ``False`` for file-only mode when you don't want TCP connect

@@ -6,7 +6,7 @@
 
 > All commands shown as `fin` can also be invoked as `fin-assist`.
 >
-> **Architecture note**: All agents are TOML config entries consumed by a single `AgentSpec` class. No per-agent Python subclasses. The current dev config has a `test` agent with `output_type = "text"` and `tools = ["read_file", "git_diff", "run_shell"]`. The `run_shell` tool has `ApprovalPolicy(mode="always")`. The model decides when to call `run_shell`; the platform gates it with in-flight approval (deferred tool flow). New agents are config entries, not code changes.
+> **Architecture note**: All agents are TOML config entries consumed by a single `AgentSpec` class. No per-agent Python subclasses. Agents organize their tools via **skills** — each skill bundles tools, approval rules, context injection, and prompt steering. The `run_shell` tool has `ApprovalPolicy(mode="always")`. The model decides when to call `run_shell`; the platform gates it with in-flight approval (deferred tool flow). New agents are config entries, not code changes.
 >
 > **Currently-implemented slash commands** in the REPL: `/exit`, `/help`, `/sessions`. Anything else will print `Unknown command: <x>`.
 >
@@ -14,9 +14,9 @@
 
 ---
 
-## Test Coverage Summary (2026-04-29)
+## Test Coverage Summary (2026-05-02)
 
-**880 tests passing.** (Latest bumps: +12 tests for the JSONL file exporter #105, +27 tests for the Tracing UX pass #104 — CLI tracer, `_DropSpansProcessor`, `task.state` enum, `save_pause_state`, attribute scrubbing.)
+**924 tests passing.** (Latest bumps: Skills API v0.1 — `SkillDefinition`, `SkillCatalog`, `SkillLoader`, `SkillManager`, `ApprovalRule`, `ApprovalPolicy.evaluate()`; code review triage — removed `WorkflowConfig`/`--workflow` dead code, bug fixes, style fixes.)
 
 ### Coverage by module
 
@@ -46,7 +46,7 @@
 | **CLI display** | 95% | All `render_*` functions, `render_agent_output` dispatcher |
 | **CLI prompt** | 93% | `FinPrompt`, `SlashCompleter`, `AtCompleter`, `resolve_at_references`, slash command registry |
 | **CLI response** | 100% | `handle_post_response` auth/error/continue branches |
-| **CLI list** | 100% | `fin list tools/prompts/output-types` |
+| **CLI list** | 100% | `fin list tools/skills/prompts/output-types` |
 
 ### What automated tests DON'T cover (needs manual or integration testing)
 
@@ -119,7 +119,8 @@ Integration tests can't cover subprocess management. Run all of these.
 
 | # | Test | Command | Expected |
 |---|------|---------|----------|
-| L1 | List tools | `fin list tools` | Lists 5 tools: `read_file`, `git_diff`, `git_log`, `shell_history`, `run_shell` (with approval note) |
+| L1 | List tools | `fin list tools` | Lists tools: `read_file`, `git`, `gh`, `shell_history`, `run_shell` (with approval notes from skill policies) |
+| L1b | List skills | `fin list skills` | Lists skills grouped by agent, plus any SKILL.md files |
 | L2 | List prompts | `fin list prompts` | Lists 3 prompts: `chain-of-thought`, `shell`, `test` |
 | L3 | List output types | `fin list output-types` | Lists 2 types: `text` → str, `command` → CommandResult |
 | L4 | Invalid resource | `fin list bogus` | Error from argparse (exit 2) |
@@ -257,6 +258,41 @@ Tests FinPrompt features: fuzzy slash completion, `@`-completion, and persistent
 > Debug: Completion issues → cli/interaction/prompt.py completion config. History issues → FileHistory wiring in same file.
 > Note: Slash commands that used to be planned (`/quit`, `/q`, `/switch`) do **not** exist. Don't test them.
 
+### 2e. Skills API
+
+Tests skill listing, skill-driven approval, and dynamic skill loading.
+
+| # | Test | Action | Expected |
+|---|------|--------|----------|
+| S1 | List skills | `fin list skills` | Skills grouped by agent name. Each agent shows its skills with tool list and description. SKILL.md files section if any exist. |
+| S2 | Skill via positional | `fin do git commit` | agent=git, skill=commit (entry_prompt sent, prompt_template injected as [Skill context]) |
+| S3 | Skill via --skill flag | `fin do --skill commit --agent git "my changes"` | Same skill activation as S2 |
+| S4 | Approval with rules | `fin do git "show me the diff"` | `git diff` matches rule with mode=never → no approval widget |
+| S5 | Approval default | `fin do git "push to origin"` | `git push` falls through rules → default=always → approval widget appears |
+| S6 | Skill in talk mode | `fin talk --agent git`, ask to commit | Model may call `load_skill("commit")` → confirmation message → commit skill tools available |
+
+### 2f. Shell Agent Exercise
+
+**Goal**: Develop an initial shell agent by using fin-assist interactively to perform real development tasks. This validates the full agent loop end-to-end and surfaces UX issues that automated tests can't catch.
+
+**Setup**: Start from a clean repo state (no staged changes, on a feature branch).
+
+| # | Task | What to try | What to verify |
+|---|------|-------------|----------------|
+| X1 | Create a PR | `fin do git "create a PR for the current branch"` | Agent uses git/gh skills, reads files, generates PR description, creates PR via `gh` |
+| X2 | Generate a commit | Make a small change, then `fin do git commit` | Agent analyzes diff, generates conventional commit message, stages and commits |
+| X3 | Summarize changes | `fin do git summarize` | Agent reads diffs without executing mutating commands (summarize skill is read-only) |
+| X4 | Explore repo | `fin do "what files are in this project?"` | Agent uses `read_file` skill, lists project structure, no approval needed |
+| X5 | Shell command | `fin do "run ls -la"` | Agent uses `run_shell` skill → approval widget appears → approve → output displayed |
+| X6 | Multi-skill session | `fin talk --agent git`, alternate between commit/PR/summarize | Skills load dynamically, catalog updates, tools available after loading |
+
+**What to watch for**:
+- Does the agent choose the right skill for the task?
+- Does `load_skill` work smoothly in multi-turn conversations?
+- Are approval rules correct (never for read-only, always for mutating)?
+- Does the skill catalog text clutter the system prompt or is it concise?
+- Any crashes or error messages when skills are loaded/unavailable?
+
 ---
 
 ## Test Gap Register
@@ -270,14 +306,14 @@ Known gaps in automated test coverage that should be addressed before or alongsi
 | `_do_command` deferred approval resume | `cli/main.py:253-266` | **High** — same as chat.py but for the `do` command path | Add unit test with mocked `client.stream_agent` and `run_approval_widget`. |
 | `stream_agent` with `approval_decisions` | `cli/client.py:330-338` | **Medium** — the `approval_result` Part construction is untested | Add unit test verifying Part metadata construction. |
 | Executor `tool_call`/`tool_result` dispatch | `hub/executor.py:229-266` | **Low** — unit tests verify artifact content, metadata, and append semantics; `tool_result` content fallback paths untested | Covered by `TestExecutorToolCallDispatch` and `TestExecutorArtifactAppendSemantics` |
-| `_CONTEXT_TYPE_MAP` centralization | `agents/spec.py:51-56` | **Low** — private class attribute hardcodes tool→context mappings; tests read the private attribute | Move to shared location or derive from `ToolRegistry` + `ContextProvider` metadata. |
+| `_CONTEXT_TYPE_HINTS` centralization | `agents/spec.py:43-48` | **Low** — module-level constant hardcodes tool→context mappings | Derive from `ToolRegistry` + `ContextProvider` metadata in a future refactor. |
 
 ---
 
 ## Running Order
 
 ```text
-just test  ←  876 tests, 91% coverage
+just test  ←  924 tests
                Covers: types, config, context (mocked), agent spec, context store,
                        factory, credentials, display, prompt, @-completion, response,
                        integration: discovery, dispatch, auth, streaming, multi-turn
@@ -304,6 +340,9 @@ Part 2 (Interactive) — human at TTY
 │     │                                                    │
 │     └── 2d. Completions + History (D1-D8, H1-H4)        │
 │         (after C1/C2 confirm REPL works)                 │
+│                                                          │
+│ 2e. Skills API (S1-S6)                                   │
+│ 2f. Shell Agent Exercise (X1-X6)                        │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -313,7 +352,7 @@ Part 2 (Interactive) — human at TTY
 
 Before a big refactor, run the minimum set most likely to catch regressions:
 
-**Automated** (`just test`): 876 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics + tracing (hub + CLI + pause/resume continuity)
+**Automated** (`just test`): 924 tests covering protocol layer + streaming + multi-turn + card extensions + auth + types + config + @-completion + artifact append semantics + tracing (hub + CLI + pause/resume continuity) + skills API
 
 **Manual (agent runs)**: A7–A15 (server lifecycle), L1–L4 (platform capabilities), A5 (default from config)
 
@@ -341,8 +380,8 @@ Before a big refactor, run the minimum set most likely to catch regressions:
 - History file: `~/.local/share/fin/history`. Sessions dir: `~/.local/share/fin/sessions/<agent>/<slug>.json`.
 - The "Session saved" message only prints when (a) at least one turn completed, AND (b) the session is not a resume.
 - `fin do "prompt"` / `fin talk` (no `--agent`) → `[general] default_agent` from config.
-- All agents are config entries. The dev `test` agent uses `output_type = "text"` with `tools = ["read_file", "git_diff", "run_shell"]`.
+- All agents are config entries. The dev `test` agent uses `output_type = "text"` with skills `files`, `git`, `history`, `shell`.
 - Context injection uses `@`-completion in the input panel: `@file:path.py`, `@git:diff`, `@git:log`, `@history:query`. The `--file`/`--git-diff` CLI flags have been removed.
 - `fin serve` runs the hub in the foreground (distinct from `fin start` which daemonizes). Useful for development; see A15.
-- The approval model uses `ApprovalPolicy` on `ToolDefinition`, enforced in-flight by the backend (deferred tools), verified by the Executor.
-- `fin list tools/prompts/output-types` shows platform registry contents without requiring a hub connection.
+- The approval model uses `ApprovalPolicy` (with per-subcommand `ApprovalRule`s) on `ToolDefinition`, enforced in-flight by the backend (deferred tools), verified by the Executor. Skill-level approval overrides take precedence over tool defaults.
+- `fin list tools/skills/prompts/output-types` shows platform registry contents without requiring a hub connection.

@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 from fin_assist.tracing_shared import (
     DropSpansProcessor,
     TruncatingSpanProcessor,
+    _GracefulOTLPExporter,
     resolve_endpoint,
     resolve_headers,
     want_otlp_exporter,
@@ -122,23 +123,25 @@ def setup_tracing(
     def _wrap(processor: BatchSpanProcessor) -> SpanProcessor:
         return DropSpansProcessor(TruncatingSpanProcessor(processor))
 
-    want_otlp = want_otlp_exporter(config)
-    if want_otlp:
-        exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
-        if headers:
-            exporter = exporter_cls(endpoint=endpoint, headers=headers)
-        else:
-            exporter = exporter_cls(endpoint=endpoint)
-        provider.add_span_processor(_wrap(BatchSpanProcessor(exporter)))
-
-    # Attach the JSONL file sink as a second (or only) processor.  It
-    # rides the same truncating + drop wrappers so the file output stays
-    # clean and bounded even when OTLP isn't configured.
     from fin_assist.hub.file_exporter import FileSpanExporter
     from fin_assist.paths import TRACES_PATH
 
     file_exporter = FileSpanExporter(str(TRACES_PATH))
     provider.add_span_processor(_wrap(BatchSpanProcessor(file_exporter)))
+
+    want_otlp = want_otlp_exporter(config)
+    if want_otlp:
+        exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
+        if headers:
+            real_exporter = exporter_cls(endpoint=endpoint, headers=headers)
+        else:
+            real_exporter = exporter_cls(endpoint=endpoint)
+        exporter = _GracefulOTLPExporter(
+            real_exporter,
+            endpoint=endpoint,
+            file_sink_path=str(TRACES_PATH),
+        )
+        provider.add_span_processor(_wrap(BatchSpanProcessor(exporter)))
 
     from opentelemetry.trace import set_tracer_provider
 

@@ -118,6 +118,7 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
     from fin_assist.tracing_shared import (
         DropSpansProcessor,
         TruncatingSpanProcessor,
+        _GracefulOTLPExporter,
         resolve_endpoint,
         resolve_headers,
         want_otlp_exporter,
@@ -142,10 +143,15 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
         endpoint = resolve_endpoint(config)
         headers = resolve_headers(dict(config.headers))
-        exporter = (
+        real_exporter = (
             exporter_cls(endpoint=endpoint, headers=headers)
             if headers
             else exporter_cls(endpoint=endpoint)
+        )
+        exporter = _GracefulOTLPExporter(
+            real_exporter,
+            endpoint=endpoint,
+            file_sink_path=str(TRACES_PATH),
         )
         provider.add_span_processor(_wrap(BatchSpanProcessor(exporter)))
 
