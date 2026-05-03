@@ -39,7 +39,7 @@ fin-assist is an **expandable personal AI agent platform** for terminal workflow
 - **[README.md](../README.md)** — canonical architecture **diagrams** (4 inline Mermaid blocks: System Context, Hub Internals, Backend + Shared Services, Request Flow). Regenerate rendered images with `just diagrams`. GitHub renders the Mermaid natively.
 - **`docs/architecture.md`** (this file) — architecture **prose**: design principles, component contracts, per-subsystem deep dives, phase history, design-decision rationale. The ASCII overview diagrams below are redundant with the Mermaid diagrams in README and are retained as prose references only — treat the README Mermaid as authoritative if they disagree.
 - **`handoff.md`** — rolling multi-session development log: current phase status, design sketches in flight, next-session pointers.
-- **`AGENTS.md`** / **`CLAUDE.md`** — development patterns (SDD → TDD workflow, test quality standards, commit rules).
+- **`AGENTS.md`** — development patterns (SDD → TDD workflow, test quality standards, commit rules).
 
 When a structural change to the system lands, update **both** the README Mermaid blocks **and** the relevant architecture.md prose in the same commit. To prevent reoccurrence of the ContextProviders-style drift the audit uncovered, any claim in this document that a subsystem is "integrated" or a design decision is "Resolved" must have a citation to a real call site (file:line) somewhere in `src/` — not just to a test or a TOML field.
 
@@ -126,7 +126,9 @@ When a structural change to the system lands, update **both** the README Mermaid
 │  ├──────────────────────────────────────────────────────────────────────┤   │
 │  │  REPL Mode (second layer)                                             │   │
 │  │  • fin-assist (no args)      — enter interactive REPL                 │   │
-│  │  • /switch <agent>           — switch active agent                   │   │
+│  │  • /exit                      — exit REPL                            │   │
+│  │  • /help                      — show available commands               │   │
+│  │  • /sessions                  — list saved sessions                   │   │
 │  │  • Dynamic prompts from agent card metadata                          │   │
 │  ├──────────────────────────────────────────────────────────────────────┤   │
 │  │  A2A Client (httpx + a2a-sdk ClientFactory)                           │   │
@@ -334,7 +336,7 @@ Static metadata declared by each agent and published in the A2A agent card as an
 from typing import Literal
 from pydantic import BaseModel
 
-ServingMode = Literal["do", "talk", "do_talk"]
+ServingMode = Literal["do", "talk"]
 
 class AgentCardMeta(BaseModel):
     """Static UI/capability metadata published in the agent card.
@@ -345,14 +347,14 @@ class AgentCardMeta(BaseModel):
     supports_thinking: bool = True       # Show thinking effort selector?
     supports_model_selection: bool = True # Show model/provider selector?
     supported_providers: list[str] | None = None  # None = all providers
-    requires_approval: bool = False      # Does this agent require user approval before action?
+    supported_context_types: list[str] = Field(default_factory=list)  # Context types this agent can use
     color_scheme: str | None = None      # Optional theming hint for client
     tags: list[str] = Field(default_factory=list)  # Categorization tags
 ```
 
-> **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk", "do_talk"]` covers all modes.
+> **Note:** `serving_modes` replaces the former `multi_turn: bool` field. An agent with `serving_modes = ["do"]` is one-shot only (like the former ShellAgent). An agent with `serving_modes = ["talk"]` is multi-turn only. `["do", "talk"]` covers both modes.
 
-> **Phase 11 (TUI client):** Add `supported_context_types: list[str] | None = None` to `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `AgentSpec.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card. Not added earlier because no client currently reads context-type hints from the card.
+> **Phase 11 (TUI client):** `supported_context_types: list[str]` is now part of `AgentCardMeta` so the TUI can show/hide context panels (git diff, shell history, etc.) based on the active agent without a round-trip call. `AgentSpec.supports_context()` already encodes this logic at runtime — the metadata field makes it statically discoverable from the agent card.
 
 ### Agent Architecture
 
@@ -395,7 +397,7 @@ class AgentSpec:
     @property
     def agent_card_metadata(self) -> AgentCardMeta: ...
     @property
-    def tools(self) -> list[str]: ...        # derived from skill union, falls back to flat tools list
+    def tools(self) -> list[str]: ...        # derived from skill union
 
     def check_credentials(self) -> list[str]:
         """Names of enabled providers with missing API keys (empty = all present)."""
@@ -477,7 +479,6 @@ system_prompt = "test"
 output_type = "text"
 thinking = "medium"
 serving_modes = ["do", "talk"]
-tools = ["read_file", "git", "run_shell"]
 ```
 
 ### Git Agent (`[agents.git]`)
@@ -605,6 +606,10 @@ SYSTEM_PROMPTS: dict[str, str] = {
     "chain-of-thought": CHAIN_OF_THOUGHT_INSTRUCTIONS,
     "shell": SHELL_INSTRUCTIONS,
     "test": TEST_INSTRUCTIONS,
+    "git": GIT_INSTRUCTIONS,
+    "git-commit": GIT_COMMIT_INSTRUCTIONS,
+    "git-pr": GIT_PR_INSTRUCTIONS,
+    "git-summarize": GIT_SUMMARIZE_INSTRUCTIONS,
 }
 ```
 
@@ -709,7 +714,8 @@ Static (discovery time):                    Dynamic (per-response):
 │       thinking,      │                    │                          │
 │       model_select,  │                    └──────────────────────────┘
 │       color_scheme,  │
-│       requires_approval │
+│       supported_     │
+│       context_types  │
 │     }                │
 │   }                  │
 └──────────────────────┘
@@ -719,15 +725,17 @@ Static (discovery time):                    Dynamic (per-response):
 
 ```python
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Literal, Any
+from dataclasses import dataclass, field
+from typing import Literal, object
 
 @dataclass
 class ContextItem:
     id: str
-    type: Literal["file", "git_diff", "history", "env"]
+    type: Literal["file", "git_diff", "git_log", "git_status", "history", "env"]
     content: str
-    metadata: dict[str, Any]
+    metadata: dict[str, object]
+    status: ItemStatus = "ready"
+    error_reason: str | None = None
 
 class ContextProvider(ABC):
     @abstractmethod
@@ -1020,10 +1028,10 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 ### Phase 7: Agent Hub Server ✅
 - [x] Extend `BaseAgent` with `AgentCardMeta` dataclass
 - [x] Create `ShellAgent` — one-shot command generation, `multi_turn=False`
-- [x] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC
+- [x] Implement `hub/storage.py` — SQLite-backed fasta2a `Storage` ABC ~~(superseded by `InMemoryTaskStore` (a2a-sdk) + `ContextStore` (`hub/context_store.py`))~~
 - [x] Implement `hub/factory.py` — BaseAgent → pydantic-ai Agent → `.to_a2a()` with shared storage
-- [x] Implement `hub/app.py` — parent Starlette app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
-- [x] Implement `hub/worker.py` — FinAssistWorker with `auth-required` state for missing credentials
+- [x] Implement `hub/app.py` — parent FastAPI app, mount agents at `/agents/{name}/`, `GET /agents` discovery endpoint
+- [x] Implement `hub/worker.py` — FinAssistWorker with `auth-required` state for missing credentials ~~(superseded by `Executor` (`hub/executor.py`))~~
 - [x] Implement `hub/logging.py` — RotatingFileHandler for background hub
 - [x] Wire entry point — `fin-assist serve` starts the hub via uvicorn
 - [x] Tests — hub creation, agent mounting, discovery endpoint, storage CRUD, worker auth-required
@@ -1043,13 +1051,13 @@ Credentials stored separately from config (0600 permissions). Supports env var -
 - [x] Wire `FinPrompt` into `chat.py` and `approve.py` (replaces `rich.prompt.Prompt`)
 - [x] Agent name tab completion via `agents` parameter
 - [x] Persistent input history (`~/.local/share/fin/history`)
-- [x] Slash-command fuzzy completion (`/exit`, `/quit`, `/q`, `/switch`, `/help`)
+- [x] Slash-command fuzzy completion (`/exit`, `/help`, `/sessions`)
 - [x] `prompt-toolkit>=3.0` added as explicit dependency
 - [x] Tests — 8 new tests for `FinPrompt`
 
 ### Config-Driven Redesign 📐
 - [x] Step 1: `ServingMode` enum + `serving_modes` field on `AgentCardMeta`
-- [x] Step 2: Output type + prompt registries (`OUTPUT_TYPE_REGISTRY`, `PROMPT_REGISTRY`)
+- [x] Step 2: Output type + prompt registries (`OUTPUT_TYPES`, `SYSTEM_PROMPTS`)
 - [x] Step 3: Per-agent TOML config sections (`AgentConfig` in `config/schema.py`)
 - [x] Step 4: Collapse to single `ConfigAgent` class (remove `BaseAgent` ABC, `DefaultAgent`, `ShellAgent`). Later split into `AgentSpec` (pure config) + `PydanticAIBackend` (framework glue) — see commit `a16ba70`.
 - [x] Step 5: Direct `Worker[Context]` implementation (close #68)
@@ -1124,7 +1132,7 @@ See the Skills Architecture section below for details on the v0.1 implementation
 
 ## Skills Architecture
 
-An agent is a collection of skills within an environment (system prompt). A **skill** curates tools, approval rules, context injection text, and prompt steering. Skills are the primary mechanism for organizing agent behavior — there are no dangling tools on `AgentConfig.tools` (kept as fallback for backward compat when no skills are defined).
+An agent is a collection of skills within an environment (system prompt). A **skill** curates tools, approval rules, context injection text, and prompt steering. Skills are the primary mechanism for organizing agent behavior — all tools attach through skills; `AgentSpec.tools` is derived from the union of skill tool lists.
 
 ### Key Types
 
@@ -1266,7 +1274,7 @@ Decisions deferred until the relevant phase. Resolved decisions are noted.
 | gRPC transport | Future | Open | A2A protocol supports gRPC; a2a-sdk v1.0 supports it, not yet used by fin-assist |
 | Agent architecture | Redesign | **Resolved** | Config-driven: single `Agent` class, behavior from `AgentConfig` in TOML |
 | ShellAgent vs DefaultAgent | Redesign | **Resolved** | Merged into a single `AgentSpec` (pure config); `ShellAgent` behavior is `[agents.shell]` config. Framework glue isolated in `PydanticAIBackend`. |
-| `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk", "do_talk"]` — more expressive |
+| `multi_turn: bool` vs `ServingMode` | Redesign | **Resolved** | `ServingMode = Literal["do", "talk"]` — more expressive |
 | Private `AgentWorker` import (#68) | Redesign | **Resolved** | Direct `Worker[list[ModelMessage]]` implementation using public APIs |
 | Thinking configuration | Redesign | **Resolved** | Per-agent `thinking` field in `AgentConfig`, not `DefaultAgent` override |
 | Default agent shortcut | Redesign | **Resolved** | `fin do "prompt"` / `fin talk` → `[general] default_agent` config; agent arg optional |
@@ -1379,7 +1387,7 @@ url = "http://127.0.0.1:5002"
 | Streaming | Token-by-token via `TaskUpdater.add_artifact(append=True)` + SSE | Progressive output via `SendStreamingMessage`; Rich `Live` rendering on client |
 | Task storage | `InMemoryTaskStore` (ephemeral) | a2a-sdk managed; tasks lost on server restart; acceptable for personal local-first tool |
 | Conversation storage | SQLite `ContextStore` | Persists pydantic-ai message history across tasks; `context_id` for threading |
-| `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk", "do_talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
+| `serving_modes` over `multi_turn` | `ServingMode = Literal["do", "talk"]` | More expressive than boolean; declares which CLI modes an agent supports |
 | Default agent shortcut | `fin do "prompt"` → `[general] default_agent` config | Reduces friction for common case; agent arg optional; reads from config not hardcoded |
 | Context for `do` | Implemented via `@`-completion in FinPrompt (replaces `--file`/`--git-diff` CLI flags) | No TUI required; context injected inline before sending |
 | Context for `talk` | Implemented via `@`-completion in FinPrompt | Uses `ContextProvider.search()`; user injects context before sending |

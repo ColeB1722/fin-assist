@@ -192,7 +192,7 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 - Skills are additive (no unloading in v0.1)
 - Tools shared across skills; name collisions = config error
-- `AgentSpec.tools` derives from skill union, falls back to flat `tools` list for backward compat
+- `AgentSpec.tools` derives from the union of all skill tools (empty list if no skills defined)
 - Approval is conservative: if default="always" or any rule has mode="always", tool gets `requires_approval=True`. Fine-grained per-subcommand evaluation at executor level in v0.1.1
 - `_CONTEXT_TYPE_MAP` → `_CONTEXT_TYPE_HINTS` module-level constant
 - Dead code removed: `format_context()`, `build_user_message()`, `WorkflowConfig`
@@ -240,7 +240,7 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 
 - Scoped CLI prototype + TODO for per-subcommand approval: `src/fin_assist/agents/tools.py:213`, `src/fin_assist/agents/tools.py:295`
 - Current `ApprovalPolicy` shape (only `never`/`always`, no rules): `src/fin_assist/agents/tools.py:40`
-- `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99`
+- `AgentConfig.tools` flat list of names: `src/fin_assist/config/schema.py:99` *(field removed — tools now derive from skill union)*
 - Skills API vision: `docs/architecture.md:991`–`:1007`
 
 ---

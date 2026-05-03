@@ -505,9 +505,6 @@ class TestSessionIdFormat:
     def test_saved_session_id_is_natural_language_slug(self, tmp_path):
         """Session IDs should be human-readable NL slugs, not UUID hex strings."""
         mock_client = _mock_client(agents=[_make_discovered("default")])
-        mock_client.send_message = AsyncMock(
-            return_value=AgentResult(success=True, output="hi", context_id="ctx-uuid-123")
-        )
 
         saved_ids: list[str] = []
 

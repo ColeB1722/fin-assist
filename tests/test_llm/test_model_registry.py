@@ -54,7 +54,7 @@ class TestProviderRegistryCreateModel:
         ):
             result = registry.create_model("anthropic", "claude-sonnet-4-6", api_key="sk-test")
         MockCls.assert_called_once_with("claude-sonnet-4-6", provider=MockProvider.return_value)
-        MockProvider.assert_called_once_with(api_key="sk-test")
+        MockProvider.assert_called_once_with(api_key="sk-test", base_url=None)
         assert result is mock_model
 
     def test_openai_model(self, registry: ProviderRegistry) -> None:
@@ -65,7 +65,7 @@ class TestProviderRegistryCreateModel:
         ):
             result = registry.create_model("openai", "gpt-4o", api_key="sk-test")
         MockCls.assert_called_once_with("gpt-4o", provider=MockProvider.return_value)
-        MockProvider.assert_called_once_with(api_key="sk-test")
+        MockProvider.assert_called_once_with(api_key="sk-test", base_url=None)
         assert result is mock_model
 
     def test_openrouter_model(self, registry: ProviderRegistry) -> None:
@@ -89,7 +89,7 @@ class TestProviderRegistryCreateModel:
         ):
             result = registry.create_model("google", "gemini-2.0-flash", api_key="aiza")
         MockCls.assert_called_once_with("gemini-2.0-flash", provider=MockProvider.return_value)
-        MockProvider.assert_called_once_with(api_key="aiza")
+        MockProvider.assert_called_once_with(api_key="aiza", base_url=None)
         assert result is mock_model
 
     def test_custom_provider(self, registry: ProviderRegistry) -> None:

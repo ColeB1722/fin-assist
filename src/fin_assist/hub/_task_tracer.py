@@ -324,6 +324,11 @@ class _TaskTracer:
         )
         decided_span.end()
 
+        if self.task_span is not None:
+            self.task_span.set_attribute(
+                FinAssistAttributes.TASK_STATE, TaskStateValues.RESUMED_FROM_APPROVAL
+            )
+
     def emit_approval_request_span(self, event: StepEvent) -> None:
         """Emit an ``approval_request`` span and capture its SpanContext.
 

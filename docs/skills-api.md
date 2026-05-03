@@ -1,6 +1,6 @@
 # Skills API — Design Sketch
 
-**Status:** Sketch, pre-implementation. Iterated 2026-04-29 — skills reframed as **capability packs** (tools + docs + scripts + approvals + serving-mode affinity) that hot-load into an agent as a unit; `lookup(skill_id)` replaced by `load_skill` transition + per-skill `extensions/` disclosure; skills gain `fin.serving_modes`; invocation UX collapses to "always skill-scoped, user or agent picks." See §9 for resolved/deferred questions. Git history carries prior iterations.
+**Status:** Phase A shipped; Phase B partially implemented (inline TOML skills, `SkillConfig`/`SkillLoader`/`SkillManager`, `WorkflowConfig` removed, `AgentConfig.tools` removed). Design doc retained as reference — some sections describe the full Phase B vision not yet landed. Iterated 2026-04-29 — skills reframed as **capability packs** (tools + docs + scripts + approvals + serving-mode affinity) that hot-load into an agent as a unit; `lookup(skill_id)` replaced by `load_skill` transition + per-skill `extensions/` disclosure; skills gain `fin.serving_modes`; invocation UX collapses to "always skill-scoped, user or agent picks." See §9 for resolved/deferred questions. Git history carries prior iterations.
 
 **Inspiration:** Anthropic's [skills.md](https://code.claude.com/docs/en/skills) pattern (directory of markdown files + frontmatter, progressive disclosure, on-demand body loading). [OpenCode's](https://open-code.ai/en/docs/skills) parallel implementation confirms the pattern is converging across agent tooling.
 
@@ -13,7 +13,7 @@
 Three concrete gaps drive this design:
 
 1. **Scoped CLI tools with blanket approval.** The git agent (#79) introduced `git` and `gh` as prefix-scoped tools. Every subcommand requires approval today — `git diff` is as gated as `git push --force`. The TODO at `src/fin_assist/agents/tools.py:213` is explicit about this being a temporary state.
-2. **Prompt steering is agent-scoped and one-off.** `WorkflowConfig` (on `AgentConfig`) lets an agent declare named tasks with entry prompts and system-prompt overrides. Useful, but workflows don't travel across agents, aren't discoverable from outside config, and require Python registration of prompt templates.
+2. **Prompt steering is agent-scoped and one-off.** `WorkflowConfig` *(type removed — migrated to skills)* (on `AgentConfig`) lets an agent declare named tasks with entry prompts and system-prompt overrides. Useful, but workflows don't travel across agents, aren't discoverable from outside config, and require Python registration of prompt templates.
 3. **No path for user- or community-authored capabilities.** Today, adding a task to fin means editing `src/fin_assist/llm/prompts.py` (register template), `src/fin_assist/config/schema.py` or `config.toml` (declare workflow), and shipping Python code. No "drop a markdown file in a directory" path.
 
 The skills.md pattern addresses all three: per-task directories with markdown frontmatter + body, discovered via filesystem walk-up, loaded on demand, invocable as first-class structured actions.
@@ -32,7 +32,7 @@ A callable primitive. Examples: `git` (scoped CLI prefix), `gh`, `read_file`, `r
 - Has a schema (for LLM tool-call surface) and an async callable (for execution).
 - Zero framework imports (`agents/` is platform, not transport).
 - **Unchanged by Phase A** except for the subcommand-approval extension.
-- **Scope narrows in Phase B.** `ToolRegistry` becomes a **built-in tool catalog** — the home for Python-implemented callables (`git`, `read_file`, etc.) that skills reference by name in frontmatter. It stops being the per-agent tool assembler it is today; per-task tool assembly moves to the skill loader. `AgentConfig.tools` shrinks (or disappears) in favor of a `baseline_tools` concept on the agent. See §8 Phase B.
+- **Scope narrows in Phase B.** `ToolRegistry` becomes a **built-in tool catalog** — the home for Python-implemented callables (`git`, `read_file`, etc.) that skills reference by name in frontmatter. It stops being the per-agent tool assembler it is today; per-task tool assembly moves to the skill loader. `AgentConfig.tools` *(field removed — tools now derive from skill union)* shrinks (or disappears) in favor of a `baseline_tools` concept on the agent. See §8 Phase B.
 
 ### Skill
 
@@ -43,7 +43,7 @@ A skill declares:
 - **name, description** — `AgentSkill` fields (protocol-native, shared across agent tooling). `name` doubles as the skill identifier; description is short (one sentence, used in the general-mode skill list).
 - **fin.tools** — list of tool IDs this skill uses. Resolved against the built-in tool catalog at load time.
 - **fin.approval** — per-tool, per-subcommand policy overrides applied **only while this skill is active** (see §6). Loosen-only.
-- **fin.serving_modes** — which CLI modes this skill is valid in. Defaults to both. Hard constraint, same semantics as `AgentCardMeta.serving_modes` and the to-be-migrated `WorkflowConfig.serving_modes`. See §4.
+- **fin.serving_modes** — which CLI modes this skill is valid in. Defaults to both. Hard constraint, same semantics as `AgentCardMeta.serving_modes` and the to-be-migrated `WorkflowConfig.serving_modes` *(type removed — migrated to skills)*. See §4.
 - **fin.entry_prompt** — first user message seeded when the skill is loaded via pre-commit invocation (§4). Optional for talk-skills.
 - **fin.scripts** (optional) — declared scripts from the skill's `scripts/` directory, each becoming a generated `ToolDefinition` at load time.
 - **body** — prose that becomes part of the system prompt when the skill loads. May reference sibling extension files; the `load_skill`/extension-lookup tool surface (§5) exposes them on demand.
@@ -108,7 +108,7 @@ One skill is loaded at a time per turn. Loading is a **transition** — system p
 
 Previous design iterations carried a fourth concept, `Workflow`, for prompt-steered sub-tasks. This is fully absorbed by Skill. A "workflow" was always just "a skill with specific steering, tool attachments, and an entry prompt" — the A2A-native framing makes that explicit and removes a redundant vocabulary tier.
 
-Migration: current `AgentConfig.workflows` dict becomes skill files. Each workflow entry → one `SKILL.md`. The `WorkflowConfig` type can be deleted after migration.
+Migration: current `AgentConfig.workflows` dict becomes skill files. Each workflow entry → one `SKILL.md`. The `WorkflowConfig` *(type removed — migrated to skills)* can be deleted after migration.
 
 ## 3. Storage and discovery
 
@@ -461,7 +461,7 @@ The design is split into three shippable phases. Each is independently useful; e
 - `config/schema.py` changes:
   - Remove `AgentConfig.workflows` (migrated to skill files).
   - Add `AgentConfig.skills: list[str]` — skill ids attached to the agent.
-  - Rename/narrow `AgentConfig.tools` → `AgentConfig.baseline_tools` (always-on tools outside any skill).
+  - Rename/narrow `AgentConfig.tools` *(field removed — tools now derive from skill union)* → `AgentConfig.baseline_tools` (always-on tools outside any skill).
 - `agents/tools.py`: `ToolRegistry` scope narrows to built-in tool catalog. `get_for_agent()` removed; skills resolve tool names via `registry.get()` at load time. `ApprovalPolicy.for_skill(skill_id)` lookup; overrides merge.
 - `hub/factory.py`: `AgentCard.skills` lists attached skills (walk-up skills are runtime-only); per-request card re-render so cache reloads propagate; fin-specific metadata via card extension.
 - `hub/app.py`: register `skills/invoke` RPC method (A2A extension) for pre-commit entry. Implementation sets `active_skill_id` at task creation, seeds `entry_prompt` as first user message when declared.
@@ -479,7 +479,7 @@ The design is split into three shippable phases. Each is independently useful; e
 
 **Migration of existing workflows:**
 
-The git agent's three workflows (commit, pr, summarize) from `config.toml` become three `SKILL.md` files under `.fin/skills/`. `WorkflowConfig` type deleted.
+The git agent's three workflows (commit, pr, summarize) from `config.toml` become three `SKILL.md` files under `.fin/skills/`. `WorkflowConfig` *(type removed — migrated to skills)* type deleted.
 
 **Exit gate:** at least three real skills authored:
 
@@ -540,7 +540,7 @@ These are explicitly not blocking the start of Phase A. They will be resolved du
 
 - Scoped CLI tools: `src/fin_assist/agents/tools.py`
 - `ApprovalPolicy`: `src/fin_assist/agents/tools.py`
-- `AgentConfig.tools` and `AgentConfig.workflows`: `src/fin_assist/config/schema.py`
+- `AgentConfig.tools` *(field removed — tools now derive from skill union)* and `AgentConfig.workflows`: `src/fin_assist/config/schema.py`
 - Agent card publishing with one-skill placeholder: `src/fin_assist/hub/factory.py`
 - `fin_assist:meta` extension: `src/fin_assist/hub/factory.py`
 - Empty `skills/` placeholder: referenced at `architecture.md` (not yet created in source tree)

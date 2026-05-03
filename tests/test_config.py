@@ -41,7 +41,6 @@ class TestGeneralSettings:
         assert settings.default_model == "claude-sonnet-4-6"
         assert settings.default_agent is None
         assert settings.thinking_effort == "medium"
-        assert settings.keybinding == "ctrl-enter"
 
     def test_general_settings_custom_values(self) -> None:
         """Test GeneralSettings with explicit values."""
@@ -50,13 +49,11 @@ class TestGeneralSettings:
             default_model="llama3",
             default_agent="test",
             thinking_effort="low",
-            keybinding="ctrl-space",
         )
         assert settings.default_provider == "ollama"
         assert settings.default_model == "llama3"
         assert settings.default_agent == "test"
         assert settings.thinking_effort == "low"
-        assert settings.keybinding == "ctrl-space"
 
 
 class TestContextSettings:
@@ -67,7 +64,6 @@ class TestContextSettings:
         settings = ContextSettings()
         assert settings.max_file_size == 100_000
         assert settings.max_history_items == 50
-        assert settings.include_git_status is True
         assert settings.include_env_vars == ["PATH", "HOME", "USER", "PWD"]
 
     def test_context_settings_custom_values(self) -> None:
@@ -75,12 +71,10 @@ class TestContextSettings:
         settings = ContextSettings(
             max_file_size=50_000,
             max_history_items=100,
-            include_git_status=False,
             include_env_vars=["PATH", "HOME"],
         )
         assert settings.max_file_size == 50_000
         assert settings.max_history_items == 100
-        assert settings.include_git_status is False
         assert settings.include_env_vars == ["PATH", "HOME"]
 
 
@@ -244,13 +238,11 @@ class TestConfig:
             {
                 "FIN_GENERAL__DEFAULT_PROVIDER": "openrouter",
                 "FIN_GENERAL__DEFAULT_MODEL": "gpt-4o",
-                "FIN_GENERAL__KEYBINDING": "ctrl-space",
             },
         ):
             config = Config()
             assert config.general.default_provider == "openrouter"
             assert config.general.default_model == "gpt-4o"
-            assert config.general.keybinding == "ctrl-space"
 
     def test_config_reads_nested_server_env_vars(self) -> None:
         """Test that Config reads FIN_SERVER__ env vars for server settings."""
@@ -273,12 +265,10 @@ class TestConfig:
             os.environ,
             {
                 "FIN_CONTEXT__MAX_FILE_SIZE": "50000",
-                "FIN_CONTEXT__INCLUDE_GIT_STATUS": "false",
             },
         ):
             config = Config()
             assert config.context.max_file_size == 50_000
-            assert config.context.include_git_status is False
 
     def test_config_explicit_values_override_env_vars(self) -> None:
         """Test that explicit values override environment variables."""

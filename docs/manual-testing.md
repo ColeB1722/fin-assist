@@ -121,7 +121,7 @@ Integration tests can't cover subprocess management. Run all of these.
 |---|------|---------|----------|
 | L1 | List tools | `fin list tools` | Lists tools: `read_file`, `git`, `gh`, `shell_history`, `run_shell` (with approval notes from skill policies) |
 | L1b | List skills | `fin list skills` | Lists skills grouped by agent, plus any SKILL.md files |
-| L2 | List prompts | `fin list prompts` | Lists 3 prompts: `chain-of-thought`, `shell`, `test` |
+| L2 | List prompts | `fin list prompts` | Lists 7 prompts: `chain-of-thought`, `shell`, `test`, `git`, `git-commit`, `git-pr`, `git-summarize` |
 | L3 | List output types | `fin list output-types` | Lists 2 types: `text` → str, `command` → CommandResult |
 | L4 | Invalid resource | `fin list bogus` | Error from argparse (exit 2) |
 
@@ -176,7 +176,7 @@ These require keyboard input — arrow keys, text entry, or REPL interaction. Hu
 
 ### 2a. In-Flight Approval Widget
 
-The `test` agent has `tools = ["read_file", "git_diff", "run_shell"]` where `run_shell` has `ApprovalPolicy(mode="always")`. When the model calls `run_shell`, the backend emits a `deferred` StepEvent, the executor sets the task to `INPUT_REQUIRED`, the client receives an `input_required` StreamEvent, and `render_stream` returns with `deferred_calls`. The approval widget (`approve.py`) presents each deferred tool call for Approve/Deny.
+The `test` agent has `tools = ["read_file", "git", "shell_history", "run_shell"]` where `run_shell` has `ApprovalPolicy(mode="always")`. When the model calls `run_shell`, the backend emits a `deferred` StepEvent, the executor sets the task to `INPUT_REQUIRED`, the client receives an `input_required` StreamEvent, and `render_stream` returns with `deferred_calls`. The approval widget (`approve.py`) presents each deferred tool call for Approve/Deny.
 
 > **Critical**: This flow spans 8 files and has NO integration test coverage. It is the highest-risk interactive test.
 

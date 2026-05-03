@@ -659,8 +659,9 @@ def main(argv: list[str] | None = None) -> int:
                     "Add an [agents.*] section to config.toml.\n"
                     "Example:\n\n"
                     "  [agents.default]\n"
-                    '  system_prompt = "chain-of-thought"\n'
-                    '  tools = ["read_file", "git", "run_shell"]'
+                    '  system_prompt = "chain-of-thought"\n\n'
+                    "  [agents.default.skills.files]\n"
+                    '  tools = ["read_file"]'
                 )
             else:
                 names = ", ".join(config.agents)

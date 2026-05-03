@@ -3,11 +3,7 @@
 Uses a2a-sdk's ``ClientFactory`` for per-agent A2A communication, with
 hub-level concerns (agent discovery, result extraction) layered on top.
 
-The client supports two modes:
-- **Blocking** (default): ``run_agent()`` / ``send_message()`` — sends a
-  message and waits for the final task result.
-- **Streaming** (Phase 6): ``stream_agent()`` — async iterator yielding
-  progressive updates.
+All communication is streaming via ``stream_agent()``.
 """
 
 from __future__ import annotations
@@ -300,19 +296,6 @@ class HubClient:
     # Public API
     # ------------------------------------------------------------------
 
-    async def run_agent(self, agent_name: str, prompt: str) -> AgentResult:
-        """Send a one-shot message to an agent and wait for the result."""
-        return await self._send_and_wait(agent_name, prompt, context_id=None)
-
-    async def send_message(
-        self,
-        agent_name: str,
-        prompt: str,
-        context_id: str | None = None,
-    ) -> AgentResult:
-        """Send a message to an agent (multi-turn) and wait for the result."""
-        return await self._send_and_wait(agent_name, prompt, context_id=context_id)
-
     @staticmethod
     def _apply_status_update(task: Task, status_update) -> None:
         task.status.CopyFrom(status_update.status)
@@ -422,43 +405,3 @@ class HubClient:
                 kind="failed",
                 result=AgentResult(success=False, output="No response from agent"),
             )
-
-    async def _send_and_wait(
-        self,
-        agent_name: str,
-        prompt: str,
-        context_id: str | None = None,
-    ) -> AgentResult:
-        client = await self._get_a2a(agent_name)
-        msg = Message(
-            role=Role.ROLE_USER,
-            message_id=str(uuid.uuid4()),
-            parts=[Part(text=prompt)],
-        )
-        if context_id:
-            msg.context_id = context_id
-
-        request = SendMessageRequest(message=msg)
-
-        task: Task | None = None
-        artifacts: list[Any] = []
-
-        async for response in client.send_message(request):
-            is_terminal, resp_task, artifact = self._process_response(response)
-            if resp_task is not None:
-                task = resp_task
-            if response.HasField("status_update") and task is not None:
-                self._apply_status_update(task, response.status_update)
-            if artifact is not None:
-                artifacts.append(artifact)
-            if is_terminal:
-                break
-
-        if task is None:
-            return AgentResult(success=False, output="No response from agent")
-
-        if artifacts and not task.artifacts:
-            for artifact in artifacts:
-                task.artifacts.append(artifact)
-
-        return self._extract_result(task)

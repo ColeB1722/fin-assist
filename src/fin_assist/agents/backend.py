@@ -550,13 +550,19 @@ class PydanticAIBackend:
             provider_name = enabled_providers[0]
             model_name = self._spec.get_model_name(provider_name, default_model)
             api_key = self._spec.get_api_key(provider_name)
-            return self._get_registry().create_model(provider_name, model_name, api_key=api_key)
+            base_url = self._spec.get_base_url(provider_name)
+            return self._get_registry().create_model(
+                provider_name, model_name, api_key=api_key, base_url=base_url
+            )
 
         models = []
         for provider_name in enabled_providers:
             model_name = self._spec.get_model_name(provider_name, default_model)
             api_key = self._spec.get_api_key(provider_name)
-            model = self._get_registry().create_model(provider_name, model_name, api_key=api_key)
+            base_url = self._spec.get_base_url(provider_name)
+            model = self._get_registry().create_model(
+                provider_name, model_name, api_key=api_key, base_url=base_url
+            )
             models.append(model)
 
         return FallbackModel(*models)

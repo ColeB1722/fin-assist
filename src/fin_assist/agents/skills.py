@@ -36,8 +36,8 @@ from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
 from fin_assist.paths import DATA_DIR
 
 if TYPE_CHECKING:
-    from fin_assist.agents.tools import ToolDefinition, ToolRegistry
-    from fin_assist.config.schema import AgentConfig, ServingMode, SkillConfig
+    from fin_assist.agents.tools import ToolRegistry
+    from fin_assist.config.schema import ServingMode, SkillConfig
 
 logger = logging.getLogger(__name__)
 
@@ -162,19 +162,6 @@ class SkillLoader:
         """
         return [self.load_from_config(name, cfg) for name, cfg in skills_config.items()]
 
-    def resolve_tools(
-        self,
-        skill: SkillDefinition,
-    ) -> list[ToolDefinition]:
-        """Resolve a skill's tool names to ``ToolDefinition`` instances.
-
-        Unknown tool names are silently skipped (matching the existing
-        ``ToolRegistry.get_for_agent`` behavior).
-        """
-        if self._tool_registry is None:
-            return []
-        return self._tool_registry.get_for_agent(skill.tools)
-
     def load_from_skill_md(self, path: Path) -> SkillDefinition:
         """Parse a SKILL.md file and return a ``SkillDefinition``.
 
@@ -294,17 +281,6 @@ class SkillManager:
         self._tool_registry = tool_registry
         self._catalog = SkillCatalog(skills=skills)
 
-    @classmethod
-    def from_agent_config(
-        cls,
-        agent_config: AgentConfig,
-        tool_registry: ToolRegistry | None = None,
-    ) -> SkillManager:
-        """Create a SkillManager from an AgentConfig's skills dict."""
-        loader = SkillLoader(tool_registry=tool_registry)
-        skills = loader.load_all_from_agent_config(agent_config.skills)
-        return cls(skills=skills, tool_registry=tool_registry)
-
     def get_skill(self, name: str) -> SkillDefinition | None:
         return self._skills.get(name)
 
@@ -336,16 +312,6 @@ class SkillManager:
 
     def available_skills(self) -> list[SkillDefinition]:
         return self._catalog.available_skills()
-
-    def loaded_tool_names(self) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for skill in self.loaded_skills():
-            for tool_name in skill.tools:
-                if tool_name not in seen:
-                    seen.add(tool_name)
-                    result.append(tool_name)
-        return result
 
     def catalog_text(self) -> str:
         return self._catalog.render()

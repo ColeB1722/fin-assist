@@ -110,8 +110,6 @@ class AgentSpec:
 
     @property
     def tools(self) -> list[str]:
-        if self._agent_config.tools:
-            return self._agent_config.tools
         seen: set[str] = set()
         result: list[str] = []
         for skill_cfg in self._agent_config.skills.values():
@@ -167,6 +165,12 @@ class AgentSpec:
         if provider_config and provider_config.default_model:
             return provider_config.default_model
         return default
+
+    def get_base_url(self, provider: str) -> str | None:
+        provider_config = self._config.providers.get(provider)
+        if provider_config and provider_config.base_url:
+            return provider_config.base_url
+        return None
 
     def get_enabled_providers(self) -> list[str]:
         default_provider = self._config.general.default_provider

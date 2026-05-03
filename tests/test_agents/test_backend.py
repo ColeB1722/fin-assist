@@ -20,7 +20,14 @@ from fin_assist.agents.backend import (
 )
 from fin_assist.agents.metadata import MissingCredentialsError
 from fin_assist.agents.step import StepEvent, StepHandle
-from fin_assist.config.schema import AgentConfig
+from fin_assist.config.schema import AgentConfig, SkillConfig
+
+
+def _skills(*tool_lists: list[str]) -> dict[str, SkillConfig]:
+    result: dict[str, SkillConfig] = {}
+    for i, tools in enumerate(tool_lists):
+        result[f"skill_{i}"] = SkillConfig(tools=tools)
+    return result
 
 
 def _make_spec(mock_config, mock_credentials) -> AgentSpec:
@@ -488,7 +495,7 @@ class TestPydanticAIBackendRunSteps:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                skills=_skills(["run_shell"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -569,7 +576,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Default agent",
                 system_prompt="chain-of-thought",
                 output_type="text",
-                tools=["read_file"],
+                skills=_skills(["read_file"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -605,7 +612,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Minimal agent",
                 system_prompt="chain-of-thought",
                 output_type="text",
-                tools=["read_file"],
+                skills=_skills(["read_file"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -635,7 +642,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                skills=_skills(["run_shell"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -668,7 +675,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                skills=_skills(["run_shell"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -765,7 +772,7 @@ class TestPydanticAIBackendGetApprovalReason:
                 description="Shell agent",
                 system_prompt="shell",
                 output_type="command",
-                tools=["run_shell"],
+                skills=_skills(["run_shell"]),
             ),
             config=mock_config,
             credentials=mock_credentials,
@@ -783,7 +790,7 @@ class TestPydanticAIBackendGetApprovalReason:
         registry = ToolRegistry()
         spec = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=[]),
+            agent_config=AgentConfig(skills={}),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -806,7 +813,7 @@ class TestPydanticAIBackendGetApprovalReason:
         )
         spec = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file"]),
+            agent_config=AgentConfig(skills=_skills(["read_file"])),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -841,6 +848,30 @@ class TestPydanticAIBackendBuildModel:
             backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
             result = backend._build_model()
             assert result is mock_model
+
+    def test_passes_base_url_to_create_model(self, mock_config, mock_credentials) -> None:
+        from fin_assist.config.schema import ProviderConfig
+
+        mock_config.general.default_provider = "anthropic"
+        mock_config.general.default_model = "claude-sonnet-4-6"
+        mock_config.providers = {
+            "anthropic": ProviderConfig(base_url="https://proxy.example.com/v1"),
+        }
+        mock_credentials.get_api_key.return_value = "sk-test"
+
+        mock_model = MagicMock()
+        with patch(
+            "fin_assist.llm.model_registry.ProviderRegistry.create_model",
+            return_value=mock_model,
+        ) as mock_create:
+            backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
+            backend._build_model()
+            mock_create.assert_called_once_with(
+                "anthropic",
+                "claude-sonnet-4-6",
+                api_key="sk-test",
+                base_url="https://proxy.example.com/v1",
+            )
 
 
 class TestExtractToolResultText:

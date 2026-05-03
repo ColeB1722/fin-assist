@@ -36,7 +36,6 @@ class GeneralSettings(BaseModel):
     default_model: str = "claude-sonnet-4-6"
     default_agent: str | None = None
     thinking_effort: ThinkingEffort = "medium"
-    keybinding: str = "ctrl-enter"
 
 
 class ContextSettings(BaseModel):
@@ -44,7 +43,6 @@ class ContextSettings(BaseModel):
 
     max_file_size: int = 100_000
     max_history_items: int = 50
-    include_git_status: bool = True
     include_env_vars: list[str] = ["PATH", "HOME", "USER", "PWD"]
 
 
@@ -178,7 +176,6 @@ class AgentConfig(BaseModel):
     thinking: ThinkingEffort = "medium"
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     tags: list[str] = Field(default_factory=list)
-    tools: list[str] = Field(default_factory=list)
     skills: dict[str, SkillConfig] = Field(default_factory=dict)
 
 

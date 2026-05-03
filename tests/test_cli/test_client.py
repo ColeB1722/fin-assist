@@ -472,28 +472,6 @@ class TestDiscoverAgents:
         assert agents[0].card_meta.serving_modes == ["do", "talk"]
 
 
-class TestRunAgent:
-    async def test_delegates_to_send_and_wait(self):
-        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
-        client = HubClient("http://localhost")
-        client._send_and_wait = AsyncMock(return_value=expected)
-
-        result = await client.run_agent("shell", "list files")
-
-        assert result is expected
-        client._send_and_wait.assert_called_once_with("shell", "list files", context_id=None)
-
-    async def test_passes_context_id_to_send_and_wait(self):
-        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
-        client = HubClient("http://localhost")
-        client._send_and_wait = AsyncMock(return_value=expected)
-
-        result = await client.send_message("shell", "hello", context_id="ctx-1")
-
-        assert result is expected
-        client._send_and_wait.assert_called_once_with("shell", "hello", context_id="ctx-1")
-
-
 class TestHubClientLifecycle:
     async def test_close_cleans_up_client(self):
         client = HubClient("http://localhost")

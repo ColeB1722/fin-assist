@@ -157,37 +157,6 @@ class TestSkillLoader:
         names = {s.name for s in skills}
         assert names == {"commit", "pr"}
 
-    def test_resolve_tools_with_registry(self) -> None:
-        from fin_assist.agents.tools import ToolRegistry, ToolDefinition
-
-        registry = ToolRegistry()
-        registry.register(
-            ToolDefinition(
-                name="git",
-                description="Git tool",
-                callable=lambda: "ok",
-                parameters_schema={"type": "object"},
-            )
-        )
-        registry.register(
-            ToolDefinition(
-                name="read_file",
-                description="Read file",
-                callable=lambda: "ok",
-                parameters_schema={"type": "object"},
-            )
-        )
-        loader = SkillLoader(tool_registry=registry)
-        skill = _make_skill("commit", tools=["git", "read_file", "nonexistent"])
-        resolved = loader.resolve_tools(skill)
-        names = {t.name for t in resolved}
-        assert names == {"git", "read_file"}
-
-    def test_resolve_tools_without_registry(self) -> None:
-        loader = SkillLoader()
-        skill = _make_skill("commit", tools=["git"])
-        assert loader.resolve_tools(skill) == []
-
     def test_load_from_config_preserves_context(self) -> None:
         config = SkillConfig(
             description="Git skill",
@@ -382,18 +351,6 @@ class TestSkillManager:
         mgr.load_skill("commit")
         assert mgr.is_loaded("commit") is True
 
-    def test_loaded_tool_names(self) -> None:
-        from fin_assist.agents.skills import SkillManager
-
-        skills = [
-            _make_skill("commit", tools=["git", "read_file"]),
-            _make_skill("pr", tools=["gh", "git"]),
-        ]
-        mgr = SkillManager(skills=skills)
-        mgr.load_skill("commit")
-        mgr.load_skill("pr")
-        assert mgr.loaded_tool_names() == ["git", "read_file", "gh"]
-
     def test_available_skills_excludes_loaded(self) -> None:
         from fin_assist.agents.skills import SkillManager
 
@@ -422,17 +379,3 @@ class TestSkillManager:
         assert callable_fn.__name__ == "load_skill"
         result = await callable_fn("commit")
         assert "loaded" in result.lower()
-
-    def test_from_agent_config(self) -> None:
-        from types import SimpleNamespace
-
-        from fin_assist.agents.skills import SkillManager
-
-        agent_config = SimpleNamespace(
-            skills={
-                "commit": SkillConfig(description="Commit", tools=["git"]),
-            },
-        )
-        mgr = SkillManager.from_agent_config(agent_config)
-        assert len(mgr.available_skills()) == 1
-        assert mgr.available_skills()[0].name == "commit"

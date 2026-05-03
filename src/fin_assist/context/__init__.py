@@ -2,8 +2,8 @@
 
 Both context paths are fully wired:
 
-- **Model-driven** (tool calls): ``read_file``, ``git_diff``,
-  ``git_log``, ``shell_history`` are registered in the ``ToolRegistry``
+- **Model-driven** (tool calls): ``read_file``, ``git``, ``gh``,
+  ``shell_history``, ``run_shell`` are registered in the ``ToolRegistry``
   via ``create_default_registry()`` in ``agents/tools.py``.
 
 - **User-driven** (``@``-completion): ``@file:``, ``@git:diff``,
