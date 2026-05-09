@@ -28,7 +28,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 **Remaining tracked items:**
 
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
-- `supported_context_types` published in agent cards, never consumed by clients
+- `supported_context_types` / `_CONTEXT_TYPE_HINTS` — CLI/BFF boundary not drawn explicitly; context-to-tool mapping lives in `agents/spec.py` but is a client concern. Needs broader architecture discussion: define CLI (display) vs BFF (context resolution, prompt shaping) vs hub/agent boundary, AgentCardMeta cleanup, and where context ownership should land.
 - Skill composability (skills invoking skills) — v0.2
 - Agent-to-agent orchestration — v0.2
 - MCP tool source — v0.1.1
