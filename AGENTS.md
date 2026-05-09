@@ -2,6 +2,35 @@
 
 Expandable personal AI agent platform for terminal workflows. See `docs/architecture.md` for full architecture.
 
+## Context Strategy
+
+Each context surface has **one job** and **one update cadence**. If you find yourself updating two surfaces with the same information, one of them is wrong.
+
+| Surface | Job | Cadence | Lifetime |
+|---------|-----|---------|----------|
+| `README.md` | Project soul — vision, getting started, architecture overview | Major shifts only | Forever |
+| `docs/*.md` | Architecture deep dives, design decision rationale | Per architectural change | Forever |
+| `AGENTS.md` (this file) | Development workflow, conventions, skill authoring | Per workflow change | Forever |
+| `handoff.md` | In-flight design sketches + last 1–2 sessions of rolling context | Per session | Rolling — old content prunes |
+| GitHub **milestones** | Committed work that we know we want to ship | Per planning cycle | Until shipped |
+| GitHub **issues** | Ideas, bugs, refactor discussions, things-to-discuss | Per discussion | Until closed/promoted to milestone |
+
+### Issues vs milestones
+
+- **Issues** are for things that need conversation: enhancement ideas, out-of-scope bugs found while working on a feature, refactor discussions, "we should consider X" thoughts. State is fluid; they may resolve to "won't do," may merge with other issues, may eventually graduate to a milestone.
+- **Milestones** are for committed work — things we've decided to ship under a specific tag. The "story" for a release.
+
+**The single-source-of-truth rule:** when an issue graduates to committed work, add it to a milestone. When work is committed from the start (e.g., the natural next phase), go straight to a milestone — do not file an issue first.
+
+**Before filing a new GitHub issue, check the active milestones.** If the work belongs to a known milestone, add it there directly. Issues are for things that genuinely need discussion before commitment.
+
+### Doc surfaces — what NOT to do
+
+- Do not maintain a "phases" or "implementation progress" table in `handoff.md` — that's what milestones are for.
+- Do not duplicate milestone descriptions in `handoff.md`. Link to the milestone instead.
+- Do not put architecture decisions in `handoff.md`. Sketch there during design; once shipped, the decision lives in `docs/`.
+- Do not put session-specific context in `docs/` or `README.md`. Those are forever-docs.
+
 ## Development Workflow
 
 This project follows an **SDD → TDD** implementation pattern:
@@ -132,30 +161,25 @@ This split is **project-specific**, not an industry standard — but we apply it
 
 ## Session Handoffs (handoff.md)
 
-`handoff.md` is the rolling context document for multi-session development. It enables seamless handoffs between coding sessions (including AI agent sessions).
+`handoff.md` holds two things and two things only:
 
-### Purpose
+1. **In-flight Design Sketches** — SDD work for features not yet shipped. Once a sketch ships, the durable parts move to `docs/` and the sketch is deleted.
+2. **Rolling session log** — last 1–2 sessions of context for the next session pickup. Older content prunes; git log is the long-term record.
 
-- Capture what was accomplished in each session
-- Document design sketches before implementation
-- Track implementation progress across phases
-- Provide quick-start context for fresh sessions
+It is **not** for: phase tables, implementation progress, milestone descriptions, historical reference, or "what we shipped in v0.x." Those live in milestones, git log, or `docs/` respectively.
 
-### When to Update
+### When to update
 
-- **Start of session**: Read handoff.md first for context
-- **After design work**: Add sketches to "Design Sketches" section
-- **At checkpoints**: Update "What Was Accomplished"
-- **End of session**: Update "Next Session" with next steps
-- **Phase completion**: Update "Implementation Progress" table
+- **Start of session**: read for context (current state header + next session pointer)
+- **During design**: add/update sketches under "Design Sketches"
+- **End of session**: update "Recent work" and "Next Session"; prune anything older than ~2 sessions back
 
-### Fresh Session Quick-Start
+### Fresh session quick-start
 
-1. Read `handoff.md` - current state and next steps
-2. Read `docs/architecture.md` - full architecture
-3. Read `AGENTS.md` - dev patterns (this file)
-4. Check "Implementation Progress" table
-5. Continue from "Next Session" section
+1. Read `handoff.md` — current state and next steps
+2. Skim active milestones at https://github.com/ColeB1722/fin-assist/milestones for the "story" of in-flight work
+3. Read `docs/architecture.md` for architectural context (or specific deep-dive docs)
+4. Read this file (`AGENTS.md`) for workflow and conventions
 
 ## Skill Authoring
 
