@@ -16,7 +16,7 @@ Key types:
 - ``SkillLoader`` — resolves ``SkillConfig`` (from config.toml) or
   SKILL.md files into ``SkillDefinition`` instances
 
-Design decisions (see architecture.md for full rationale):
+Design decisions (see docs/skills.md for full rationale):
 
 1. Skills are additive.  No skill unloading in v0.1.
 2. Tools are shared across skills.  Name collisions (two different

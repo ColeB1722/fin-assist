@@ -17,15 +17,15 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 **2026-05-09:** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open issues), four-phase roadmap captured as milestones (v0.1.1 → v0.2 → v0.2.1 → v0.3). v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch below.
 
-**Context-strategy refactor (this session):** documented the issue/milestone split and the doc-surface roles in `AGENTS.md`; pruned this file from the previous 625-line accumulator down to its actual job (sketches + rolling context).
+**Context-strategy refactor (across two sessions):** documented the issue/milestone split and doc-surface roles in `AGENTS.md`; pruned this file from 625 → 210 lines; split the 1464-line `docs/architecture.md` into `architecture.md` (slim contracts + diagrams), `tracing.md`, `skills.md`, `decisions.md`, `configuration.md`; rewrote `README.md` with user-lens framing and a single user-friendly diagram surfacing skills/tools/agents.
 
 ## Next session
 
 **Recommended picks (in priority order):**
 
-1. **Begin v0.1.1 work** — start with MCP tool source ([#84](https://github.com/ColeB1722/fin-assist/issues/84)) or per-subcommand approval at executor level (see [v0.1.1 milestone](https://github.com/ColeB1722/fin-assist/milestone/1) for the full set).
-2. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
-3. **Eventually:** split `docs/architecture.md` into focused files (`architecture.md` slim + `tracing.md` + `skills.md` + `decisions.md`) and beef up the README's "project soul" framing. Tracked as the next pass on the context-strategy refactor.
+1. **Commit the doc-split work** — five new docs + rewritten README + AGENTS.md/handoff.md/skills.py link fixups are unstaged.
+2. **Begin v0.1.1 work** — start with MCP tool source ([#84](https://github.com/ColeB1722/fin-assist/issues/84)) or per-subcommand approval at executor level (see [v0.1.1 milestone](https://github.com/ColeB1722/fin-assist/milestone/1) for the full set).
+3. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
 
 ---
 
@@ -193,7 +193,19 @@ phase = "experimental"
 
 ## Recent work
 
-### 2026-05-09 — Context-strategy refactor
+### 2026-05-09 (later) — Doc split + README "project soul" pass
+
+- Split `docs/architecture.md` (1464 lines) into focused docs:
+  - `docs/architecture.md` (~330 lines) — slim: principles, contracts, hub structure, A2A integration, structural request flow. Keeps Hub Internals + Backend Layer Mermaid diagrams.
+  - `docs/tracing.md` (~140 lines) — extracted tracing prose plus the full instrumented request-flow sequence diagram (with HITL pause/resume).
+  - `docs/skills.md` (~170 lines) — extracted skills section.
+  - `docs/decisions.md` (~70 lines) — Appendix Design Decisions + Open Questions table + External Federation deep-dive.
+  - `docs/configuration.md` (~110 lines) — extracted config schema, env var convention pointer, credential storage.
+- Rewrote `README.md` (256 → ~140 lines) with a user-lens framing: example `fin do git commit` interaction up top, single user-friendly Mermaid diagram surfacing skills/tools/agents/approval (replaces the 4 developer-lens diagrams which moved to `docs/`), getting-started flow, 30-second config example. Deleted the 17-row Status phase table (milestones own that now).
+- Deleted from old architecture.md: ASCII System Overview + Component Diagram (160 lines, redundant with new Mermaid), Directory Structure tree (110 lines), Implementation Phases (150 lines, git log territory), Future Considerations long-term/deferred bullets, Related Documents/Issues sections.
+- Fixed link references: `AGENTS.md` x5 (architecture.md → specific deep-dives where relevant), `handoff.md` x1, `src/fin_assist/agents/skills.py:19` (architecture.md → docs/skills.md). `.coderabbit.yaml` references kept (architecture.md still canonical for component contracts).
+
+### 2026-05-09 (earlier) — Context-strategy refactor
 
 - Added `Context Strategy` section to `AGENTS.md` documenting the surface/job/cadence table and the issue-vs-milestone rule.
 - Slimmed `AGENTS.md` "Session Handoffs" subsection to match handoff.md's narrowed role.

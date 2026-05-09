@@ -1,6 +1,6 @@
 # fin-assist
 
-Expandable personal AI agent platform for terminal workflows. See `docs/architecture.md` for full architecture.
+Expandable personal AI agent platform for terminal workflows. See [`README.md`](README.md) for the user-facing pitch and [`docs/architecture.md`](docs/architecture.md) for internals.
 
 ## Context Strategy
 
@@ -38,7 +38,7 @@ This project follows an **SDD → TDD** implementation pattern:
 ### 1. Sketch-Driven Design (SDD)
 
 Before implementing any feature:
-1. Review `docs/architecture.md` for alignment
+1. Review [`docs/architecture.md`](docs/architecture.md) for alignment (and the relevant deep-dive doc if applicable: [`skills.md`](docs/skills.md), [`tracing.md`](docs/tracing.md), [`configuration.md`](docs/configuration.md))
 2. Sketch the design in `handoff.md` under "Design Sketches"
 3. Define interfaces and data flow
 4. Identify edge cases and error handling
@@ -178,7 +178,7 @@ It is **not** for: phase tables, implementation progress, milestone descriptions
 
 1. Read `handoff.md` — current state and next steps
 2. Skim active milestones at https://github.com/ColeB1722/fin-assist/milestones for the "story" of in-flight work
-3. Read `docs/architecture.md` for architectural context (or specific deep-dive docs)
+3. Read [`docs/architecture.md`](docs/architecture.md) for architectural context, or jump straight to a deep-dive: [`skills.md`](docs/skills.md), [`tracing.md`](docs/tracing.md), [`configuration.md`](docs/configuration.md), [`decisions.md`](docs/decisions.md)
 4. Read this file (`AGENTS.md`) for workflow and conventions
 
 ## Skill Authoring
@@ -252,10 +252,10 @@ Use conventional commits format...
 2. If the skill needs a new tool, add it to `create_default_registry()` in `agents/tools.py`
 3. Write tests in `tests/test_agents/test_skills.py` (loader, catalog, manager)
 4. Run `just ci` to verify
-5. Update `docs/architecture.md` if the skill introduces new patterns
+5. Update [`docs/skills.md`](docs/skills.md) if the skill introduces new patterns
 
 ## Before Committing
 
 1. Run `just ci` to ensure all checks pass
 2. Update `handoff.md` if work spans multiple sessions
-3. Reference `docs/architecture.md` for design decisions
+3. Reference [`docs/decisions.md`](docs/decisions.md) for design decisions and [`docs/architecture.md`](docs/architecture.md) for component contracts

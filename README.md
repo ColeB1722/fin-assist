@@ -1,256 +1,158 @@
 # fin-assist
 
-Expandable personal AI agent platform for terminal workflows. An **Agent Hub** hosts N specialized agents over the [A2A protocol](https://google.github.io/A2A/) — clients dynamically adapt their UI based on each agent's declared capabilities. Shared agentic capabilities (tools, approval, context, tracing) are framework-agnostic platform abstractions; LLM frameworks plug in via backend implementations.
+**Your terminal, with AI agents that have hands.** fin-assist is a personal AI agent platform that lives in your shell. You bring agents to your work — git, shell, your codebase — instead of context-switching to a chat tab. Each agent is purpose-built for a workflow, runs locally, and uses real tools (with approval gates for the dangerous ones).
 
-## Architecture
+> ⚠️ Pre-release. Currently a personal-use platform; the API and config schema are still moving.
 
-Diagrams progress from external view → hub internals → backend wiring → per-request sequence. The Mermaid blocks below are canonical; `just diagrams` renders them to `docs/diagrams/*.svg` (+ `*.png`) for offline viewing.
+```text
+$ fin do git commit
+✓ git diff (auto-approved)
+✓ git diff --staged (auto-approved)
 
-### 1. System Context
+  feat(skills): add per-tool approval policies
 
-Who talks to what.
+  Move approval rules from per-skill config to agent-level tool_policies,
+  eliminating merge conflicts when multiple skills share a tool.
 
-<!-- diagram:01-system-context -->
-```mermaid
-graph LR
-    User(("User"))
-
-    subgraph Clients
-        CLI["CLI Client<br/>Rich · a2a-sdk ClientFactory"]
-        TUI["TUI Client<br/>(planned)"]
-    end
-
-        HUB["Agent Hub<br/>FastAPI · 127.0.0.1:4096<br/>A2A protocol"]
-
-    LLM["LLM Providers<br/>Anthropic · OpenAI<br/>OpenRouter · Google"]
-
-    User --> CLI
-    User --> TUI
-    CLI -->|"JSON-RPC + SSE"| HUB
-    TUI -->|"JSON-RPC + SSE"| HUB
-    HUB -->|"HTTPS"| LLM
-
-    classDef planned stroke-dasharray: 5 5
-    class TUI planned
+? Run 'git commit -m ...'? [y/N] y
+✓ Committed.
 ```
 
-### 2. Hub Internals
+## What it actually is
 
-Routing, per-agent sub-apps, and the Executor/stores inside the hub process.
+You run **agents** — small specialized AI workers — from your terminal. An agent is shaped by:
 
-<!-- diagram:02-hub-internals -->
+- **A system prompt** that defines what it's good at (git workflows, shell commands, design brainstorming)
+- **Skills** it can load (a "commit" skill, a "PR" skill) that scope down what tools it has and steer how it works
+- **Tools** the agent can actually call (`git`, `gh`, `read_file`, `run_shell`) — gated by approval policies you configure
+
 ```mermaid
-graph TD
-    IN["A2A request<br/>(from client)"]
-    DISC["GET /agents · GET /health<br/>(hub-level discovery)"]
+flowchart LR
+    USER(("you<br/>(in your terminal)"))
 
-    subgraph HUB_PROC["Agent Hub (FastAPI, 127.0.0.1:4096)"]
-        HUB["Hub Router<br/>mount table:<br/>· /agents/test/<br/>· /agents/{name}/ (from config)"]
+    subgraph FIN["fin-assist"]
+        direction TB
+        CLI["CLI<br/><i>fin do · fin talk</i>"]
+        HUB["Agent Hub<br/><i>local server, 127.0.0.1</i>"]
 
-        subgraph SUBAPP["Per-Agent A2A Sub-App · one instance per enabled agent"]
+        subgraph AGENTS["Agents (config-driven)"]
             direction TB
-            DRH["DefaultRequestHandler<br/>(a2a-sdk)<br/>JSON-RPC dispatch for this agent"]
-            EXEC["Executor<br/>AgentExecutor + TaskUpdater<br/>wraps this agent's PydanticAIBackend"]
-            TS["InMemoryTaskStore<br/>ephemeral · this sub-app only"]
+            GIT["git agent<br/><i>commit · pr · summarize</i>"]
+            SHELL["shell agent<br/><i>generate commands</i>"]
+            CUSTOM["your agent<br/><i>(add via TOML)</i>"]
         end
 
-        CS["ContextStore<br/>SQLite · opaque bytes<br/>single instance, shared across sub-apps"]
-
-        FACTORY["AgentFactory<br/>AgentSpec → sub-app<br/>+ AgentCard (w/ fin_assist:meta ext)"]
+        subgraph CAPS["Skills · Tools · Approval"]
+            direction TB
+            SKILLS["Skills<br/><i>scope tools, steer prompts</i>"]
+            TOOLS["Tools<br/><i>git · gh · shell · read_file · MCP</i>"]
+            APPROVAL["Approval gates<br/><i>per-tool policies</i>"]
+        end
     end
 
-    BACKEND["Backend Layer<br/>(see §3)"]
+    LLM["LLM provider<br/><i>your API key</i>"]
 
-    IN --> HUB
-    HUB -->|"dispatches to matching sub-app"| DRH
-    DRH --> EXEC
-    DRH <--> TS
-    EXEC -->|"shared store · keyed by context_id"| CS
-    EXEC -->|"delegates LLM work"| BACKEND
-
-    FACTORY -.->|"builds at startup<br/>(N instances)"| SUBAPP
-    FACTORY -.->|"publishes cards"| DISC
+    USER -->|"prompt"| CLI
+    CLI <-->|"local"| HUB
+    HUB --> AGENTS
+    AGENTS --> CAPS
+    CAPS -->|"reasoning"| LLM
+    CAPS -.->|"tool calls"| USER
 
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
-    class IN,BACKEND,DISC external
-    classDef startup fill:#fafafa,stroke:#bbb,stroke-dasharray: 4 3
-    class FACTORY startup
-    classDef shared fill:#f0f7ff,stroke:#4a7fb0,stroke-width:2px
-    class CS shared
+    class LLM external
+    classDef user fill:#fef9e7,stroke:#b58900
+    class USER user
 ```
 
-### 3. Backend Layer & Shared Services
+A few things make this different from "yet another AI CLI":
 
-How the Executor reaches the LLM and what cross-cutting services it leans on.
+- **Agents are TOML, not Python.** Add a new agent by editing `config.toml` — pick a system prompt, list skills, set tool approval policies. No subclassing.
+- **Skills gate tools.** When you run `fin do git commit`, the agent only has the tools the `commit` skill grants. Other tools don't exist from its perspective.
+- **Real approval gates.** Per-tool fnmatch rules: `git diff*` auto-approves, `git push*` always asks. You stay in control of side effects.
+- **Protocol-native.** The hub speaks [A2A](https://google.github.io/A2A/) — any A2A client can connect, future agents can be in any language.
+- **Local-first.** The hub binds to `127.0.0.1`. Your prompts and history stay on your machine.
 
-<!-- diagram:03-backend-services -->
-```mermaid
-graph TD
-    EXEC["Executor<br/>(from hub)"]
+## Getting started
 
-    subgraph BACKEND_GRP["Backend Layer"]
-        BEH["«protocol» AgentBackend"]
-        PAI["PydanticAIBackend<br/>pydantic-ai Agent · FallbackModel"]
-        SH["StreamHandle<br/>async iter (deltas) + result()"]
-        MCE["MissingCredentialsError<br/>raised when API key absent"]
-    end
+**Requirements:** [`devenv`](https://devenv.sh/) (or Python 3.12+ with `uv`).
 
-    subgraph SPEC_GRP["Agent Specification"]
-        SPEC["AgentSpec<br/>pure config · zero framework deps"]
-    end
+```bash
+# Enter the dev shell (Nix-managed)
+just dev
 
-    subgraph SHARED["Shared Services"]
-        CREDS["CredentialStore<br/>env → file → keyring"]
-        CONFIG["ConfigLoader<br/>TOML + env (FIN_*)<br/>pydantic-settings"]
-        REG["ProviderRegistry<br/>LLM providers · api_key injected"]
-    end
+# Install fin-assist
+uv sync
 
-    LLM["LLM Providers<br/>Anthropic · OpenAI · OpenRouter · Google"]
+# Configure a provider (Anthropic, OpenAI, OpenRouter, Google)
+fin-assist /connect
 
-    EXEC --> BEH
-    BEH -.->|"implemented by"| PAI
-    PAI --> SH
-    PAI -->|"create_model(provider, api_key)"| REG
-    REG --> LLM
-    PAI --> SPEC
-    PAI -.->|"raises on missing key"| MCE
-    SPEC -->|"get_api_key(provider)"| CREDS
-    SPEC --> CONFIG
-
-    classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
-    class EXEC,LLM external
-    classDef error fill:#fff3f3,stroke:#c66
-    class MCE error
+# Try it
+fin-assist do "list the largest files in this repo"
+fin-assist do git commit            # uses the git agent's commit skill
+fin-assist talk --agent git         # multi-turn session
 ```
 
-### 4. Request Flow
+Set `FIN_DATA_DIR=./.fin` (already set in `devenv.nix` for repo dev) to keep state colocated with your project instead of `~/.local/share/fin/`.
 
-End-to-end sequence of a single `SendStreamingMessage` call.
+### CLI cheat sheet
 
-<!-- diagram:04-request-flow -->
-```mermaid
-sequenceDiagram
-    participant C as CLI Client
-    participant H as Agent Hub<br/>(sub-app + DefaultRequestHandler)
-    participant E as Executor
-    participant B as AgentBackend<br/>(PydanticAIBackend)
-    participant SH as StreamHandle
-    participant CS as ContextStore
-    participant LLM as LLM Provider
-
-    C->>H: SendStreamingMessage (JSON-RPC + SSE)
-    H->>E: execute(context, event_queue)
-    E->>E: Task enqueued (SUBMITTED)
-    E->>E: updater.start_work() → WORKING
-
-    E->>B: check_credentials()
-    B-->>E: [] or [missing providers]
-
-    alt Credentials missing
-        Note over E,B: raises MissingCredentialsError
-        E->>E: updater.requires_auth() → AUTH_REQUIRED
-        H-->>C: SSE: TaskStatusUpdateEvent (auth_required)
-    else Credentials present
-        E->>CS: load(context_id)
-        CS-->>E: bytes or None
-        E->>B: deserialize_history(bytes)
-        B-->>E: message_history (prior turns)
-
-        E->>B: convert_history([current_message])
-        B-->>E: framework messages (this turn)
-
-        E->>B: run_stream(messages=history)
-        B-->>E: StreamHandle
-        Note over B,LLM: backend holds LLM connection
-
-        loop Token-by-token
-            SH-->>E: text delta (async iter)
-            E->>H: updater.add_artifact(append=true, last_chunk=false)
-            H-->>C: SSE: TaskArtifactUpdateEvent
-        end
-
-        E->>H: updater.add_artifact("", last_chunk=true)
-        H-->>C: SSE: TaskArtifactUpdateEvent (last_chunk=true)
-
-        alt Exception during stream
-            E->>E: updater.failed() → FAILED
-            H-->>C: SSE: TaskStatusUpdateEvent (failed)
-        end
-
-        E->>SH: await result()
-        SH-->>E: RunResult (output, serialized_history, new_message_parts)
-
-        E->>CS: save(context_id, serialized_history)
-
-        loop new_message_parts (thinking blocks, etc.)
-            E->>H: updater.update_status(WORKING, message=part)
-            H-->>C: SSE: TaskStatusUpdateEvent (WORKING + message)
-        end
-
-        alt Structured output (non-str)
-            E->>B: convert_result_to_part(output)
-            B-->>E: Part (data + json_schema metadata)
-            E->>H: updater.add_artifact(structured, new artifact_id)
-            H-->>C: SSE: TaskArtifactUpdateEvent (structured)
-        end
-
-        E->>E: updater.complete() → COMPLETED
-        H-->>C: SSE: TaskStatusUpdateEvent (completed)
-    end
-```
-
-## Key Concepts
-
-| Concept | Implementation |
-|---------|---------------|
-| **Config-driven agents** | Agent behavior (prompt, output type, thinking, approval, skills) defined in TOML — new agents are config entries, not new classes |
-| **Platform owns abstractions** | Tools, approval, context, step events, and tracing are framework-agnostic platform types; backends adapt them to their LLM framework |
-| **Protocol-native** | A2A via a2a-sdk v1.0; any A2A client can connect; enables future agent-to-agent workflows |
-| **Multi-path routing** | N agents → N A2A sub-apps at `/agents/{name}/`, each with its own agent card |
-| **Token-by-token streaming** | `SendStreamingMessage` SSE → `TaskUpdater.add_artifact(append=True)` → Rich `Live` rendering |
-| **Skills API** | Agents organize tools via skills — each skill bundles tools, approval rules, context injection, and prompt steering; agent-driven `load_skill` discovery; SKILL.md file format |
-| **Local-first** | Binds `127.0.0.1` only; no network exposure by default |
-
-## CLI Usage
-
-```
-fin-assist serve                        Start agent hub
+```text
+fin-assist serve                        Start the agent hub
 fin-assist agents                       List available agents
-fin-assist do "prompt"                  One-shot query (default agent)
-fin-assist do --agent test "prompt"     One-shot query (named agent)
-fin-assist do --skill commit "prompt"   One-shot query with skill pre-loaded
-fin-assist do                           Open input panel (default agent)
-fin-assist do --edit "prompt"           Open input panel pre-filled with prompt
-fin-assist talk                         Multi-turn session (default agent)
-fin-assist talk --agent test            Multi-turn session (named agent)
-fin-assist talk --skill commit          Multi-turn session with skill pre-loaded
-fin-assist list tools                   List registered tools
-fin-assist list skills                  List skills grouped by agent
-fin-assist list prompts                 List registered system prompts
-fin-assist list output-types            List registered output types
+fin-assist do "prompt"                  One-shot to default agent
+fin-assist do --agent test "prompt"     One-shot to a named agent
+fin-assist do --skill commit "prompt"   One-shot with a skill pre-loaded
+fin-assist do <agent> <skill>           Positional skill (e.g. fin do git commit)
+fin-assist do                           Open input panel
+fin-assist do --edit "prompt"           Open input panel, pre-filled
+fin-assist talk                         Multi-turn session
+fin-assist list tools|skills|prompts    List registry entries
 ```
 
-Context injection via `@`-completion in the input panel: `@file:path.py`, `@git:diff`, `@git:log`, `@history:query`.
+Inside `fin do` / `fin talk`, use `@`-completion to inject context: `@file:src/foo.py`, `@git:diff`, `@git:log`, `@history:query`.
+
+## Configuration in 30 seconds
+
+```toml
+[general]
+default_agent = "git"
+
+[agents.git]
+description = "Git workflows."
+system_prompt = "git"
+serving_modes = ["do"]
+
+[agents.git.skills.commit]
+description = "Generate a conventional commit message from current changes."
+tools = ["git"]
+prompt_template = "git-commit"
+entry_prompt = "Analyze the current changes and generate a conventional commit message."
+
+[agents.git.tool_policies.git]
+default = "always"
+rules = [
+  { pattern = "git diff*",   mode = "never" },
+  { pattern = "git status*", mode = "never" },
+  { pattern = "git log*",    mode = "never" },
+]
+```
+
+That's it — `fin do git commit` will now use this agent. See [`docs/configuration.md`](docs/configuration.md) for the full schema and [`docs/skills.md`](docs/skills.md) for the skills authoring guide.
+
+## Documentation
+
+For the user perspective, this README is the front door. For internals:
+
+- [`docs/architecture.md`](docs/architecture.md) — how the hub, agents, and backends fit together
+- [`docs/configuration.md`](docs/configuration.md) — TOML schema, env vars, credentials
+- [`docs/skills.md`](docs/skills.md) — skills, tool gating, approval policies, SKILL.md format
+- [`docs/tracing.md`](docs/tracing.md) — OTel instrumentation and HITL trace continuity
+- [`docs/decisions.md`](docs/decisions.md) — design decisions and open questions
+- [`AGENTS.md`](AGENTS.md) — development workflow and conventions (for contributors)
+
+Active work lives in [GitHub milestones](https://github.com/ColeB1722/fin-assist/milestones); ideas and discussions live in [issues](https://github.com/ColeB1722/fin-assist/issues).
 
 ## Status
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1–8b | Repo setup → CLI REPL | Done |
-| 9 | Streaming + integration tests | Done |
-| Config redesign | Config-driven agents, `AgentSpec` pure config | Done |
-| a2a-sdk migration | fasta2a → a2a-sdk v1.0, FastAPI, streaming | Done |
-| Executor + Tools + HITL | Multi-step executor, tool calling, approval (PR #87) | Done |
-| Remove built-in agents | Pure infrastructure; all agents from config.toml | Done |
-| Input panel + `--edit` | Interactive `fin do`, `--edit` flag, `--agent` flag | Done |
-| `@`-completion | Inline context injection (`@file:`, `@git:`, `@history:`) | Done |
-| `fin list` | CLI capabilities listing (tools, skills, prompts, output-types) | Done |
-| Observability | OTel tracing (hub + CLI), OpenInference/Phoenix bridge, JSONL span sink, HITL trace continuity | Done |
-| 15 | Skills API v0.1 | Done |
-| 11 | Multiplexer (tmux/zellij) | Planned |
-| 13 | TUI client (Textual) | Planned |
-| 15b | MCP integration (v0.1.1) | Planned |
-| 16 | Additional agents (SDD, TDD) | Planned |
-| 17 | Multi-agent workflows | Planned |
-
-See [docs/architecture.md](docs/architecture.md) for full architecture, design decisions, and implementation details.
+Pre-release, single-developer project. Currently shipping v0.1 (Skills API). The protocol layer (A2A), hub, CLI, streaming, tool calling, HITL approval, tracing, and skills are all working. Next up: MCP integration, additional agents (SDD, TDD), and a TUI client.
