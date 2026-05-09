@@ -85,12 +85,13 @@ just dev
 uv sync
 
 # Configure a provider (Anthropic, OpenAI, OpenRouter, Google)
-fin-assist /connect
+export ANTHROPIC_API_KEY=sk-...
+# (interactive setup planned — see issue #124)
 
 # Try it
 fin-assist do "list the largest files in this repo"
-fin-assist do git commit            # uses the git agent's commit skill
-fin-assist talk --agent git         # multi-turn session
+fin-assist do --agent git commit       # uses the git agent's `commit` skill
+fin-assist talk --agent git            # multi-turn session
 ```
 
 Set `FIN_DATA_DIR=./.fin` (already set in `devenv.nix` for repo dev) to keep state colocated with your project instead of `~/.local/share/fin/`.
@@ -98,16 +99,18 @@ Set `FIN_DATA_DIR=./.fin` (already set in `devenv.nix` for repo dev) to keep sta
 ### CLI cheat sheet
 
 ```text
-fin-assist serve                        Start the agent hub
-fin-assist agents                       List available agents
-fin-assist do "prompt"                  One-shot to default agent
-fin-assist do --agent test "prompt"     One-shot to a named agent
-fin-assist do --skill commit "prompt"   One-shot with a skill pre-loaded
-fin-assist do <agent> <skill>           Positional skill (e.g. fin do git commit)
-fin-assist do                           Open input panel
-fin-assist do --edit "prompt"           Open input panel, pre-filled
-fin-assist talk                         Multi-turn session
-fin-assist list tools|skills|prompts    List registry entries
+fin-assist serve                            Start the agent hub (foreground)
+fin-assist start | stop | status            Background hub lifecycle
+fin-assist agents                           List available agents
+fin-assist do "prompt"                      One-shot to default agent
+fin-assist do --agent test "prompt"         One-shot to a named agent
+fin-assist do --agent git --skill commit    One-shot with a skill pre-loaded
+fin-assist do --agent git commit            Prompt-as-skill shortcut: prompt is
+                                            auto-promoted to skill when it matches
+fin-assist do                               Open input panel
+fin-assist do --edit "prompt"               Open input panel, pre-filled
+fin-assist talk [--agent <n>] [--skill <n>] Multi-turn session
+fin-assist list tools|skills|prompts        List registry entries
 ```
 
 Inside `fin do` / `fin talk`, use `@`-completion to inject context: `@file:src/foo.py`, `@git:diff`, `@git:log`, `@history:query`.

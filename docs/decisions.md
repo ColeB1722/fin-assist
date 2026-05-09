@@ -42,7 +42,7 @@ Decisions deferred until the relevant work picks them up.
 | `AgentBackend` protocol shape | Open — [#80](https://github.com/ColeB1722/fin-assist/issues/80) | Protocol currently reflects pydantic-ai shape in ~5 of 6 methods. Revisit when a second backend is actually needed |
 | External agent federation | Open — deferred | Hub can register external A2A servers (any language) in discovery; deferred until a real external agent exists to validate config schema. See [§External agent federation](#external-agent-federation) below |
 | gRPC transport | Open — deferred | A2A protocol supports gRPC; a2a-sdk v1.0 supports it; not yet used by fin-assist |
-| Non-blocking agents | Open | `SendMessage` with `blocking: false`; `_poll_task` fallback already implemented in `cli/client.py` but unused |
+| Non-blocking agents | Open | `SendMessage` with `blocking: false`; client-side polling not yet wired |
 | Deep evals criteria | Open | Must/must-not/should per agent, LLM-as-judge default — designed when eval harness is built (v0.3) |
 
 ## External agent federation

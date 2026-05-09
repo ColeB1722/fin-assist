@@ -75,9 +75,9 @@ tools = ["run_shell"]
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `description` | str | `""` | Human-readable description, surfaced in the agent card |
-| `system_prompt` | str | required | Key into `SYSTEM_PROMPTS` registry |
+| `system_prompt` | str | `"chain-of-thought"` | Key into `SYSTEM_PROMPTS` registry |
 | `output_type` | str | `"text"` | Key into `OUTPUT_TYPES` registry (`"text"` → `str`, `"command"` → `CommandResult`) |
-| `thinking` | `"low"`/`"medium"`/`"high"` or null | null | Pydantic-AI thinking effort |
+| `thinking` | `"off"`/`"low"`/`"medium"`/`"high"` or null | `"medium"` | Pydantic-AI thinking effort; `"off"` disables, `null` inherits from `[general]` |
 | `serving_modes` | list[`"do"`/`"talk"`] | `["do", "talk"]` | Which CLI modes this agent supports |
 | `enabled` | bool | true | Whether to mount this agent in the hub |
 | `base_tools` | list[str] | `["read_file"]` | Always-available tools (no skill load required) |
@@ -108,7 +108,7 @@ base_url = "..."           # optional; defaults vary per provider
 # API keys live in credentials, not config
 ```
 
-`ProviderRegistry` reads `[providers.*]` and constructs pydantic-ai providers on demand, injecting the API key from `CredentialStore` per `create_model()` call.
+The `[providers.*]` section is read by `AgentSpec` (which exposes `get_api_key(provider)` and `get_base_url(provider)` to the backend). `ProviderRegistry` (in `llm/model_registry.py`) is a stateless factory: `create_model(provider, model, api_key=..., base_url=...)` — the spec resolves credentials and passes them through per call.
 
 ## Credential storage
 
@@ -120,7 +120,7 @@ Lookup chain (highest precedence first):
 2. Credentials file (`credentials.json`)
 3. OS keyring (if `keyring` is installed and a key is stored)
 
-Use `fin-assist /connect` to set up provider credentials interactively.
+Today, set credentials by either exporting the env var (`export ANTHROPIC_API_KEY=...`) or hand-editing `$FIN_DATA_DIR/credentials.json` (a flat `{"anthropic": "sk-..."}` JSON object). An interactive `/connect` setup command is planned — see [#124](https://github.com/ColeB1722/fin-assist/issues/124).
 
 ## Runtime paths
 

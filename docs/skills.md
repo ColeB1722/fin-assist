@@ -12,17 +12,17 @@ Approval policies are defined at the **agent level** via `tool_policies`, not pe
 | `SkillCatalog` | `agents/skills.py` | Generates catalog text for the system prompt |
 | `SkillLoader` | `agents/skills.py` | Resolves `SkillConfig` or SKILL.md files into `SkillDefinition` instances |
 | `SkillManager` | `agents/skills.py` | Tracks loaded skills, provides `load_skill` callable, `loaded_tool_names()`, generates catalog |
-| `SkillConfig` | `config/schema.py` | Per-skill TOML config (tools, prompt_template, entry_prompt, context) |
+| `SkillConfig` | `config/schema.py` | Per-skill TOML config (tools, prompt_template, entry_prompt, context, serving_modes) |
 | `ToolPolicyConfig` | `config/schema.py` | Agent-level tool approval policy (default mode + rules) |
 | `ToolPolicyRuleConfig` | `config/schema.py` | Single fnmatch-based approval rule in config |
-| `ApprovalPolicy` | `agents/tools.py` | Policy with `evaluate(args)` — first-match rules, default fallback |
+| `ApprovalPolicy` | `agents/tools.py` | Runtime policy: `evaluate(args) -> tuple[mode, description]` (first-match rules, default fallback) |
 | `AgentConfig.base_tools` | `config/schema.py` | Always-available safe/read-only tools (default: `["read_file"]`) |
 | `AgentConfig.tool_policies` | `config/schema.py` | Agent-level tool approval policies (dict keyed by tool name) |
 
 ## Skill lifecycle
 
-1. **Config time** — Skills are defined in `config.toml` under `[agents.<name>.skills.<skill>]` or as SKILL.md files in `.fin/skills/<name>/SKILL.md` (project) or `~/.config/fin/skills/<name>/SKILL.md` (user). Project-level skills take precedence for same-name skills. Tool approval policies are defined at the agent level under `[agents.<name>.tool_policies.<tool>]`.
-2. **Agent startup** — `SkillLoader` resolves all skill configs into `SkillDefinition` instances. `AgentSpec.skill_tool_names` derives from the union of all skill tool lists. `AgentSpec.base_tools` lists always-available tools.
+1. **Config time** — Skills are defined in `config.toml` under `[agents.<name>.skills.<skill>]`. SKILL.md files (under `$FIN_DATA_DIR/skills/<name>/SKILL.md`) are discoverable today via `fin list skills` but are **not loaded into running agents** — the runtime `SkillManager` is built only from inline TOML config (`AgentSpec.get_skill_definitions()` calls only `loader.load_all_from_agent_config`). Wiring SKILL.md files into the runtime, plus a real project-vs-user precedence model and the cross-agent binding question, is tracked as [#125](https://github.com/ColeB1722/fin-assist/issues/125). Tool approval policies are defined at the agent level under `[agents.<name>.tool_policies.<tool>]`.
+2. **Agent startup** — `SkillLoader` resolves the inline-config skills into `SkillDefinition` instances. `AgentSpec.skill_tool_names` derives from the union of all skill tool lists. `AgentSpec.base_tools` lists always-available tools.
 3. **Backend init** — `PydanticAIBackend._get_skill_manager()` creates a `SkillManager` from the spec's skill definitions. Only `base_tools` are registered initially. If any skills are available but not yet loaded, the `load_skill` tool is registered and the skill catalog is appended to the system prompt.
 4. **Skill loading** — Skills can be loaded via:
    - `--skill` CLI flag or positional syntax (`fin do git commit`) — calls the `skills/invoke` endpoint server-side
@@ -96,9 +96,14 @@ The CLI calls this endpoint before streaming when a skill is resolved via `--ski
 
 ## Skill tracing
 
-- **CLI-side**: `cli_root_span(skill="commit")` stamps `fin_assist.cli.skill` on the CLI root span
-- **Hub-side**: `fin_assist.skill_load` span emitted via `_TaskTracer.emit_skill_load_span()` when a skill is loaded during a task (agent-driven `load_skill` tool). Carries `fin_assist.skill.id`, `fin_assist.skill.entry_point`, and `fin_assist.skill.tools_unlocked`.
-- **Task span**: `start_task_span(skill_id="commit")` stamps `fin_assist.skill.id` on the task span when the skill was pre-loaded before the task started
+Today, only one piece of skill activity is observable in traces:
+
+- **CLI-side**: `cli_root_span(skill="commit")` stamps `fin_assist.cli.skill` on the CLI root span when a skill is pre-loaded via `--skill` flag or the prompt-as-skill shortcut.
+
+Two further hooks exist as scaffolding but are **not yet invoked** — tracked as [#123](https://github.com/ColeB1722/fin-assist/issues/123):
+
+- `_TaskTracer.emit_skill_load_span()` (defined; would emit `fin_assist.skill_load` with `fin_assist.skill.id`, `fin_assist.skill.entry_point`, `fin_assist.skill.tools_unlocked`) — would fire when a skill loads during a task.
+- `start_task_span(skill_id=...)` (parameter accepted; would stamp `fin_assist.skill.id` on the `fin_assist.task` span) — would fire when a skill was pre-loaded before the task started.
 
 See [`docs/tracing.md`](tracing.md) for the broader tracing model.
 
@@ -123,10 +128,10 @@ metadata:
 Use conventional commits format. Keep the subject line under 50 characters.
 ```
 
-Discovery paths (project takes precedence for same-name skills):
+Discovery paths (used by `fin list skills` only — see lifecycle note above; runtime loading is tracked as [#125](https://github.com/ColeB1722/fin-assist/issues/125)):
 
-- Project: `.fin/skills/<name>/SKILL.md`
-- User: `~/.config/fin/skills/<name>/SKILL.md`
+- `$FIN_DATA_DIR/skills/<name>/SKILL.md` (with `FIN_DATA_DIR=./.fin` for project-local skills in dev)
+- `~/.config/fin/skills/<name>/SKILL.md` (user)
 
 ## Inline TOML skills
 

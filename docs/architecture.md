@@ -174,13 +174,13 @@ class AgentSpec:
     def output_type(self) -> type[Any]:    # via OUTPUT_TYPES registry
         ...
     @property
-    def thinking(self) -> ThinkingEffort | None: ...
+    def thinking(self) -> Literal["off", "low", "medium", "high"] | None: ...
     @property
     def default_model(self) -> str: ...
     @property
     def agent_card_metadata(self) -> AgentCardMeta: ...
     @property
-    def tools(self) -> list[str]: ...      # derived from skill union
+    def skill_tool_names(self) -> list[str]: ...   # union of tools across all skills
 
     def check_credentials(self) -> list[str]:
         """Names of enabled providers with missing API keys (empty = all present)."""
@@ -195,18 +195,30 @@ class AgentSpec:
 @runtime_checkable
 class AgentBackend(Protocol):
     def check_credentials(self) -> list[str]: ...
-    def run_stream(
+    def convert_history(self, a2a_messages: Sequence[Any]) -> list[Any]: ...
+    def run_steps(
         self,
         *,
         messages: list[Any],
         model: Any = None,
-    ) -> StreamHandle: ...
-    def convert_history(self, messages: list[Message]) -> list[Any]: ...
-    def deserialize_history(self, raw: bytes) -> list[Any]: ...
-    def convert_result_to_part(self, output: Any) -> Part: ...
+        deferred_tool_results: Any = None,
+    ) -> StepHandle: ...
+    def serialize_history(self, messages: list[Any]) -> bytes: ...
+    def deserialize_history(self, data: bytes) -> list[Any]: ...
+    def convert_result_to_part(self, result: Any) -> Part: ...
+    def convert_response_parts(self, parts: Sequence[Any]) -> list[Part]: ...
+    def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any: ...
+    # Optional — backends may implement for framework-specific tracing
+    def install_tracing(
+        self,
+        provider: TracerProvider,
+        *,
+        include_content: bool,
+        event_mode: str,
+    ) -> None: ...
 ```
 
-`StreamHandle` yields text deltas via async iteration and returns a `RunResult(output, serialized_history, new_message_parts)` from `result()`.
+`StepHandle` yields `StepEvent`s via async iteration — discriminated by `kind` (`text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `step_start`, `step_end`, `deferred`) — and returns a `RunResult(output, serialized_history, new_message_parts)` from `result()`. The `tool_call`/`deferred` events drive HITL approval.
 
 ### `AgentCardMeta`
 
@@ -262,7 +274,7 @@ class ContextItem:
     type: Literal["file", "git_diff", "git_log", "git_status", "history", "env"]
     content: str
     metadata: dict[str, object]
-    status: ItemStatus = "ready"
+    status: Literal["available", "not_found", "excluded", "error"] = "available"
     error_reason: str | None = None
 
 class ContextProvider(ABC):
@@ -281,33 +293,33 @@ Context gathering works two ways:
 
 ## Hub factory
 
-`create_hub_app()` builds the parent FastAPI app, constructs a single shared `ContextStore`, and mounts one sub-app per enabled agent via `AgentFactory`:
+`create_hub_app()` takes a pre-built sequence of `AgentSpec`s (constructed by the caller, e.g. `_serve_command` in `cli/main.py`), builds the parent FastAPI app, constructs a single shared `ContextStore`, and mounts one sub-app per spec via `AgentFactory`:
 
 ```python
 def create_hub_app(
-    config: Config,
-    credentials: CredentialStore,
-    *,
-    db_path: Path,
+    agents: Sequence[AgentSpec] | None = None,
+    db_path: str = ":memory:",
+    base_url: str = "http://127.0.0.1:4096",
+    backend_factory: Callable[[AgentSpec], AgentBackend] | None = None,
+    context_settings: ContextSettings | None = None,
 ) -> FastAPI:
     app = FastAPI(title="fin-assist Agent Hub")
     context_store = ContextStore(db_path=db_path)          # shared across sub-apps
-    factory = AgentFactory(context_store=context_store)
+    factory = AgentFactory(
+        context_store=context_store,
+        context_settings=context_settings,
+    )
 
-    for name, agent_config in config.agents.items():
-        if not agent_config.enabled:
-            continue
-        spec = AgentSpec(
-            name=name,
-            agent_config=agent_config,
-            config=config,
-            credentials=credentials,
+    for spec in agents or []:
+        sub_app = factory.create_a2a_app(
+            spec,
+            base_url=base_url,
+            backend=backend_factory(spec) if backend_factory else None,
         )
-        sub_app = factory.create_a2a_app(spec)
-        app.mount(f"/agents/{name}", sub_app)
+        app.mount(f"/agents/{spec.name}", sub_app)
 
     @app.get("/agents")
-    async def discovery(): ...     # returns each sub-app's agent card URL + metadata
+    async def discovery(): ...     # returns each agent's name, description, card URL, card_meta
 
     @app.get("/health")
     async def health(): ...
@@ -315,7 +327,9 @@ def create_hub_app(
     return app
 ```
 
-`AgentFactory.create_a2a_app(spec)` builds the agent card with an `AgentExtension(uri="fin_assist:meta")` carrying `AgentCardMeta`, constructs a `PydanticAIBackend` wrapping the spec, builds an `Executor` consuming the backend, creates a per-sub-app `InMemoryTaskStore`, and wires through `DefaultRequestHandler`. The result is a FastAPI sub-app with the a2a-sdk JSON-RPC + agent-card routes mounted.
+The split between "build specs" (in the CLI command) and "mount specs" (in the factory) lets the caller wire backends, tracing, and tool registries before the app exists — see `cli/main.py:_serve_command` for the full ordering (specs → backends → `setup_tracing` → `create_hub_app` → `FastAPIInstrumentor`).
+
+`AgentFactory.create_a2a_app(spec, ...)` builds the agent card with an `AgentExtension(uri="fin_assist:meta")` carrying `AgentCardMeta`, constructs (or accepts) a `PydanticAIBackend` wrapping the spec, builds an `Executor` consuming the backend, creates a per-sub-app `InMemoryTaskStore`, mounts a `POST /skills/invoke` route for the skill-loading A2A method extension, and wires through `DefaultRequestHandler`. The result is a FastAPI sub-app with the a2a-sdk JSON-RPC + agent-card routes mounted.
 
 ## Request flow overview
 
@@ -380,33 +394,35 @@ Key benefits for fin-assist:
 
 ### Transport
 
-The A2A protocol defines transport as pluggable. a2a-sdk v1.0 supports JSON-RPC, REST, and gRPC transports from the same protobuf schema. The v1.0 JSON-RPC method names are PascalCase (`SendMessage`, `GetTask`, `CancelTask`, `SendStreamingMessage`) and require the `A2A-Version: 1.0` header.
+The A2A protocol defines transport as pluggable. a2a-sdk v1.0 supports JSON-RPC, REST, and gRPC transports from the same protobuf schema. fin-assist uses the SDK's JSON-RPC transport via the `Client.send_message(SendMessageRequest(...))` API (`cli/client.py`); request/response wire formats and method dispatch are handled inside a2a-sdk.
 
 | Modality | Transport | Status | Notes |
 |----------|-----------|--------|-------|
-| Blocking `SendMessage` | JSON-RPC | Implemented | Hub responds inline when agent finishes |
-| Streaming `SendStreamingMessage` | JSON-RPC SSE | Implemented | Token-by-token via `TaskUpdater.add_artifact(append=True)` |
-| Non-blocking + polling | JSON-RPC | Open | `_poll_task` fallback exists in `cli/client.py` but unused |
+| Blocking message | JSON-RPC | Implemented | Hub responds inline when agent finishes |
+| Streaming | JSON-RPC SSE | Implemented | Token-by-token via `TaskUpdater.add_artifact(append=True)` |
+| Non-blocking + polling | JSON-RPC | Future | Not yet wired |
 | gRPC | gRPC | Future | Protocol-native; a2a-sdk v1.0 supports it |
 
 ## CLI entry points
 
 ```text
-fin-assist serve                        → start agent hub on 127.0.0.1:4096
-fin-assist agents                       → list available agents (GET /agents)
-fin-assist do "prompt"                  → one-shot to default_agent from config
-fin-assist do --agent <name> "prompt"   → one-shot to named agent
-fin-assist do --skill <name> "prompt"   → one-shot with a skill pre-loaded
-fin-assist do <agent> <skill>           → positional skill (e.g. fin do git commit)
-fin-assist do --edit                    → open input panel pre-filled with prompt
-fin-assist do                           → no prompt → opens input panel
-fin-assist talk                         → multi-turn session with default_agent
-fin-assist talk --agent <name>          → multi-turn with named agent
-fin-assist talk --skill <name>          → multi-turn with a skill pre-loaded
-fin-assist talk --resume <id>           → resume a saved session
-fin-assist talk --list                  → list saved sessions for agent
+fin-assist serve                            → start agent hub in foreground on 127.0.0.1:4096
+fin-assist start | stop | status            → background hub lifecycle
+fin-assist agents                           → list available agents (GET /agents)
+fin-assist do "prompt"                      → one-shot to default_agent from config
+fin-assist do --agent <name> "prompt"       → one-shot to named agent
+fin-assist do --agent <name> --skill <name> → one-shot with a skill pre-loaded
+fin-assist do --agent <name> <skill>        → prompt-as-skill: prompt is auto-promoted
+                                              to the skill name when it matches one
+fin-assist do --edit "prompt"               → open input panel pre-filled with prompt
+fin-assist do                               → no prompt → opens input panel
+fin-assist talk [--agent <n>] [--skill <n>] → multi-turn session
+fin-assist talk --resume <id>               → resume a saved session
+fin-assist talk --list                      → list saved sessions for agent
 fin-assist list tools|skills|prompts|output-types  → list registry entries
 ```
+
+> Note: the `--agent` flag is required when you want a non-default agent. There is no bare positional `fin do <agent> <skill>` form — the `do` parser has only one positional argument (`prompt`). What works is the *prompt-as-skill* shortcut: `fin do --agent git commit` is parsed as `prompt="commit"` and then auto-promoted to `skill=commit` because `commit` is a registered skill on `git`.
 
 REPL commands (during multi-turn chat):
 

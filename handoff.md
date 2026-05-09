@@ -17,14 +17,14 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 **2026-05-09:** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open issues), four-phase roadmap captured as milestones (v0.1.1 → v0.2 → v0.2.1 → v0.3). v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch below.
 
-**Context-strategy refactor (across two sessions):** documented the issue/milestone split and doc-surface roles in `AGENTS.md`; pruned this file from 625 → 210 lines; split the 1464-line `docs/architecture.md` into `architecture.md` (slim contracts + diagrams), `tracing.md`, `skills.md`, `decisions.md`, `configuration.md`; rewrote `README.md` with user-lens framing and a single user-friendly diagram surfacing skills/tools/agents.
+**Context-strategy refactor (across three sessions):** documented the issue/milestone split and doc-surface roles in `AGENTS.md`; pruned this file from 625 → ~220 lines; split the 1464-line `docs/architecture.md` into `architecture.md` (slim contracts + diagrams), `tracing.md`, `skills.md`, `decisions.md`, `configuration.md`; rewrote `README.md` with user-lens framing; ran code-validation pass and corrected ~25 drift items (signatures, defaults, phantom commands, unwired features).
 
 ## Next session
 
 **Recommended picks (in priority order):**
 
-1. **Commit the doc-split work** — five new docs + rewritten README + AGENTS.md/handoff.md/skills.py link fixups are unstaged.
-2. **Begin v0.1.1 work** — start with MCP tool source ([#84](https://github.com/ColeB1722/fin-assist/issues/84)) or per-subcommand approval at executor level (see [v0.1.1 milestone](https://github.com/ColeB1722/fin-assist/milestone/1) for the full set).
+1. **Commit the doc-split + drift-fix work** — two commits' worth on `docs/planning`: existing `d8920a6` (split + rewrite) plus the staged drift-fix changes from this session. Push and open PR.
+2. **Begin v0.1.1 work** — milestone now has [#123](https://github.com/ColeB1722/fin-assist/issues/123) (skill tracing wiring), [#124](https://github.com/ColeB1722/fin-assist/issues/124) (`/connect` interactive setup), and [#125](https://github.com/ColeB1722/fin-assist/issues/125) (SKILL.md runtime loading) on top of the existing scope (MCP [#84](https://github.com/ColeB1722/fin-assist/issues/84), per-subcommand approval). [v0.1.1 milestone](https://github.com/ColeB1722/fin-assist/milestone/1).
 3. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
 
 ---
@@ -192,6 +192,18 @@ phase = "experimental"
 ---
 
 ## Recent work
+
+### 2026-05-09 (latest) — Code-validation pass on the new doc structure
+
+- Ran a four-track validation pass (one sub-agent per doc) of every concrete claim in `architecture.md`, `skills.md`, `tracing.md`, `configuration.md` against `src/`. Each sub-agent returned a structured report citing `file:line` for every check.
+- Found ~25 drift items, grouped into four buckets:
+  - **Critical (3)** — features documented as live but not actually wired up: `fin_assist.skill_load` span never emitted, `start_task_span(skill_id=...)` never invoked, SKILL.md files discoverable by `list skills` but not loaded into runtime `SkillManager`.
+  - **API drift (8)** — wrong signatures in arch.md "Key types" section: `AgentSpec.tools` → `skill_tool_names`, `run_stream` → `run_steps` returning `StepHandle` of `StepEvent`s (not text deltas), `AgentBackend` protocol has 8+1 methods not 5, `ContextItem.status` default `"available"` not `"ready"`, `create_hub_app` signature is `(agents: Sequence[AgentSpec], db_path: str = ":memory:", ...)` not `(config, credentials, *, db_path)`.
+  - **Phantom commands (3)** — `_poll_task` (doesn't exist anywhere in `src/`), `fin-assist /connect` (no command exists), bare positional `fin do <agent> <skill>` (argparse only has one positional; what works is `fin do --agent git commit` via prompt-as-skill auto-promotion).
+  - **Definition drift (12)** — thinking defaults, `system_prompt` "required" vs has default, `ProviderRegistry` doesn't read TOML, task-state enum missing `resumed_from_approval`, `DropSpansProcessor` is public not `_DropSpansProcessor`, `tracing_shared.py` omitted from Files list, etc.
+- Filed three GH issues under v0.1.1: [#123](https://github.com/ColeB1722/fin-assist/issues/123) (skill tracing wiring), [#124](https://github.com/ColeB1722/fin-assist/issues/124) (`/connect` interactive setup), [#125](https://github.com/ColeB1722/fin-assist/issues/125) (wire SKILL.md files into runtime `SkillManager`).
+- Applied fixes: rewrote `AgentSpec`/`AgentBackend`/`ContextItem`/`create_hub_app` API blocks in arch.md; demoted unwired skill spans to "scaffolding, not yet invoked" in skills.md + tracing.md; corrected `thinking`/`system_prompt`/`ProviderRegistry` claims in configuration.md; replaced phantom CLI commands with what actually works in arch.md + README; added `tracing_shared.py` to tracing.md Files. `just lint` clean.
+- 6 files changed, +130/-89 lines. Branch `docs/planning` still 1 commit ahead of origin (d8920a6); drift-fix changes are unstaged for the user to review and commit.
 
 ### 2026-05-09 (later) — Doc split + README "project soul" pass
 
