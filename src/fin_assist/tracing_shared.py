@@ -21,7 +21,10 @@ exporters:
   oversized string attributes to stay under gRPC's 4MB message limit.
 
 Both CLI and hub use the same processor stack so traces from both processes
-have consistent attribute hygiene.
+have consistent attribute hygiene.  When modifying the pipeline (e.g. adding
+a processor layer), check both ``hub/tracing.py`` and ``cli/tracing.py`` —
+they follow the same wiring pattern but diverge in sampler, resource naming,
+backend hooks, HTTPX instrumentation, and idempotency handling.
 
 Graceful OTLP Exporter
 ~~~~~~~~~~~~~~~~~~~~~~
