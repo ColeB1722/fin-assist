@@ -559,7 +559,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser("agents", help="List available agents.").set_defaults(agent=None)
+    subparsers.add_parser("agents", help="List available agents.").set_defaults(
+        agent=None, skill=None
+    )
 
     do_parser = subparsers.add_parser(
         "do",
@@ -633,7 +635,7 @@ def main(argv: list[str] | None = None) -> int:
         "list",
         help="List platform capabilities (tools, prompts, output-types).",
     )
-    list_parser.set_defaults(agent=None)
+    list_parser.set_defaults(agent=None, skill=None)
     list_parser.add_argument(
         "resource",
         choices=["tools", "skills", "prompts", "output-types"],
@@ -642,16 +644,16 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser(
         "start", help="Start the agent hub server in the background."
-    ).set_defaults(agent=None)
+    ).set_defaults(agent=None, skill=None)
     subparsers.add_parser("stop", help="Stop the running agent hub server.").set_defaults(
-        agent=None
+        agent=None, skill=None
     )
     subparsers.add_parser("status", help="Check if the agent hub server is running.").set_defaults(
-        agent=None
+        agent=None, skill=None
     )
 
     serve_parser = subparsers.add_parser("serve", help="Start the agent hub server.")
-    serve_parser.set_defaults(agent=None)
+    serve_parser.set_defaults(agent=None, skill=None)
     serve_parser.add_argument(
         "--host",
         default=None,
@@ -712,7 +714,7 @@ def main(argv: list[str] | None = None) -> int:
         setup_cli_tracing(config.tracing)
 
     agent_attr = args.agent or ""
-    skill_attr = getattr(args, "skill", None) or ""
+    skill_attr = args.skill or ""
 
     match args.command:
         case "agents":

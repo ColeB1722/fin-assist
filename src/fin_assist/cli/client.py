@@ -175,7 +175,7 @@ class HubClient:
             self._http = None
 
     # ------------------------------------------------------------------
-    # Discovery (hub-specific, not part of A2A protocol)
+    # Hub REST endpoints (direct HTTP, not via A2A send_message)
     # ------------------------------------------------------------------
 
     async def discover_agents(self) -> list[DiscoveredAgent]:
@@ -293,7 +293,7 @@ class HubClient:
         return False, None, None
 
     # ------------------------------------------------------------------
-    # Skill endpoints (hub-specific, not part of A2A protocol)
+    # Skill endpoints (direct HTTP, not via A2A send_message)
     # ------------------------------------------------------------------
 
     async def list_skills(self, agent_name: str) -> list[dict[str, Any]]:

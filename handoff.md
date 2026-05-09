@@ -55,6 +55,7 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | 3 | MCP tool source (v0.1.1) | ⬜ Queued — skill→tool binding is source-agnostic |
 | 3b | Pluggable base system prompts (v0.1.1) | ⬜ Queued — user-overridable prompt templates, not hardcoded constants |
 | 3c | Registry consistency + policy resolution audit (v0.1.1) | ⬜ Queued — compare registry APIs for consistency; review policy resolution flow (schema → evaluate → backend → executor) for end-user understandability |
+| 3d | Evaluate constant placement patterns (v0.1.1) | ⬜ Queued — [#122](https://github.com/ColeB1722/fin-assist/issues/122) assess whether domain/behavior constants (fuzzy thresholds, timeout values, context-type mappings) should centralize or stay local; follows #90 |
 | 4 | Eval harness (per-agent) | ⬜ Queued — rides on tracing |
 | 5 | Skill composability + agent-to-agent (v0.2) | ⬜ Queued |
 
