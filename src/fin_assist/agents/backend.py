@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from pydantic_ai import Agent
     from pydantic_ai.models import Model
 
+    from fin_assist.agents.skills import SkillManager
     from fin_assist.agents.spec import AgentSpec
     from fin_assist.agents.tools import ToolRegistry
     from fin_assist.llm.model_registry import ProviderRegistry
@@ -304,8 +305,8 @@ class PydanticAIBackend:
     ) -> None:
         self._spec = agent_spec
         self._tool_registry = tool_registry
-        self._registry: Any = None
-        self._skill_manager: Any | None = None
+        self._registry: ProviderRegistry | None = None
+        self._skill_manager: SkillManager | None = None
 
     def _get_skill_manager(self):
         from fin_assist.agents.skills import SkillManager

@@ -1,4 +1,4 @@
-r"""Skills API — the core abstraction for tool organization in fin-assist.
+"""Skills API — the core abstraction for tool organization in fin-assist.
 
 An agent is a collection of skills within an environment.  A skill curates
 tools, context injection text, and prompt steering.  Skills are loaded
@@ -20,7 +20,7 @@ Design decisions (see architecture.md for full rationale):
 
 1. Skills are additive.  No skill unloading in v0.1.
 2. Tools are shared across skills.  Name collisions (two different
-   ``ToolDefinition``\s with the same name) are a config error.
+   ``ToolDefinition``\\s with the same name) are a config error.
 3. Approval policies are agent-level, not skill-level.  Each tool has
    exactly one policy definition — no merge/conflict.
 4. Agent-driven loading: the agent sees a catalog and calls
