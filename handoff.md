@@ -23,9 +23,10 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 **Recommended picks (in priority order):**
 
-1. **Commit the doc-split + drift-fix work** — two commits' worth on `docs/planning`: existing `d8920a6` (split + rewrite) plus the staged drift-fix changes from this session. Push and open PR.
-2. **Begin v0.1.1 work** — milestone now has [#123](https://github.com/ColeB1722/fin-assist/issues/123) (skill tracing wiring), [#124](https://github.com/ColeB1722/fin-assist/issues/124) (`/connect` interactive setup), and [#125](https://github.com/ColeB1722/fin-assist/issues/125) (SKILL.md runtime loading) on top of the existing scope (MCP [#84](https://github.com/ColeB1722/fin-assist/issues/84), per-subcommand approval). [v0.1.1 milestone](https://github.com/ColeB1722/fin-assist/milestone/1).
-3. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
+1. **Begin v0.1.1 work** — slimmed to 7 focused issues: MCP ([#84](https://github.com/ColeB1722/fin-assist/issues/84)), pluggable prompts ([#89](https://github.com/ColeB1722/fin-assist/issues/89)), GitContext size limits ([#85](https://github.com/ColeB1722/fin-assist/issues/85)), Environment context ([#115](https://github.com/ColeB1722/fin-assist/issues/115)), and the three drift-wiring issues from doc-validation ([#123](https://github.com/ColeB1722/fin-assist/issues/123) skill tracing, [#124](https://github.com/ColeB1722/fin-assist/issues/124) `/connect`, [#125](https://github.com/ColeB1722/fin-assist/issues/125) SKILL.md runtime). Per-subcommand approval is still in v0.1.x scope but not yet filed as an issue.
+2. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
+
+**Sequence:** v0.1.1 (foundations) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility — badges + demo gif, [#127](https://github.com/ColeB1722/fin-assist/issues/127)) → v0.2 (sub-agents).
 
 ---
 
@@ -193,7 +194,16 @@ phase = "experimental"
 
 ## Recent work
 
-### 2026-05-09 (latest) — Code-validation pass on the new doc structure
+### 2026-05-09 (latest) — README rewrite + milestone re-split
+
+- Rewrote README into technical-writing register (per user feedback that "user-lens" had become conversational). Structure: Concepts → Example → Architecture → Install → CLI reference → Documentation → Status. Replaced user-lens diagram with structural Architecture diagram. Paired TOML config with invocation example so reader has vocabulary before seeing the CLI session. 161 → 141 lines.
+- Split v0.1.1 (was 35 issues, three mixed themes) into:
+  - **v0.1.1 — Foundations** (7 issues): #84, #85, #89, #115, #123, #124, #125
+  - **v0.1.2 — Visibility** (new milestone, 1 issue): [#127](https://github.com/ColeB1722/fin-assist/issues/127) (badges + demo gif)
+  - **No milestone** (28 issues): chore batch — test cleanup, type hints, CodeRabbit refactors. Per AGENTS.md context strategy, "things to do when convenient" don't belong in milestones.
+- Updated v0.1.1 milestone description to reflect the new 7-issue scope and document the chore-unmilestoning rationale.
+
+### 2026-05-09 (earlier) — Code-validation pass on the new doc structure
 
 - Ran a four-track validation pass (one sub-agent per doc) of every concrete claim in `architecture.md`, `skills.md`, `tracing.md`, `configuration.md` against `src/`. Each sub-agent returned a structured report citing `file:line` for every check.
 - Found ~25 drift items, grouped into four buckets:

@@ -1,128 +1,24 @@
 # fin-assist
 
-**Your terminal, with AI agents that have hands.** fin-assist is a personal AI agent platform that lives in your shell. You bring agents to your work — git, shell, your codebase — instead of context-switching to a chat tab. Each agent is purpose-built for a workflow, runs locally, and uses real tools (with approval gates for the dangerous ones).
+Personal AI agent platform for terminal workflows. Agents, skills, and tools are defined in TOML; a local hub serves them via the [A2A protocol](https://google.github.io/A2A/); a CLI client streams responses inline. Tool calls run on the host machine and pass through configurable approval gates.
 
-> ⚠️ Pre-release. Currently a personal-use platform; the API and config schema are still moving.
+> Pre-release. The API and config schema are still moving.
 
-```text
-$ fin do git commit
-✓ git diff (auto-approved)
-✓ git diff --staged (auto-approved)
+## Concepts
 
-  feat(skills): add per-tool approval policies
+- **Agent.** A configured combination of system prompt, output type, and capabilities. Agents are TOML entries under `[agents.<name>]`, not Python subclasses. `serving_modes` declares whether the agent supports one-shot (`do`) or multi-turn (`talk`) invocations.
+- **Skill.** A scoped capability bundle within an agent: a tool list, a prompt template, and an entry prompt. Skills gate which tools the LLM can call — unloaded skills' tools are not visible to the agent. Defined under `[agents.<name>.skills.<skill>]`.
+- **Tool.** A callable side-effect surface (`git`, `gh`, `read_file`, `run_shell`, MCP servers). Tools are registered into a shared registry and attached to agents via skills.
+- **Tool policy.** Per-tool approval rules (`always`, `never`, fnmatch pattern rules). Defined at the agent level under `[agents.<name>.tool_policies.<tool>]` so each tool has exactly one policy regardless of how many skills reference it.
+- **Hub.** Local FastAPI server (`127.0.0.1:4096` by default) that mounts each enabled agent as an A2A sub-app. The CLI is one client; any A2A-compatible client can connect.
 
-  Move approval rules from per-skill config to agent-level tool_policies,
-  eliminating merge conflicts when multiple skills share a tool.
+## Example
 
-? Run 'git commit -m ...'? [y/N] y
-✓ Committed.
-```
-
-## What it actually is
-
-You run **agents** — small specialized AI workers — from your terminal. An agent is shaped by:
-
-- **A system prompt** that defines what it's good at (git workflows, shell commands, design brainstorming)
-- **Skills** it can load (a "commit" skill, a "PR" skill) that scope down what tools it has and steer how it works
-- **Tools** the agent can actually call (`git`, `gh`, `read_file`, `run_shell`) — gated by approval policies you configure
-
-```mermaid
-flowchart LR
-    USER(("you<br/>(in your terminal)"))
-
-    subgraph FIN["fin-assist"]
-        direction TB
-        CLI["CLI<br/><i>fin do · fin talk</i>"]
-        HUB["Agent Hub<br/><i>local server, 127.0.0.1</i>"]
-
-        subgraph AGENTS["Agents (config-driven)"]
-            direction TB
-            GIT["git agent<br/><i>commit · pr · summarize</i>"]
-            SHELL["shell agent<br/><i>generate commands</i>"]
-            CUSTOM["your agent<br/><i>(add via TOML)</i>"]
-        end
-
-        subgraph CAPS["Skills · Tools · Approval"]
-            direction TB
-            SKILLS["Skills<br/><i>scope tools, steer prompts</i>"]
-            TOOLS["Tools<br/><i>git · gh · shell · read_file · MCP</i>"]
-            APPROVAL["Approval gates<br/><i>per-tool policies</i>"]
-        end
-    end
-
-    LLM["LLM provider<br/><i>your API key</i>"]
-
-    USER -->|"prompt"| CLI
-    CLI <-->|"local"| HUB
-    HUB --> AGENTS
-    AGENTS --> CAPS
-    CAPS -->|"reasoning"| LLM
-    CAPS -.->|"tool calls"| USER
-
-    classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
-    class LLM external
-    classDef user fill:#fef9e7,stroke:#b58900
-    class USER user
-```
-
-A few things make this different from "yet another AI CLI":
-
-- **Agents are TOML, not Python.** Add a new agent by editing `config.toml` — pick a system prompt, list skills, set tool approval policies. No subclassing.
-- **Skills gate tools.** When you run `fin do git commit`, the agent only has the tools the `commit` skill grants. Other tools don't exist from its perspective.
-- **Real approval gates.** Per-tool fnmatch rules: `git diff*` auto-approves, `git push*` always asks. You stay in control of side effects.
-- **Protocol-native.** The hub speaks [A2A](https://google.github.io/A2A/) — any A2A client can connect, future agents can be in any language.
-- **Local-first.** The hub binds to `127.0.0.1`. Your prompts and history stay on your machine.
-
-## Getting started
-
-**Requirements:** [`devenv`](https://devenv.sh/) (or Python 3.12+ with `uv`).
-
-```bash
-# Enter the dev shell (Nix-managed)
-just dev
-
-# Install fin-assist
-uv sync
-
-# Configure a provider (Anthropic, OpenAI, OpenRouter, Google)
-export ANTHROPIC_API_KEY=sk-...
-# (interactive setup planned — see issue #124)
-
-# Try it
-fin-assist do "list the largest files in this repo"
-fin-assist do --agent git commit       # uses the git agent's `commit` skill
-fin-assist talk --agent git            # multi-turn session
-```
-
-Set `FIN_DATA_DIR=./.fin` (already set in `devenv.nix` for repo dev) to keep state colocated with your project instead of `~/.local/share/fin/`.
-
-### CLI cheat sheet
-
-```text
-fin-assist serve                            Start the agent hub (foreground)
-fin-assist start | stop | status            Background hub lifecycle
-fin-assist agents                           List available agents
-fin-assist do "prompt"                      One-shot to default agent
-fin-assist do --agent test "prompt"         One-shot to a named agent
-fin-assist do --agent git --skill commit    One-shot with a skill pre-loaded
-fin-assist do --agent git commit            Prompt-as-skill shortcut: prompt is
-                                            auto-promoted to skill when it matches
-fin-assist do                               Open input panel
-fin-assist do --edit "prompt"               Open input panel, pre-filled
-fin-assist talk [--agent <n>] [--skill <n>] Multi-turn session
-fin-assist list tools|skills|prompts        List registry entries
-```
-
-Inside `fin do` / `fin talk`, use `@`-completion to inject context: `@file:src/foo.py`, `@git:diff`, `@git:log`, `@history:query`.
-
-## Configuration in 30 seconds
+A `git` agent with a `commit` skill — TOML config, then invocation:
 
 ```toml
-[general]
-default_agent = "git"
-
+# config.toml
 [agents.git]
-description = "Git workflows."
 system_prompt = "git"
 serving_modes = ["do"]
 
@@ -133,29 +29,113 @@ prompt_template = "git-commit"
 entry_prompt = "Analyze the current changes and generate a conventional commit message."
 
 [agents.git.tool_policies.git]
-default = "always"
+default = "always"                                      # require approval by default
 rules = [
-  { pattern = "git diff*",   mode = "never" },
+  { pattern = "git diff*",   mode = "never" },          # auto-approve read-only ops
   { pattern = "git status*", mode = "never" },
   { pattern = "git log*",    mode = "never" },
 ]
 ```
 
-That's it — `fin do git commit` will now use this agent. See [`docs/configuration.md`](docs/configuration.md) for the full schema and [`docs/skills.md`](docs/skills.md) for the skills authoring guide.
+```text
+$ fin-assist do --agent git commit
+✓ git diff             (auto-approved by tool_policies)
+✓ git diff --staged    (auto-approved by tool_policies)
+
+  feat(skills): add per-tool approval policies
+
+  Move approval rules from per-skill config to agent-level tool_policies,
+  eliminating merge conflicts when multiple skills share a tool.
+
+? Run 'git commit -m ...'? [y/N] y    # default policy: requires approval
+✓ Committed.
+```
+
+`fin-assist do --agent git commit` — `commit` is the prompt; because `commit` matches a skill on the `git` agent, it's auto-promoted to `--skill commit` (entry prompt sent, skill's tools loaded, `prompt_template` injected as system prompt).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    CLI["CLI client<br/>fin-assist do/talk"]
+
+    subgraph HUB["Hub (FastAPI · 127.0.0.1:4096)"]
+        direction TB
+        ROUTER["Hub router<br/>mount table per agent"]
+
+        subgraph SUB["Per-agent A2A sub-app"]
+            direction TB
+            EXEC["Executor<br/>(streams · approval · context)"]
+            BACKEND["AgentBackend<br/>(pydantic-ai)"]
+        end
+
+        STORE["ContextStore<br/>SQLite"]
+    end
+
+    LLM[("LLM provider<br/>via API key")]
+
+    CLI <-->|"A2A JSON-RPC + SSE"| ROUTER
+    ROUTER --> EXEC
+    EXEC --> BACKEND
+    EXEC <--> STORE
+    BACKEND --> LLM
+
+    classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
+    class LLM external
+```
+
+One hub process serves N agents, each as its own A2A sub-app at `/agents/<name>/`. The CLI auto-starts the hub if it isn't running. See [`docs/architecture.md`](docs/architecture.md) for the full picture.
+
+## Install
+
+Requirements: [`devenv`](https://devenv.sh/), or Python 3.12+ with [`uv`](https://docs.astral.sh/uv/).
+
+```bash
+just dev                              # enter dev shell (Nix-managed)
+uv sync                               # install dependencies
+
+export ANTHROPIC_API_KEY=sk-...       # or OPENAI_API_KEY, OPENROUTER_API_KEY, GOOGLE_API_KEY
+                                      # (interactive setup: planned, see issue #124)
+
+fin-assist agents                     # verify install — lists configured agents
+```
+
+State (logs, hub DB, sessions, history, credentials, traces) lives under `$FIN_DATA_DIR`, default `~/.local/share/fin/`. The repo's `devenv.nix` sets `FIN_DATA_DIR=./.fin` so state is colocated with the checkout during development.
+
+## CLI reference
+
+```text
+fin-assist serve                            Start the hub (foreground)
+fin-assist start | stop | status            Background hub lifecycle
+fin-assist agents                           List configured agents
+fin-assist do "<prompt>"                    One-shot to default agent
+fin-assist do --agent <name> "<prompt>"     One-shot to a named agent
+fin-assist do --agent <name> --skill <s>    One-shot with skill pre-loaded
+fin-assist do --agent <name> <skill>        Prompt-as-skill: prompt auto-promoted
+                                            to skill when it matches a skill name
+fin-assist do                               No prompt → opens input panel
+fin-assist do --edit "<prompt>"             Opens panel pre-filled
+fin-assist talk [--agent <n>] [--skill <n>] Multi-turn session
+fin-assist talk --resume <id>               Resume a saved session
+fin-assist talk --list                      List saved sessions
+fin-assist list tools|skills|prompts|output-types
+```
+
+Inside `do` / `talk`, `@`-completion injects context inline: `@file:<path>`, `@git:diff`, `@git:log`, `@history:<query>`.
+
+REPL commands during `talk`: `/skills` (list), `/skill:<name>` (load), `/help`, `/exit`.
 
 ## Documentation
 
-For the user perspective, this README is the front door. For internals:
-
-- [`docs/architecture.md`](docs/architecture.md) — how the hub, agents, and backends fit together
+- [`docs/architecture.md`](docs/architecture.md) — hub, agents, backends, A2A integration
 - [`docs/configuration.md`](docs/configuration.md) — TOML schema, env vars, credentials
 - [`docs/skills.md`](docs/skills.md) — skills, tool gating, approval policies, SKILL.md format
-- [`docs/tracing.md`](docs/tracing.md) — OTel instrumentation and HITL trace continuity
-- [`docs/decisions.md`](docs/decisions.md) — design decisions and open questions
-- [`AGENTS.md`](AGENTS.md) — development workflow and conventions (for contributors)
+- [`docs/tracing.md`](docs/tracing.md) — OTel instrumentation, HITL trace continuity
+- [`docs/decisions.md`](docs/decisions.md) — design decisions, open questions
+- [`AGENTS.md`](AGENTS.md) — development workflow and conventions
 
-Active work lives in [GitHub milestones](https://github.com/ColeB1722/fin-assist/milestones); ideas and discussions live in [issues](https://github.com/ColeB1722/fin-assist/issues).
+Committed work: [GitHub milestones](https://github.com/ColeB1722/fin-assist/milestones). Discussions and ideas: [GitHub issues](https://github.com/ColeB1722/fin-assist/issues).
 
 ## Status
 
-Pre-release, single-developer project. Currently shipping v0.1 (Skills API). The protocol layer (A2A), hub, CLI, streaming, tool calling, HITL approval, tracing, and skills are all working. Next up: MCP integration, additional agents (SDD, TDD), and a TUI client.
+v0.1 (Skills API) shipped. Working: A2A protocol, hub, CLI, streaming, tool calling, HITL approval, tracing, skills. v0.1.1 in progress: MCP, per-subcommand approval, interactive credential setup.
