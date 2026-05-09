@@ -2,7 +2,7 @@
 
 Rolling context for session handoffs. Updated as checkpoints are reached.
 
-**Current state (2026-05-03):** 940 tests passing, `just ci` green. Skill loading refactor complete (Steps 1–14). Skills now genuinely gate tools, approval policies moved to agent level, REPL `/skills` and `/skill:<name>` commands wired, skill tracing added. Ready for manual review.
+**Current state (2026-05-09):** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open), four-phase roadmap (v0.1.1 → v0.2 → v0.2.1 → v0.3), sub-agent design sketch captured. v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch.
 
 **Recent work (this session):**
 
@@ -29,11 +29,10 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 - AgentBackend protocol simplification ([#80](https://github.com/ColeB1722/fin-assist/issues/80))
 - `supported_context_types` / `_CONTEXT_TYPE_HINTS` — CLI/BFF boundary not drawn explicitly; context-to-tool mapping lives in `agents/spec.py` but is a client concern. Needs broader architecture discussion: define CLI (display) vs BFF (context resolution, prompt shaping) vs hub/agent boundary, AgentCardMeta cleanup, and where context ownership should land.
-- Skill composability (skills invoking skills) — v0.2
-- Agent-to-agent orchestration — v0.2
-- MCP tool source — v0.1.1
+- MCP tool source — v0.1.1 ([#84](https://github.com/ColeB1722/fin-assist/issues/84))
 - Per-subcommand approval evaluation at executor level — v0.1.1
-- Eval harness — v0.3
+- Sub-agents (in-process, context-compression primitive) — v0.2 (see Design Sketch below)
+- Sub-agents (federated via A2A) + Eval harness — v0.3
 - Phase 4 architectural discussions — issues [#89–#94](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+is%3Aissue+89+90+91+92+93+94)
 
 ---
@@ -48,16 +47,21 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 
 ### Sequenced roadmap
 
-| # | Work | Status |
-|---|------|--------|
-| 1 | Tracing: OTel + OpenInference bridge | ✅ Complete — follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109) |
-| 2 | Skills API v0.1 | ✅ Complete — Phases 0–4 + code review triage shipped (924 tests) |
-| 3 | MCP tool source (v0.1.1) | ⬜ Queued — skill→tool binding is source-agnostic |
-| 3b | Pluggable base system prompts (v0.1.1) | ⬜ Queued — user-overridable prompt templates, not hardcoded constants |
-| 3c | Registry consistency + policy resolution audit (v0.1.1) | ⬜ Queued — compare registry APIs for consistency; review policy resolution flow (schema → evaluate → backend → executor) for end-user understandability |
-| 3d | Evaluate constant placement patterns (v0.1.1) | ⬜ Queued — [#122](https://github.com/ColeB1722/fin-assist/issues/122) assess whether domain/behavior constants (fuzzy thresholds, timeout values, context-type mappings) should centralize or stay local; follows #90 |
-| 4 | Eval harness (per-agent) | ⬜ Queued — rides on tracing |
-| 5 | Skill composability + agent-to-agent (v0.2) | ⬜ Queued |
+Post-v0.1 work is organized into four phases. Each phase ships under its own tag.
+
+**Pre-v0.1.1 — Backlog grooming** (✅ complete 2026-05-09): closed 27 stale issues (84 → 57 open). Verified shipped items, removed Textual-era issues (UI module deleted), collapsed duplicates, marked superseded items.
+
+| Phase | Tag | Scope | Status |
+|-------|-----|-------|--------|
+| 1 | **v0.1.1** | MCP tool source ([#84](https://github.com/ColeB1722/fin-assist/issues/84)), per-subcommand approval at executor level, pluggable system prompts ([#89](https://github.com/ColeB1722/fin-assist/issues/89)), registry consistency + policy resolution audit, SQLite/storage hardening ([#40](https://github.com/ColeB1722/fin-assist/issues/40), [#42](https://github.com/ColeB1722/fin-assist/issues/42), [#75](https://github.com/ColeB1722/fin-assist/issues/75)), constant placement ([#122](https://github.com/ColeB1722/fin-assist/issues/122)), chore-batch (#26, #33, #41, #43, #45, #46, #65, #76, #116, #117, #118, #119) | ⬜ Queued |
+| 2 | **v0.2** | Sub-agents in-process — context-compression primitive (see Design Sketch). Includes: HITL rationale ([#121](https://github.com/ColeB1722/fin-assist/issues/121)), context-aware compaction ([#102](https://github.com/ColeB1722/fin-assist/issues/102)), workflow chaining ([#63](https://github.com/ColeB1722/fin-assist/issues/63)), background tasks ([#110](https://github.com/ColeB1722/fin-assist/issues/110)), multi-choice HITL ([#113](https://github.com/ColeB1722/fin-assist/issues/113)). Exit gate: [#31](https://github.com/ColeB1722/fin-assist/issues/31) SDD+TDD pipeline runs end-to-end | ⬜ Queued |
+| 3 | **v0.2.1** | UX polish — render_stream simplification ([#92](https://github.com/ColeB1722/fin-assist/issues/92)), progressive thinking ([#72](https://github.com/ColeB1722/fin-assist/issues/72)), richer tool_result ([#91](https://github.com/ColeB1722/fin-assist/issues/91)), CLI constants ([#90](https://github.com/ColeB1722/fin-assist/issues/90)), `/spec` command ([#95](https://github.com/ColeB1722/fin-assist/issues/95)), `$EDITOR` for `--edit` ([#97](https://github.com/ColeB1722/fin-assist/issues/97)), `fin do` vs `fin prompt` clarity ([#94](https://github.com/ColeB1722/fin-assist/issues/94)), tracing follow-ups (#106, #107, #108, #109) | ⬜ Queued |
+| 4 | **v0.3** | Sub-agents federated via A2A (Flavor 2) + per-agent eval harness | ⬜ Queued |
+
+**Already shipped pre-v0.1:**
+
+- Tracing: OTel + OpenInference bridge — follow-ups #106-#109 deferred to v0.2.1
+- Skills API v0.1 (PR #114) — 940 tests, tool gating, agent-level policies, REPL `/skills`
 
 ---
 
@@ -106,6 +110,118 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 ---
 
 ## Design Sketches
+
+### Sub-agents as Context Compression (sketched 2026-05-09)
+
+**Status:** v0.2 anchor. Idea aligned, ready to detail-design before implementation.
+
+**Concept:** A running agent can invoke a *sub-agent* — a nested execution with restricted scope — to perform a discrete task and return a compact result. The parent's conversation only sees the sub-agent's final output, not its intermediate steps. This is a context-compression primitive: long, exploratory, tool-heavy reasoning happens inside the sub-agent and never reaches the parent's context window.
+
+**Why this framing matters:** Earlier discussion considered a `requires` field for skills (skill A declares dependency on skill B; loading A loads B). That was rejected — transitive skill loading is a small detail easy to miss, balloons fast, and any depth cap is arbitrary. Sub-agents subsume that need: if you want skill B's capabilities while running skill A, invoke a sub-agent with skill B loaded. The boundary is explicit, not transitive.
+
+#### Two flavors — only one ships in v0.2
+
+| Flavor | What | When | Cost |
+|--------|------|------|------|
+| **1: In-process** | Sub-agent runs inside the same hub process. `Executor.run_subtask(spec, prompt)` spins up a nested `AgentSpec` execution with a constrained tool set. No A2A protocol involvement. | **v0.2** | ~1-2 weeks |
+| **2: Federated** | Sub-agent runs as a separate A2A task, possibly on another agent or external process. Cross-process tracing via OTel Links. | **v0.3** | ~3-4 weeks |
+
+**Both flavors share the same caller-side API.** The `invoke_subagent` tool signature is designed so that v0.3 federation is a drop-in extension: when the target agent is local, route through `Executor.run_subtask`; when external, route through `HubClient`. Callers don't change.
+
+#### v0.2 design (Flavor 1)
+
+**Tool surface:**
+
+```python
+invoke_subagent(
+    agent: str | None = None,        # Default: same agent as parent
+    skills: list[str] | None = None, # Skills to load in the sub-agent
+    prompt: str = ...,               # The task to perform
+) -> str                              # Sub-agent's final output
+```
+
+**Execution semantics:**
+
+1. Parent agent's LLM calls `invoke_subagent`. Tool call goes through normal approval gate (agent-level `tool_policies`).
+2. `Executor.run_subtask()` constructs a fresh `AgentSpec` execution context: target `AgentSpec`, `SkillManager` with requested skills loaded, fresh conversation history (just the prompt).
+3. Sub-agent runs to completion as a self-contained task — its own `fin_assist.task` span, its own step loop, its own tool calls.
+4. Sub-agent's final string output is returned as the tool result to the parent.
+5. Parent's conversation now contains: tool call → tool result. **Sub-agent's intermediate reasoning, tool calls, and thinking are discarded from the parent's view.** Full transcript still in `traces.jsonl`.
+
+**Constraints (v0.2):**
+
+- **Same-process only.** If `agent` argument names an external A2A agent, raise — that's v0.3.
+- **No HITL inside sub-agents.** Sub-agents must run autonomously. If a sub-agent's tool requires approval, fail the sub-agent (don't pause the parent). Forces clean separation; v0.3 can lift this.
+- **No nested sub-agents.** A sub-agent cannot itself call `invoke_subagent`. Prevents unbounded depth. Revisit in v0.3.
+- **Tool gating reused as-is.** Sub-agent's tool set = `target_spec.base_tools` + tools from requested skills. Identical to a fresh `fin do` invocation.
+- **Approval policies inherited.** Sub-agent uses its target agent's `tool_policies`. The agent-level invariant (each tool has exactly one policy definition) is preserved.
+
+**Reporting format:** Sub-agent decides. Its system prompt gets a fixed appendix: *"You are being invoked as a sub-agent. Your final output is the only thing the caller sees — be concise and complete."* No `report_format` arg in v0.2; deferred to v0.3 along with structured output types.
+
+**Tracing:**
+
+```text
+fin_assist.task (parent agent)
+  └── fin_assist.step
+        └── fin_assist.tool_execution (invoke_subagent)
+              └── fin_assist.subagent
+                    └── fin_assist.task (sub-agent, full nested tree)
+                          ├── fin_assist.step
+                          │     └── chat {model}
+                          └── fin_assist.step
+                                ├── fin_assist.tool_execution
+                                └── chat {model}
+```
+
+New attributes on `fin_assist.subagent` span:
+- `fin_assist.subagent.target_agent` (str)
+- `fin_assist.subagent.skills` (list[str])
+- `fin_assist.subagent.parent_task_id` (str)
+- `fin_assist.subagent.result_length` (int) — for context-compression-effectiveness analysis
+
+**Phoenix UI benefit:** the compression is visually obvious — parent has 2 sub-spans (call, return), sub-agent has 30+. The tree shows exactly what was hidden from the parent's context.
+
+#### Touchpoints (implementation map)
+
+| File | Change |
+|------|--------|
+| `src/fin_assist/agents/tools.py` | Register `invoke_subagent` as a built-in tool in `create_default_registry()` |
+| `src/fin_assist/hub/executor.py` | New `Executor.run_subtask(spec, skills, prompt) -> str` method; reuses existing step loop with constrained scope |
+| `src/fin_assist/hub/_task_tracer.py` | Add `emit_subagent_span()` with attributes above |
+| `src/fin_assist/hub/tracing_attrs.py` | Add `FIN_SUBAGENT_*` attribute constants |
+| `src/fin_assist/agents/spec.py` | Validate that `invoke_subagent` is in `base_tools` for any agent that wants sub-agent capability (or always-available, TBD) |
+| `tests/test_hub/test_subagent.py` (new) | Unit tests: result return, tool gating in sub-agent, no HITL allowed, no nested calls, tracing attributes |
+| `tests/integration/test_subagent_e2e.py` (new) | Integration: parent invokes sub-agent via FakeBackend, parent's history correctly contains only tool result |
+
+#### Companion v0.2 work
+
+Sub-agents are the anchor, but several issues become much more useful once sub-agents exist:
+
+- **[#102](https://github.com/ColeB1722/fin-assist/issues/102) Context-aware agent handoff (compaction)** — sub-agents *are* compaction; this issue's "self-curated" framing now means "what does the sub-agent return."
+- **[#121](https://github.com/ColeB1722/fin-assist/issues/121) HITL rationale pass-through** — needed regardless, but particularly relevant when a parent's `invoke_subagent` call needs approval (the rationale is the prompt being delegated).
+- **[#110](https://github.com/ColeB1722/fin-assist/issues/110) Background tasks + sandboxing** — long sub-agents shouldn't block the parent indefinitely; a "fire and forget" mode is a natural extension once basic sub-agents work.
+- **[#113](https://github.com/ColeB1722/fin-assist/issues/113) Multi-choice HITL** — orchestration flows where parent agent surfaces sub-agent results and asks "which one?"
+- **[#63](https://github.com/ColeB1722/fin-assist/issues/63) Sequential agent chaining** — once sub-agents work, chaining is just a parent that calls multiple sub-agents in sequence.
+- **[#31](https://github.com/ColeB1722/fin-assist/issues/31) SDD+TDD pipeline** — exit gate. SDD agent invokes TDD sub-agents per task. If this works end-to-end, v0.2 is real.
+
+#### Open questions for v0.2 implementation
+
+1. **`invoke_subagent` always-available, or opt-in?** Easiest: always in `base_tools`, like `read_file`. Lets any agent compose. Trade-off: agents that shouldn't compose (single-purpose agents) get the tool anyway. Lean: always-available.
+2. **Sub-agent credential resolution.** Does the sub-agent share the parent's credentials, or re-resolve via its own agent's required providers? Lean: re-resolve. Sub-agent is a "real" agent execution, not a continuation of the parent.
+3. **Conversation-history serialization.** Sub-agents have no persistent context (no `context_id`). Each invocation is fresh. Does the JSONL sink record sub-agent turns separately, or as nested children? Lean: separate `task_id` in JSONL, with `parent_task_id` cross-reference for joining.
+4. **Cancellation propagation.** If parent task is cancelled mid-sub-agent, does the sub-agent get cancelled too? Lean: yes; the `invoke_subagent` tool call inherits the parent's cancellation token.
+5. **What does the parent's prompt see when the sub-agent fails?** Tool result with error string, or raise into the parent? Lean: tool result with error — preserves the parent's autonomy to retry, fall back, or surface to the user.
+
+#### What we explicitly defer
+
+- **Federated sub-agents (Flavor 2)** — v0.3
+- **Structured output from sub-agents** — v0.3
+- **Sub-agent invokes sub-agent (nesting)** — v0.3
+- **HITL inside sub-agents** — v0.3
+- **`report_format` argument** — v0.3
+- **Cross-agent skill invocation outside sub-agents** — explicitly NOT a feature; if you want skill B's tools while running agent A's skill, invoke a sub-agent with skill B loaded.
+
+---
 
 ### Dynamic Phasing in System Prompt (sketched 2026-05-09)
 
