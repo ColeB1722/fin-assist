@@ -4,12 +4,19 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from fin_assist.agents.spec import AgentSpec
+from fin_assist.agents.spec import AgentSpec, _CONTEXT_TYPE_HINTS
 from fin_assist.agents.metadata import AgentCardMeta, AgentResult, MissingCredentialsError
 from fin_assist.agents.results import CommandResult
-from fin_assist.config.schema import AgentConfig
+from fin_assist.config.schema import AgentConfig, SkillConfig
 
-_MAP = AgentSpec._CONTEXT_TYPE_MAP
+_MAP = _CONTEXT_TYPE_HINTS
+
+
+def _skills(*tool_lists: list[str]) -> dict[str, SkillConfig]:
+    result: dict[str, SkillConfig] = {}
+    for i, tools in enumerate(tool_lists):
+        result[f"skill_{i}"] = SkillConfig(tools=tools)
+    return result
 
 
 def _make_default_agent(mock_config, mock_credentials) -> AgentSpec:
@@ -192,7 +199,7 @@ class TestAgentSpecCardMetadata:
     def test_supported_context_types_from_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file", "git", "gh"]),
+            agent_config=AgentConfig(skills=_skills(["read_file", "git", "gh"])),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -205,7 +212,7 @@ class TestAgentSpecCardMetadata:
     def test_no_context_types_when_no_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=[]),
+            agent_config=AgentConfig(skills={}, base_tools=[]),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -231,7 +238,7 @@ class TestAgentSpecSupportsContext:
     def test_supports_context_types_from_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=["read_file", "git"]),
+            agent_config=AgentConfig(skills=_skills(["read_file", "git"])),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -243,7 +250,7 @@ class TestAgentSpecSupportsContext:
     def test_supports_no_context_when_no_tools(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
-            agent_config=AgentConfig(tools=[]),
+            agent_config=AgentConfig(skills={}, base_tools=[]),
             config=mock_config,
             credentials=mock_credentials,
         )
@@ -383,6 +390,30 @@ class TestAgentSpecGetModelName:
         assert agent.get_model_name("openai", "gpt-4o") == "gpt-4o"
 
 
+# -- AgentSpec get_base_url tests ---------------------------------------------
+
+
+class TestAgentSpecGetBaseUrl:
+    def test_returns_base_url_when_set(self, mock_config, mock_credentials) -> None:
+        provider_cfg = MagicMock()
+        provider_cfg.base_url = "https://my-proxy.example.com/v1"
+        mock_config.providers = {"anthropic": provider_cfg}
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.get_base_url("anthropic") == "https://my-proxy.example.com/v1"
+
+    def test_returns_none_when_base_url_not_set(self, mock_config, mock_credentials) -> None:
+        provider_cfg = MagicMock()
+        provider_cfg.base_url = None
+        mock_config.providers = {"anthropic": provider_cfg}
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.get_base_url("anthropic") is None
+
+    def test_returns_none_when_provider_not_in_config(self, mock_config, mock_credentials) -> None:
+        mock_config.providers = {}
+        agent = _make_default_agent(mock_config, mock_credentials)
+        assert agent.get_base_url("openai") is None
+
+
 # -- AgentSpec get_api_key tests ---------------------------------------------
 
 
@@ -402,23 +433,74 @@ class TestAgentSpecGetApiKey:
 
 
 class TestAgentSpecConfigProperties:
-    def test_tools_from_config(self, mock_config, mock_credentials) -> None:
-        agent = AgentSpec(
-            name="test",
-            agent_config=AgentConfig(tools=["read_file", "git"]),
-            config=mock_config,
-            credentials=mock_credentials,
-        )
-        assert agent.tools == ["read_file", "git"]
-
-    def test_tools_default_empty(self, mock_config, mock_credentials) -> None:
+    def test_base_tools_default(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(
             name="test",
             agent_config=AgentConfig(),
             config=mock_config,
             credentials=mock_credentials,
         )
-        assert agent.tools == []
+        assert agent.base_tools == ["read_file"]
+
+    def test_base_tools_custom(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(base_tools=["read_file", "shell_history"]),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.base_tools == ["read_file", "shell_history"]
+
+    def test_skill_tool_names_from_skills(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(skills=_skills(["git", "gh"])),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.skill_tool_names == ["git", "gh"]
+
+    def test_skill_tool_names_from_multiple_skills(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(skills=_skills(["read_file"], ["git"])),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.skill_tool_names == ["read_file", "git"]
+
+    def test_skill_tool_names_default_empty(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(skills={}),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.skill_tool_names == []
+
+    def test_tool_policies_default_empty(self, mock_config, mock_credentials) -> None:
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert agent.tool_policies == {}
+
+    def test_tool_policies_from_config(self, mock_config, mock_credentials) -> None:
+        from fin_assist.config.schema import ToolPolicyConfig
+
+        agent = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(
+                tool_policies={
+                    "git": ToolPolicyConfig(default="always"),
+                },
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        assert "git" in agent.tool_policies
 
     def test_thinking_from_config(self, mock_config, mock_credentials) -> None:
         agent = _make_default_agent(mock_config, mock_credentials)

@@ -203,12 +203,12 @@ sequenceDiagram
 
 | Concept | Implementation |
 |---------|---------------|
-| **Config-driven agents** | Agent behavior (prompt, output type, thinking, approval, tools) defined in TOML — new agents are config entries, not new classes |
+| **Config-driven agents** | Agent behavior (prompt, output type, thinking, approval, skills) defined in TOML — new agents are config entries, not new classes |
 | **Platform owns abstractions** | Tools, approval, context, step events, and tracing are framework-agnostic platform types; backends adapt them to their LLM framework |
 | **Protocol-native** | A2A via a2a-sdk v1.0; any A2A client can connect; enables future agent-to-agent workflows |
 | **Multi-path routing** | N agents → N A2A sub-apps at `/agents/{name}/`, each with its own agent card |
 | **Token-by-token streaming** | `SendStreamingMessage` SSE → `TaskUpdater.add_artifact(append=True)` → Rich `Live` rendering |
-| **Metadata-driven UI** | Static capabilities in `AgentExtension` on agent card; dynamic hints per-response in artifact metadata |
+| **Skills API** | Agents organize tools via skills — each skill bundles tools, approval rules, context injection, and prompt steering; agent-driven `load_skill` discovery; SKILL.md file format |
 | **Local-first** | Binds `127.0.0.1` only; no network exposure by default |
 
 ## CLI Usage
@@ -218,11 +218,14 @@ fin-assist serve                        Start agent hub
 fin-assist agents                       List available agents
 fin-assist do "prompt"                  One-shot query (default agent)
 fin-assist do --agent test "prompt"     One-shot query (named agent)
+fin-assist do --skill commit "prompt"   One-shot query with skill pre-loaded
 fin-assist do                           Open input panel (default agent)
 fin-assist do --edit "prompt"           Open input panel pre-filled with prompt
 fin-assist talk                         Multi-turn session (default agent)
 fin-assist talk --agent test            Multi-turn session (named agent)
+fin-assist talk --skill commit          Multi-turn session with skill pre-loaded
 fin-assist list tools                   List registered tools
+fin-assist list skills                  List skills grouped by agent
 fin-assist list prompts                 List registered system prompts
 fin-assist list output-types            List registered output types
 ```
@@ -241,11 +244,12 @@ Context injection via `@`-completion in the input panel: `@file:path.py`, `@git:
 | Remove built-in agents | Pure infrastructure; all agents from config.toml | Done |
 | Input panel + `--edit` | Interactive `fin do`, `--edit` flag, `--agent` flag | Done |
 | `@`-completion | Inline context injection (`@file:`, `@git:`, `@history:`) | Done |
-| `fin list` | CLI capabilities listing (tools, prompts, output-types) | Done |
+| `fin list` | CLI capabilities listing (tools, skills, prompts, output-types) | Done |
 | Observability | OTel tracing (hub + CLI), OpenInference/Phoenix bridge, JSONL span sink, HITL trace continuity | Done |
+| 15 | Skills API v0.1 | Done |
 | 11 | Multiplexer (tmux/zellij) | Planned |
 | 13 | TUI client (Textual) | Planned |
-| 15 | Skills + MCP Integration | Planned |
+| 15b | MCP integration (v0.1.1) | Planned |
 | 16 | Additional agents (SDD, TDD) | Planned |
 | 17 | Multi-agent workflows | Planned |
 

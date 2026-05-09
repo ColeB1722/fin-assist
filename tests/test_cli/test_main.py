@@ -505,9 +505,6 @@ class TestSessionIdFormat:
     def test_saved_session_id_is_natural_language_slug(self, tmp_path):
         """Session IDs should be human-readable NL slugs, not UUID hex strings."""
         mock_client = _mock_client(agents=[_make_discovered("default")])
-        mock_client.send_message = AsyncMock(
-            return_value=AgentResult(success=True, output="hi", context_id="ctx-uuid-123")
-        )
 
         saved_ids: list[str] = []
 
@@ -1024,27 +1021,28 @@ class TestListCommand:
         assert result == 0
 
 
-class TestResolveWorkflow:
-    def test_no_workflows_returns_prompt_unchanged(self):
-        from fin_assist.cli.main import _resolve_workflow
-        from fin_assist.config.schema import AgentConfig, Config
+class TestResolveSkill:
+    def test_no_skills_returns_prompt_unchanged(self):
+        from fin_assist.cli.main import _resolve_skill
+        from fin_assist.config.schema import Config
 
         config = Config()
-        prompt, override = _resolve_workflow("test", None, "hello", config)
+        prompt, override, skill = _resolve_skill("test", None, "hello", config)
         assert prompt == "hello"
         assert override is None
+        assert skill is None
 
-    def test_explicit_workflow_name_resolves(self):
-        from fin_assist.cli.main import _resolve_workflow
-        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+    def test_explicit_skill_name_resolves(self):
+        from fin_assist.cli.main import _resolve_skill
+        from fin_assist.config.schema import AgentConfig, Config, SkillConfig
 
         config = Config(
             agents={
                 "git": AgentConfig(
                     system_prompt="git",
-                    workflows={
-                        "commit": WorkflowConfig(
-                            description="Commit workflow",
+                    skills={
+                        "commit": SkillConfig(
+                            description="Commit skill",
                             prompt_template="git-commit",
                             entry_prompt="Analyze current changes and commit.",
                         ),
@@ -1052,74 +1050,79 @@ class TestResolveWorkflow:
                 ),
             }
         )
-        prompt, override = _resolve_workflow("git", "commit", "commit", config)
+        prompt, override, skill = _resolve_skill("git", "commit", "commit", config)
         assert prompt == "Analyze current changes and commit."
         assert override == "git-commit"
+        assert skill == "commit"
 
-    def test_prompt_matches_workflow_name(self):
-        from fin_assist.cli.main import _resolve_workflow
-        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+    def test_prompt_matches_skill_name(self):
+        from fin_assist.cli.main import _resolve_skill
+        from fin_assist.config.schema import AgentConfig, Config, SkillConfig
 
         config = Config(
             agents={
                 "git": AgentConfig(
                     system_prompt="git",
-                    workflows={
-                        "commit": WorkflowConfig(
+                    skills={
+                        "commit": SkillConfig(
                             entry_prompt="Analyze current changes and commit.",
                         ),
                     },
                 ),
             }
         )
-        prompt, override = _resolve_workflow("git", None, "commit", config)
+        prompt, override, skill = _resolve_skill("git", None, "commit", config)
         assert prompt == "Analyze current changes and commit."
+        assert skill == "commit"
 
-    def test_prompt_does_not_match_workflow(self):
-        from fin_assist.cli.main import _resolve_workflow
-        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+    def test_prompt_does_not_match_skill(self):
+        from fin_assist.cli.main import _resolve_skill
+        from fin_assist.config.schema import AgentConfig, Config, SkillConfig
 
         config = Config(
             agents={
                 "git": AgentConfig(
                     system_prompt="git",
-                    workflows={
-                        "commit": WorkflowConfig(
+                    skills={
+                        "commit": SkillConfig(
                             entry_prompt="Analyze current changes.",
                         ),
                     },
                 ),
             }
         )
-        prompt, override = _resolve_workflow("git", None, "status check", config)
+        prompt, override, skill = _resolve_skill("git", None, "status check", config)
         assert prompt == "status check"
         assert override is None
+        assert skill is None
 
-    def test_workflow_without_entry_prompt_uses_original(self):
-        from fin_assist.cli.main import _resolve_workflow
-        from fin_assist.config.schema import AgentConfig, Config, WorkflowConfig
+    def test_skill_without_entry_prompt_uses_original(self):
+        from fin_assist.cli.main import _resolve_skill
+        from fin_assist.config.schema import AgentConfig, Config, SkillConfig
 
         config = Config(
             agents={
                 "git": AgentConfig(
                     system_prompt="git",
-                    workflows={
-                        "commit": WorkflowConfig(
+                    skills={
+                        "commit": SkillConfig(
                             prompt_template="git-commit",
                         ),
                     },
                 ),
             }
         )
-        prompt, override = _resolve_workflow("git", "commit", "commit", config)
+        prompt, override, skill = _resolve_skill("git", "commit", "commit", config)
         assert prompt == "commit"
         assert override == "git-commit"
+        assert skill == "commit"
 
     def test_unknown_agent_returns_prompt_unchanged(self):
-        from fin_assist.cli.main import _resolve_workflow
+        from fin_assist.cli.main import _resolve_skill
         from fin_assist.config.schema import Config
 
         config = Config()
-        prompt, override = _resolve_workflow("nonexistent", None, "hello", config)
+        prompt, override, skill = _resolve_skill("nonexistent", None, "hello", config)
         assert prompt == "hello"
         assert override is None
+        assert skill is None

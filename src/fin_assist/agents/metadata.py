@@ -70,7 +70,7 @@ class AgentCardMeta(BaseModel):
     """Context types this agent supports (e.g. ['file', 'git_diff']).
 
     Derived from the agent's tool list — each tool maps to a context type
-    via ``AgentSpec._CONTEXT_TYPE_MAP``.  Clients use this to decide which
+    via ``AgentSpec._CONTEXT_TYPE_HINTS``.  Clients use this to decide which
     ``@``-completion references (``@file:``, ``@git:diff``, etc.) are
     valid for this agent.
     """

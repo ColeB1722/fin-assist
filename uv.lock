@@ -1035,6 +1035,7 @@ dependencies = [
     { name = "prompt-toolkit" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "rapidfuzz" },
     { name = "rich" },
 ]
@@ -1065,6 +1066,7 @@ requires-dist = [
     { name = "prompt-toolkit", specifier = ">=3.0" },
     { name = "pydantic-ai", specifier = ">=1.0" },
     { name = "pydantic-settings", specifier = ">=2.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "rapidfuzz", specifier = ">=3.0" },
     { name = "rich", specifier = ">=13.0" },
 ]

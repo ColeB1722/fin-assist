@@ -172,3 +172,25 @@ class TestSpanNames:
         from fin_assist.hub.tracing_attrs import SpanNames
 
         assert SpanNames.APPROVAL_DECIDED == "fin_assist.approval_decided"
+
+    def test_skill_load_span_name(self):
+        from fin_assist.hub.tracing_attrs import SpanNames
+
+        assert SpanNames.SKILL_LOAD == "fin_assist.skill_load"
+
+
+class TestSkillTracingAttributes:
+    def test_skill_id_attr(self):
+        from fin_assist.hub.tracing_attrs import FinAssistAttributes
+
+        assert FinAssistAttributes.SKILL_ID == "fin_assist.skill.id"
+
+    def test_skill_entry_point_attr(self):
+        from fin_assist.hub.tracing_attrs import FinAssistAttributes
+
+        assert FinAssistAttributes.SKILL_ENTRY_POINT == "fin_assist.skill.entry_point"
+
+    def test_skill_tools_unlocked_attr(self):
+        from fin_assist.hub.tracing_attrs import FinAssistAttributes
+
+        assert FinAssistAttributes.SKILL_TOOLS_UNLOCKED == "fin_assist.skill.tools_unlocked"

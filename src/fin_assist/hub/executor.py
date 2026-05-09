@@ -530,7 +530,7 @@ class Executor(AgentExecutor):
                 "type": "deferred",
                 "tool_name": event.tool_name or "",
                 "tool_call_id": deferred.tool_call_id,
-                "reason": deferred.reason or "",
+                "description": deferred.description or "",
                 "args": deferred.args,
             }
         )
@@ -574,19 +574,6 @@ class Executor(AgentExecutor):
                         )
                     )
         return decisions
-
-    def _extract_approval_results(self, message: Any) -> Any | None:
-        """Check if an incoming A2A message contains approval decisions.
-
-        Returns backend-specific ``DeferredToolResults`` if found,
-        ``None`` otherwise.  Retained for callers that want the
-        ready-to-send deferred results; prefer
-        ``_extract_approval_decisions`` when you need the raw list.
-        """
-        decisions = self._extract_approval_decisions(message)
-        if not decisions:
-            return None
-        return self._backend.build_deferred_results(decisions)
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         task_id = context.task_id or str(uuid.uuid4())

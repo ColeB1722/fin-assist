@@ -12,7 +12,8 @@ from fin_assist.cli.interaction.response import PostResponseAction, handle_post_
 from fin_assist.cli.interaction.streaming import render_stream
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
+    from typing import Any
 
     from fin_assist.cli.client import StreamEvent
     from fin_assist.cli.interaction.prompt import SlashCommand
@@ -31,11 +32,38 @@ def _print_help() -> None:
     console.print("[bold]Available commands:[/bold]")
     for cmd in SLASH_COMMANDS:
         console.print(f"  {cmd.name}  — {cmd.description}")
+    console.print("  /skill:<name>  — Load a skill mid-session")
 
 
 def _print_sessions(agent_name: str) -> None:
     render_session_list(agent_name)
     console.print(f"[dim]Resume with: fin talk {agent_name} --resume <slug>[/dim]")
+
+
+async def _print_skills(
+    agent_name: str,
+    list_skills_fn: Callable[[str], Awaitable[list[dict[str, Any]]]] | None,
+) -> None:
+    if list_skills_fn is None:
+        console.print("[dim]Skill listing not available.[/dim]")
+        return
+    try:
+        skills = await list_skills_fn(agent_name)
+    except Exception as e:
+        console.print(f"[red]Failed to list skills: {e}[/red]")
+        return
+    if not skills:
+        console.print("[dim]No skills configured for this agent.[/dim]")
+        return
+    console.print("[bold]Available skills:[/bold]")
+    for skill in skills:
+        name = skill.get("name", "")
+        desc = skill.get("description", "")
+        tools = skill.get("tools", [])
+        tools_str = f" (tools: {', '.join(tools)})" if tools else ""
+        console.print(f"  [bold]{name}[/bold]{tools_str}")
+        if desc:
+            console.print(f"    {desc}")
 
 
 async def run_chat_loop(
@@ -47,6 +75,8 @@ async def run_chat_loop(
     initial_message: str | None = None,
     edit_message: str | None = None,
     show_thinking: bool = False,
+    invoke_skill_fn: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+    list_skills_fn: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
 ) -> str | None:
     """Run an interactive chat loop.
 
@@ -118,9 +148,29 @@ async def run_chat_loop(
                 case "/sessions":
                     _print_sessions(agent_name)
                     continue
+                case "/skills":
+                    await _print_skills(agent_name, list_skills_fn)
+                    continue
                 case _:
                     console.print(f"[yellow]Command {matched.name} is not yet implemented[/yellow]")
                     continue
+
+        if user_input.startswith("/skill:"):
+            skill_name = user_input[len("/skill:") :].strip()
+            if skill_name and invoke_skill_fn is not None:
+                try:
+                    result = await invoke_skill_fn(agent_name, skill_name)
+                    console.print(f"[green]Skill '{skill_name}' loaded.[/green]")
+                    tools = result.get("tools", [])
+                    if tools:
+                        console.print(f"[dim]Tools now available: {', '.join(tools)}[/dim]")
+                except Exception as e:
+                    console.print(f"[red]Failed to load skill '{skill_name}': {e}[/red]")
+            elif not skill_name:
+                console.print("[yellow]Usage: /skill:<name> (e.g. /skill:commit)[/yellow]")
+            elif invoke_skill_fn is None:
+                console.print("[dim]Skill loading not available.[/dim]")
+            continue
 
         if user_input.startswith("/"):
             console.print(f"[yellow]Unknown command: {user_input}[/yellow]")

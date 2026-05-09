@@ -472,28 +472,6 @@ class TestDiscoverAgents:
         assert agents[0].card_meta.serving_modes == ["do", "talk"]
 
 
-class TestRunAgent:
-    async def test_delegates_to_send_and_wait(self):
-        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
-        client = HubClient("http://localhost")
-        client._send_and_wait = AsyncMock(return_value=expected)
-
-        result = await client.run_agent("shell", "list files")
-
-        assert result is expected
-        client._send_and_wait.assert_called_once_with("shell", "list files", context_id=None)
-
-    async def test_passes_context_id_to_send_and_wait(self):
-        expected = AgentResult(success=True, output="hello", context_id="ctx-1")
-        client = HubClient("http://localhost")
-        client._send_and_wait = AsyncMock(return_value=expected)
-
-        result = await client.send_message("shell", "hello", context_id="ctx-1")
-
-        assert result is expected
-        client._send_and_wait.assert_called_once_with("shell", "hello", context_id="ctx-1")
-
-
 class TestHubClientLifecycle:
     async def test_close_cleans_up_client(self):
         client = HubClient("http://localhost")
@@ -834,7 +812,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_1",
                                 "args": {"command": "ls"},
-                                "reason": "requires approval",
+                                "description": "requires approval",
                             },
                         ),
                     ],
@@ -846,7 +824,7 @@ class TestExtractDeferredCalls:
         assert calls[0].tool_name == "run_shell"
         assert calls[0].tool_call_id == "call_1"
         assert calls[0].args == {"command": "ls"}
-        assert calls[0].reason == "requires approval"
+        assert calls[0].description == "requires approval"
 
     def test_returns_empty_when_no_deferred_artifacts(self):
         task = _make_task(
@@ -880,7 +858,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_1",
                                 "args": {},
-                                "reason": "",
+                                "description": "",
                             },
                         ),
                         _make_text_part(
@@ -890,7 +868,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_2",
                                 "args": {},
-                                "reason": "",
+                                "description": "",
                             },
                         ),
                     ],

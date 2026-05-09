@@ -36,8 +36,16 @@ from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
-    from fin_assist.config.schema import AgentConfig, Config
+    from fin_assist.agents.skills import SkillDefinition
+    from fin_assist.config.schema import AgentConfig, Config, SkillConfig, ToolPolicyConfig
     from fin_assist.credentials.store import CredentialStore
+
+_CONTEXT_TYPE_HINTS: dict[str, str] = {
+    "read_file": "file",
+    "git": "git",
+    "gh": "gh",
+    "shell_history": "history",
+}
 
 
 class AgentSpec:
@@ -47,13 +55,6 @@ class AgentSpec:
     ``ShellAgent``.  Different agents are created by passing different
     ``AgentConfig`` values, not by subclassing.
     """
-
-    _CONTEXT_TYPE_MAP: dict[str, str] = {
-        "read_file": "file",
-        "git": "git",
-        "gh": "gh",
-        "shell_history": "history",
-    }
 
     def __init__(
         self,
@@ -67,6 +68,7 @@ class AgentSpec:
         self._agent_config = agent_config
         self._config = config
         self._credentials = credentials
+        self._skill_definitions: list[SkillDefinition] | None = None
 
     @property
     def name(self) -> str:
@@ -103,12 +105,39 @@ class AgentSpec:
         return self._config.general.default_model
 
     @property
+    def skills(self) -> dict[str, SkillConfig]:
+        return self._agent_config.skills
+
+    @property
+    def base_tools(self) -> list[str]:
+        return self._agent_config.base_tools
+
+    @property
+    def tool_policies(self) -> dict[str, ToolPolicyConfig]:
+        return self._agent_config.tool_policies
+
+    @property
+    def skill_tool_names(self) -> list[str]:
+        """Tool names from all skill definitions (union, deduplicated).
+
+        These tools are only available when the skill that provides them
+        is loaded.  The backend uses this together with
+        ``SkillManager.loaded_tool_names`` to gate actual tool
+        registration.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for skill_cfg in self._agent_config.skills.values():
+            for tool_name in skill_cfg.tools:
+                if tool_name not in seen:
+                    seen.add(tool_name)
+                    result.append(tool_name)
+        return result
+
+    @property
     def _supported_context_types(self) -> set[str]:
-        return {
-            self._CONTEXT_TYPE_MAP[t]
-            for t in self._agent_config.tools
-            if t in self._CONTEXT_TYPE_MAP
-        }
+        all_tools = set(self.base_tools) | set(self.skill_tool_names)
+        return {_CONTEXT_TYPE_HINTS[t] for t in all_tools if t in _CONTEXT_TYPE_HINTS}
 
     @property
     def agent_card_metadata(self) -> AgentCardMeta:
@@ -120,9 +149,14 @@ class AgentSpec:
             supported_context_types=sorted(self._supported_context_types),
         )
 
-    @property
-    def tools(self) -> list[str]:
-        return self._agent_config.tools
+    def get_skill_definitions(self) -> list[SkillDefinition]:
+        """Load and cache skill definitions from the agent's config."""
+        if self._skill_definitions is None:
+            from fin_assist.agents.skills import SkillLoader
+
+            loader = SkillLoader()
+            self._skill_definitions = loader.load_all_from_agent_config(self._agent_config.skills)
+        return self._skill_definitions
 
     def supports_context(self, context_type: str) -> bool:
         return context_type in self._supported_context_types
@@ -147,6 +181,12 @@ class AgentSpec:
         if provider_config and provider_config.default_model:
             return provider_config.default_model
         return default
+
+    def get_base_url(self, provider: str) -> str | None:
+        provider_config = self._config.providers.get(provider)
+        if provider_config and provider_config.base_url:
+            return provider_config.base_url
+        return None
 
     def get_enabled_providers(self) -> list[str]:
         default_provider = self._config.general.default_provider

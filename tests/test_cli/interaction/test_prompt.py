@@ -189,3 +189,67 @@ class TestFinPromptAgents:
 
         fp = FinPrompt(context_settings=MagicMock())
         assert fp.context_settings is not None
+
+
+class TestSkillCompleter:
+    def _make_completer(self, skills: list[tuple[str, str]] | None = None):
+        from fin_assist.cli.interaction.prompt import SkillCompleter
+
+        return SkillCompleter(skills or [("commit", "Generate a commit"), ("pr", "Create a PR")])
+
+    def test_yields_nothing_without_skill_prefix(self):
+        completer = self._make_completer()
+        doc = Document("hello", cursor_position=5)
+        assert list(completer.get_completions(doc, MagicMock())) == []
+
+    def test_yields_matching_skill_for_prefix(self):
+        completer = self._make_completer()
+        doc = Document("/skill:com", cursor_position=10)
+        results = list(completer.get_completions(doc, MagicMock()))
+        texts = [c.text for c in results]
+        assert "commit" in texts
+
+    def test_yields_all_skills_for_empty_prefix(self):
+        completer = self._make_completer()
+        doc = Document("/skill:", cursor_position=7)
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert "commit" in texts
+        assert "pr" in texts
+
+    def test_fuzzy_matches_partial_name(self):
+        completer = self._make_completer(
+            [("commit", "Commit changes"), ("summarize", "Summarize text")]
+        )
+        doc = Document("/skill:sum", cursor_position=10)
+        texts = [c.text for c in completer.get_completions(doc, MagicMock())]
+        assert texts[0] == "summarize"
+
+    def test_yields_nothing_for_no_skills(self):
+        from fin_assist.cli.interaction.prompt import SkillCompleter
+
+        completer = SkillCompleter([])
+        doc = Document("/skill:com", cursor_position=10)
+        assert list(completer.get_completions(doc, MagicMock())) == []
+
+    def test_skill_description_as_display_meta(self):
+        completer = self._make_completer([("commit", "Generate a conventional commit")])
+        doc = Document("/skill:commit", cursor_position=13)
+        results = list(completer.get_completions(doc, MagicMock()))
+        assert len(results) > 0
+        meta_text = str(results[0].display_meta)
+        assert "Generate a conventional commit" in meta_text
+
+
+class TestFinPromptSkills:
+    def test_skills_default_to_empty_list(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        fp = FinPrompt()
+        assert fp._skills == []
+
+    def test_skills_are_stored(self):
+        from fin_assist.cli.interaction.prompt import FinPrompt
+
+        skills = [("commit", "Generate a commit"), ("pr", "Create a PR")]
+        fp = FinPrompt(skills=skills)
+        assert fp._skills == skills

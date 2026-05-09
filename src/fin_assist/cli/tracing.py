@@ -61,6 +61,7 @@ logger = logging.getLogger(__name__)
 INVOCATION_ID_KEY = "fin_assist.cli.invocation_id"
 COMMAND_KEY = "fin_assist.cli.command"
 AGENT_KEY = "fin_assist.cli.agent"
+SKILL_KEY = "fin_assist.cli.skill"
 
 # Module-level guard so repeated ``setup_cli_tracing`` calls (e.g. in
 # tests or multi-command invocations) don't try to install a second
@@ -118,6 +119,7 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
     from fin_assist.tracing_shared import (
         DropSpansProcessor,
         TruncatingSpanProcessor,
+        _GracefulOTLPExporter,
         resolve_endpoint,
         resolve_headers,
         want_otlp_exporter,
@@ -142,10 +144,15 @@ def setup_cli_tracing(config: TracingSettings) -> object | None:
         exporter_cls = GRPCSpanExporter if config.exporter_protocol == "grpc" else HTTPSpanExporter
         endpoint = resolve_endpoint(config)
         headers = resolve_headers(dict(config.headers))
-        exporter = (
+        real_exporter = (
             exporter_cls(endpoint=endpoint, headers=headers)
             if headers
             else exporter_cls(endpoint=endpoint)
+        )
+        exporter = _GracefulOTLPExporter(
+            real_exporter,
+            endpoint=endpoint,
+            file_sink_path=str(TRACES_PATH),
         )
         provider.add_span_processor(_wrap(BatchSpanProcessor(exporter)))
 
@@ -172,6 +179,7 @@ def cli_root_span(
     command: str,
     *,
     agent: str = "",
+    skill: str = "",
     extra_attributes: dict[str, str] | None = None,
 ) -> Iterator[None]:
     """Open the ``cli.<command>`` root span for one ``fin`` invocation.
@@ -213,6 +221,8 @@ def cli_root_span(
         AGENT_KEY: agent,
         INVOCATION_ID_KEY: invocation_id,
     }
+    if skill:
+        attributes[SKILL_KEY] = skill
     if extra_attributes:
         attributes.update(extra_attributes)
 

@@ -388,7 +388,7 @@ class TestOpenInferenceAttributes:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -407,7 +407,7 @@ class TestOpenInferenceAttributes:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -426,7 +426,7 @@ class TestOpenInferenceAttributes:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -546,7 +546,7 @@ class TestApprovalRequestSpan:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -565,7 +565,7 @@ class TestApprovalRequestSpan:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -586,7 +586,7 @@ class TestApprovalRequestSpan:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command requires approval",
+                description="Shell command requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -597,7 +597,7 @@ class TestApprovalRequestSpan:
         )
         approval_spans = ts["get_spans"]("fin_assist.approval_request")
         assert (
-            approval_spans[0].attributes.get("fin_assist.approval.reason")
+            approval_spans[0].attributes.get("fin_assist.approval.description")
             == "Shell command requires approval"
         )
 
@@ -652,7 +652,7 @@ class TestSpanHierarchy:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -680,7 +680,7 @@ class TestSpanHierarchy:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -744,7 +744,7 @@ class TestHITLTraceContinuity:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -789,7 +789,7 @@ class TestHITLTraceContinuity:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -865,7 +865,7 @@ class TestHITLTraceContinuity:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -946,7 +946,7 @@ class TestHITLTraceContinuity:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -1000,7 +1000,7 @@ class TestHITLTraceContinuity:
         assert len(decided_spans) == 1
         attrs = dict(decided_spans[0].attributes or {})
         assert attrs.get("fin_assist.approval.decision") == "denied"
-        assert attrs.get("fin_assist.approval.reason") == "too dangerous"
+        assert attrs.get("fin_assist.approval.description") == "too dangerous"
 
 
 class TestTaskResultAttributes:
@@ -1031,7 +1031,7 @@ class TestTaskResultAttributes:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",

@@ -22,13 +22,6 @@ def mock_credentials():
 
 
 @pytest.fixture
-def expected_context_types():
-    from fin_assist.context.base import ContextType
-
-    return frozenset(ContextType.__args__)
-
-
-@pytest.fixture
 def tracing_setup():
     """Set up an in-memory OTel TracerProvider for span assertion tests.
 
