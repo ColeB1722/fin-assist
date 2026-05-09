@@ -166,7 +166,7 @@ class TestCreateDefaultRegistry:
             assert tool is not None
             assert tool.approval_policy is not None
             assert tool.approval_policy.mode == "always"
-            assert tool.approval_policy.reason is not None
+            assert tool.approval_policy.description is not None
 
     def test_read_file_has_path_parameter(self) -> None:
         registry = create_default_registry()
@@ -217,14 +217,14 @@ class TestCreateDefaultRegistry:
 
 class TestApprovalPolicy:
     def test_always_mode(self) -> None:
-        policy = ApprovalPolicy(mode="always", reason="test")
+        policy = ApprovalPolicy(mode="always", description="test")
         assert policy.mode == "always"
-        assert policy.reason == "test"
+        assert policy.description == "test"
 
     def test_never_mode(self) -> None:
         policy = ApprovalPolicy(mode="never")
         assert policy.mode == "never"
-        assert policy.reason is None
+        assert policy.description is None
 
 
 class TestDeferredToolCall:
@@ -233,20 +233,20 @@ class TestDeferredToolCall:
             tool_name="run_shell",
             tool_call_id="call_1",
             args={"command": "ls"},
-            reason="requires approval",
+            description="requires approval",
         )
         assert call.tool_name == "run_shell"
         assert call.tool_call_id == "call_1"
         assert call.args == {"command": "ls"}
-        assert call.reason == "requires approval"
+        assert call.description == "requires approval"
 
-    def test_reason_defaults_none(self) -> None:
+    def test_description_defaults_none(self) -> None:
         call = DeferredToolCall(
             tool_name="run_shell",
             tool_call_id="call_1",
             args={},
         )
-        assert call.reason is None
+        assert call.description is None
 
 
 class TestApprovalDecision:

@@ -337,7 +337,7 @@ class TestExecutorDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command execution requires approval",
+                description="Shell command execution requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -376,7 +376,7 @@ class TestExecutorDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /tmp/x"},
-                reason="Shell command execution requires approval",
+                description="Shell command execution requires approval",
             ),
             step=0,
             tool_name="run_shell",
@@ -415,7 +415,7 @@ class TestExecutorDeferredApproval:
         part, meta = deferred_artifacts[0]
         assert meta["tool_name"] == "run_shell"
         assert meta["tool_call_id"] == "call_1"
-        assert meta["reason"] == "Shell command execution requires approval"
+        assert meta["description"] == "Shell command execution requires approval"
 
     async def test_deferred_saves_context_before_pausing(self) -> None:
         from fin_assist.agents.tools import DeferredToolCall
@@ -426,7 +426,7 @@ class TestExecutorDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             ),
             step=0,
             tool_name="run_shell",

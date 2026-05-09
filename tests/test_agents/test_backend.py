@@ -515,7 +515,7 @@ class TestPydanticAIBackendRunSteps:
                 description="Run shell",
                 callable=lambda cmd: cmd,
                 parameters_schema={"type": "object", "properties": {}},
-                approval_policy=ApprovalPolicy(mode="always", reason="Shell needs approval"),
+                approval_policy=ApprovalPolicy(mode="always", description="Shell needs approval"),
             )
         )
         spec = AgentSpec(
@@ -563,7 +563,7 @@ class TestPydanticAIBackendRunSteps:
         assert deferred_events[0].content.tool_name == "run_shell"
         assert deferred_events[0].content.tool_call_id == "call_1"
         assert deferred_events[0].content.args == {"command": "ls"}
-        assert deferred_events[0].content.reason == "Shell needs approval"
+        assert deferred_events[0].content.description == "Shell needs approval"
 
 
 # -- PydanticAIBackend._build_pydantic_agent -----------------------------------
@@ -814,7 +814,7 @@ class TestPydanticAIBackendBuildPydanticAgent:
                 description="Git",
                 callable=lambda args: args,
                 parameters_schema={"type": "object", "properties": {}},
-                approval_policy=ApprovalPolicy(mode="always", reason="Default"),
+                approval_policy=ApprovalPolicy(mode="always", description="Default"),
             )
         )
         spec = AgentSpec(
@@ -899,7 +899,7 @@ class TestPydanticAIBackendBuildDeferredResults:
         assert result.approvals["call_2"] is not True
 
 
-# -- PydanticAIBackend._get_approval_reason -----------------------------------
+# -- PydanticAIBackend._get_approval_description -----------------------------------
 
 
 class TestPydanticAIBackendGetApprovalReason:
@@ -927,7 +927,9 @@ class TestPydanticAIBackendGetApprovalReason:
                         default="always",
                         rules=[
                             ToolPolicyRuleConfig(
-                                pattern="git push*", mode="always", reason="Push needs approval"
+                                pattern="git push*",
+                                mode="always",
+                                description="Push needs approval",
                             ),
                         ],
                     ),
@@ -937,7 +939,7 @@ class TestPydanticAIBackendGetApprovalReason:
             credentials=mock_credentials,
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
-        assert backend._get_approval_reason("git") is None
+        assert backend._get_approval_description("git") is None
         policy = backend._get_agent_tool_policy("git")
         assert policy is not None
         mode, reason = policy.evaluate("git push origin main")
@@ -955,7 +957,7 @@ class TestPydanticAIBackendGetApprovalReason:
                 callable=lambda cmd: cmd,
                 parameters_schema={"type": "object", "properties": {}},
                 approval_policy=ApprovalPolicy(
-                    mode="always", reason="Shell commands need approval"
+                    mode="always", description="Shell commands need approval"
                 ),
             )
         )
@@ -971,11 +973,11 @@ class TestPydanticAIBackendGetApprovalReason:
             credentials=mock_credentials,
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
-        assert backend._get_approval_reason("run_shell") == "Shell commands need approval"
+        assert backend._get_approval_description("run_shell") == "Shell commands need approval"
 
     def test_returns_none_when_no_registry(self, mock_config, mock_credentials) -> None:
         backend = PydanticAIBackend(agent_spec=_make_spec(mock_config, mock_credentials))
-        assert backend._get_approval_reason("run_shell") is None
+        assert backend._get_approval_description("run_shell") is None
 
     def test_returns_none_when_tool_not_found(self, mock_config, mock_credentials) -> None:
         from fin_assist.agents.tools import ToolDefinition, ToolRegistry
@@ -988,7 +990,7 @@ class TestPydanticAIBackendGetApprovalReason:
             credentials=mock_credentials,
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
-        assert backend._get_approval_reason("nonexistent") is None
+        assert backend._get_approval_description("nonexistent") is None
 
     def test_returns_none_when_tool_has_no_approval_policy(
         self, mock_config, mock_credentials
@@ -1011,7 +1013,7 @@ class TestPydanticAIBackendGetApprovalReason:
             credentials=mock_credentials,
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
-        assert backend._get_approval_reason("read_file") is None
+        assert backend._get_approval_description("read_file") is None
 
 
 # -- PydanticAIBackend._build_model -------------------------------------------

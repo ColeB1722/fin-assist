@@ -124,7 +124,7 @@ class ToolPolicyRuleConfig(BaseModel):
 
     pattern: str
     mode: Literal["never", "always"]
-    reason: str | None = None
+    description: str | None = None
 
 
 class ToolPolicyConfig(BaseModel):

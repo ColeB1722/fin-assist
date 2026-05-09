@@ -115,7 +115,7 @@ def _extract_deferred_calls(task) -> list[DeferredToolCall]:
                         tool_name=meta.get("tool_name", ""),
                         tool_call_id=meta.get("tool_call_id", ""),
                         args=meta.get("args", {}),
-                        reason=meta.get("reason") or None,
+                        description=meta.get("description") or None,
                     )
                 )
     return calls

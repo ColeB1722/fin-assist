@@ -377,7 +377,7 @@ class TestChatLoopDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             )
         ]
 
@@ -416,7 +416,7 @@ class TestChatLoopDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "rm -rf /"},
-                reason="requires approval",
+                description="requires approval",
             )
         ]
 
@@ -463,7 +463,7 @@ class TestChatLoopDeferredApproval:
                 tool_name="run_shell",
                 tool_call_id="call_1",
                 args={"command": "ls"},
-                reason="requires approval",
+                description="requires approval",
             )
         ]
 

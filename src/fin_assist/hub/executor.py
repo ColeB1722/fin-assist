@@ -530,7 +530,7 @@ class Executor(AgentExecutor):
                 "type": "deferred",
                 "tool_name": event.tool_name or "",
                 "tool_call_id": deferred.tool_call_id,
-                "reason": deferred.reason or "",
+                "description": deferred.description or "",
                 "args": deferred.args,
             }
         )

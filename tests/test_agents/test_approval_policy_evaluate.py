@@ -34,10 +34,10 @@ class TestApprovalRule:
 
 class TestApprovalPolicyEvaluate:
     def test_no_rules_returns_default(self) -> None:
-        policy = ApprovalPolicy(mode="always", reason="requires approval")
-        mode, reason = policy.evaluate("git push")
+        policy = ApprovalPolicy(mode="always", description="requires approval")
+        mode, description = policy.evaluate("git push")
         assert mode == "always"
-        assert reason == "requires approval"
+        assert description == "requires approval"
 
     def test_no_rules_returns_mode_as_default(self) -> None:
         policy = ApprovalPolicy(mode="never")
@@ -50,12 +50,14 @@ class TestApprovalPolicyEvaluate:
             default="always",
             rules=[
                 ApprovalRule(pattern="git diff", mode="never"),
-                ApprovalRule(pattern="git *", mode="always", reason="git commands need approval"),
+                ApprovalRule(
+                    pattern="git *", mode="always", description="git commands need approval"
+                ),
             ],
         )
-        mode, reason = policy.evaluate("git diff")
+        mode, description = policy.evaluate("git diff")
         assert mode == "never"
-        assert reason is None
+        assert description is None
 
     def test_falls_through_to_second_rule(self) -> None:
         policy = ApprovalPolicy(
@@ -63,12 +65,14 @@ class TestApprovalPolicyEvaluate:
             default="always",
             rules=[
                 ApprovalRule(pattern="git diff", mode="never"),
-                ApprovalRule(pattern="git *", mode="always", reason="git commands need approval"),
+                ApprovalRule(
+                    pattern="git *", mode="always", description="git commands need approval"
+                ),
             ],
         )
-        mode, reason = policy.evaluate("git push")
+        mode, description = policy.evaluate("git push")
         assert mode == "always"
-        assert reason == "git commands need approval"
+        assert description == "git commands need approval"
 
     def test_no_rule_matches_returns_default(self) -> None:
         policy = ApprovalPolicy(
@@ -109,14 +113,14 @@ class TestApprovalPolicyEvaluate:
         mode, _ = policy.evaluate("")
         assert mode == "never"
 
-    def test_rule_with_reason(self) -> None:
+    def test_rule_with_description(self) -> None:
         policy = ApprovalPolicy(
             mode="always",
             rules=[
                 ApprovalRule(
-                    pattern="git push *", mode="always", reason="Pushing requires confirmation"
+                    pattern="git push *", mode="always", description="Pushing requires confirmation"
                 ),
             ],
         )
-        _, reason = policy.evaluate("git push origin main")
-        assert reason == "Pushing requires confirmation"
+        _, description = policy.evaluate("git push origin main")
+        assert description == "Pushing requires confirmation"

@@ -53,6 +53,8 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 | 1 | Tracing: OTel + OpenInference bridge | ✅ Complete — follow-ups [#104-#109](https://github.com/ColeB1722/fin-assist/issues?q=is%3Aopen+104+105+106+107+108+109) |
 | 2 | Skills API v0.1 | ✅ Complete — Phases 0–4 + code review triage shipped (924 tests) |
 | 3 | MCP tool source (v0.1.1) | ⬜ Queued — skill→tool binding is source-agnostic |
+| 3b | Pluggable base system prompts (v0.1.1) | ⬜ Queued — user-overridable prompt templates, not hardcoded constants |
+| 3c | Registry consistency + policy resolution audit (v0.1.1) | ⬜ Queued — compare registry APIs for consistency; review policy resolution flow (schema → evaluate → backend → executor) for end-user understandability |
 | 4 | Eval harness (per-agent) | ⬜ Queued — rides on tracing |
 | 5 | Skill composability + agent-to-agent (v0.2) | ⬜ Queued |
 
@@ -103,6 +105,54 @@ Rolling context for session handoffs. Updated as checkpoints are reached.
 ---
 
 ## Design Sketches
+
+### Dynamic Phasing in System Prompt (sketched 2026-05-09)
+
+**Status:** Idea stage — wiring discussion deferred.
+
+**Concept:** Inject the current development phase of each subsystem into the agent system prompt (and/or `agent.md`), so the LLM can factor maturity/stability into its planning. For example, if a skill or tool is still in an "experimental" phase, the agent would know to surface caveats, avoid relying on undocumented behavior, or suggest conservative approaches. A "stable" phase would signal that normal usage is safe. A "deprecated" phase would steer the agent away from the feature entirely.
+
+**Why it matters:** Agents currently have no visibility into what's production-ready vs. prototypical. This creates a planning blind spot — the LLM might confidently recommend a feature that's half-baked or steer users toward patterns that are about to change. Phase-aware context would let the agent self-regulate without hard guardrails.
+
+**Sketch of what phase metadata might look like:**
+
+```toml
+[agents.git]
+phase = "stable"
+
+[agents.git.skills.commit]
+phase = "stable"
+
+[agents.git.skills.pr-checklist]
+phase = "experimental"
+```
+
+Or at the tool level:
+
+```toml
+[agents.git.tool_policies.git]
+phase = "stable"
+rules = [
+  { pattern = "git push*", mode = "always" },
+  { pattern = "git diff*", mode = "never" },
+]
+
+[agents.git.tool_policies.gh]
+phase = "experimental"
+```
+
+**Open questions (deferred to wiring discussion):**
+
+1. **Source of truth** — Does phase live in `config.toml`, `agent.md` frontmatter, a separate manifest, or is it derived from version/convention (e.g., `v0.x` = experimental)?
+2. **Granularity** — Per-agent? Per-skill? Per-tool? All three with inheritance (tool inherits skill phase unless overridden)?
+3. **Prompt injection point** — Appended to `agent.md`? Injected into `SkillManager.catalog_text()`? A dedicated context provider?
+4. **Phase vocabulary** — `experimental` / `stable` / `deprecated`? Or more nuanced (e.g., `alpha`, `beta`, `ga`, `sunset`)?
+5. **Agent behavior specification** — Should the prompt just state the phase and let the LLM infer behavior, or should each phase carry explicit behavioral directives (e.g., `"experimental": "Always ask before using; explain that the feature may change"`)?
+6. **Lifecycle transitions** — How does a feature move from `experimental` → `stable`? Config change + changelog? Automated based on test coverage or time?
+
+**Next step:** When ready to wire this up, decide on the open questions above and define a concrete touchpoint map (which files read phase, where it's injected into prompts, how it's surfaced to the user).
+
+---
 
 ### Tracing (OTel + OpenInference, shipped 2026-04-29)
 
@@ -233,6 +283,7 @@ HTTP POST /agents/{name}/ (FastAPI auto-instrumentation)
 | Version | Feature |
 |---------|---------|
 | v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
+| v0.1.1 | Pluggable base system prompts — user-overridable prompt templates, not hardcoded Python constants |
 | v0.1.1 | Per-subcommand approval evaluation at executor level |
 | v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
 | v0.3 | Eval harness |

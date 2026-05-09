@@ -306,7 +306,7 @@ class _DeferredBackend(FakeBackend):
                     tool_name="run_shell",
                     tool_call_id="call_1",
                     args={"command": "echo hello"},
-                    reason="Shell command execution requires approval",
+                    description="Shell command execution requires approval",
                 ),
                 step=0,
                 tool_name="run_shell",

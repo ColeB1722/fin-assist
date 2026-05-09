@@ -319,7 +319,7 @@ class _TaskTracer:
             FinAssistAttributes.APPROVAL_DECISION: aggregate_decision,
         }
         if reason:
-            attributes[FinAssistAttributes.APPROVAL_REASON] = reason
+            attributes[FinAssistAttributes.APPROVAL_DESCRIPTION] = reason
 
         decided_span = self._active_tracer.start_span(
             SpanNames.APPROVAL_DECIDED,
@@ -364,7 +364,7 @@ class _TaskTracer:
                 FinAssistAttributes.TOOL_NAME: event.tool_name or "",
                 FinAssistAttributes.TOOL_CALL_ID: deferred.tool_call_id,
                 FinAssistAttributes.APPROVAL_STATUS: "paused",
-                FinAssistAttributes.APPROVAL_REASON: deferred.reason or "",
+                FinAssistAttributes.APPROVAL_DESCRIPTION: deferred.description or "",
                 SpanAttributes.INPUT_VALUE: args_str,
                 SpanAttributes.INPUT_MIME_TYPE: OpenInferenceMimeTypeValues.JSON.value,
             },

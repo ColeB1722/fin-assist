@@ -100,8 +100,8 @@ class FinAssistAttributes:
     """One of ``"approved"``, ``"denied"``, ``"overridden"``.  Set only on
     the ``approval_decided`` span (created at resume)."""
 
-    APPROVAL_REASON = "fin_assist.approval.reason"
-    """Human-readable reason — either the tool's approval policy reason
+    APPROVAL_DESCRIPTION = "fin_assist.approval.description"
+    """Human-readable description — either the tool's approval policy description
     (on the request span) or the user's denial reason (on the decided span)."""
 
     LINK_TYPE = "fin_assist.link.type"

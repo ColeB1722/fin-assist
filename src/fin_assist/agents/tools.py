@@ -53,7 +53,7 @@ class ApprovalRule:
 
     pattern: str
     mode: Literal["never", "always"]
-    reason: str | None = None
+    description: str | None = None
 
     def matches(self, args: str) -> bool:
         return fnmatch(args, self.pattern)
@@ -82,7 +82,7 @@ class ApprovalPolicy:
 
     mode: Literal["never", "always"]
     default: Literal["never", "always"] | None = None
-    reason: str | None = None
+    description: str | None = None
     rules: list[ApprovalRule] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -92,9 +92,9 @@ class ApprovalPolicy:
     def evaluate(self, args: str = "") -> tuple[Literal["never", "always"], str | None]:
         for rule in self.rules:
             if rule.matches(args):
-                return rule.mode, rule.reason
+                return rule.mode, rule.description
         assert self.default is not None
-        return self.default, self.reason
+        return self.default, self.description
 
 
 @dataclass
@@ -108,7 +108,7 @@ class DeferredToolCall:
     tool_name: str
     tool_call_id: str
     args: dict[str, Any]
-    reason: str | None = None
+    description: str | None = None
 
 
 @dataclass
@@ -240,7 +240,7 @@ def create_default_registry(
             },
             approval_policy=ApprovalPolicy(
                 mode="always",
-                reason=(
+                description=(
                     "Git commands require approval (per-subcommand approval planned in Skills API)"
                 ),
             ),
@@ -270,7 +270,7 @@ def create_default_registry(
             },
             approval_policy=ApprovalPolicy(
                 mode="always",
-                reason=(
+                description=(
                     "GitHub CLI commands require approval "
                     "(per-subcommand approval planned in Skills API)"
                 ),
@@ -315,7 +315,7 @@ def create_default_registry(
             },
             approval_policy=ApprovalPolicy(
                 mode="always",
-                reason="Shell command execution requires approval",
+                description="Shell command execution requires approval",
             ),
         )
     )

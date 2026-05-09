@@ -19,7 +19,7 @@ def _sample_deferred_calls() -> list[DeferredToolCall]:
             tool_name="run_shell",
             tool_call_id="call_1",
             args={"command": "rm -rf /tmp/x"},
-            reason="Shell command execution requires approval",
+            description="Shell command execution requires approval",
         )
     ]
 

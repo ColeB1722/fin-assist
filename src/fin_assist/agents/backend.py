@@ -193,7 +193,7 @@ class _PydanticAIStepHandle:
                             tool_name=call.tool_name,
                             tool_call_id=call.tool_call_id,
                             args=call.args_as_dict(),
-                            reason=self._backend._get_approval_reason(call.tool_name),
+                            description=self._backend._get_approval_description(call.tool_name),
                         ),
                         step=step,
                         tool_name=call.tool_name,
@@ -521,7 +521,8 @@ class PydanticAIBackend:
         if policy_cfg is None:
             return None
         rules = [
-            ApprovalRule(pattern=r.pattern, mode=r.mode, reason=r.reason) for r in policy_cfg.rules
+            ApprovalRule(pattern=r.pattern, mode=r.mode, description=r.description)
+            for r in policy_cfg.rules
         ]
         return ApprovalPolicy(
             mode=policy_cfg.default,
@@ -577,16 +578,16 @@ class PydanticAIBackend:
 
         return FallbackModel(*models)
 
-    def _get_approval_reason(self, tool_name: str) -> str | None:
+    def _get_approval_description(self, tool_name: str) -> str | None:
         agent_policy = self._get_agent_tool_policy(tool_name)
         if agent_policy is not None:
-            return agent_policy.reason
+            return agent_policy.description
         if self._tool_registry is None:
             return None
         td = self._tool_registry.get(tool_name)
         if td is None or td.approval_policy is None:
             return None
-        return td.approval_policy.reason
+        return td.approval_policy.description
 
     def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any:
         from pydantic_ai import DeferredToolResults

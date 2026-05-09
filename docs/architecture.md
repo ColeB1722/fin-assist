@@ -1288,6 +1288,8 @@ Discovery paths (project takes precedence for same-name skills):
 | Version | Feature |
 |---------|---------|
 | v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
+| v0.1.1 | Pluggable base system prompts — user-overridable prompt templates, not hardcoded Python constants |
+| v0.1.1 | Registry consistency + policy resolution audit — compare ToolRegistry, SkillManager, ContextProviders, CredentialStore, ProviderRegistry APIs; review policy resolution flow (schema → evaluate → backend → executor) for end-user understandability |
 | v0.1.1 | Per-subcommand approval evaluation at executor level |
 | v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
 | v0.3 | Eval harness |

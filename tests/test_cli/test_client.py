@@ -812,7 +812,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_1",
                                 "args": {"command": "ls"},
-                                "reason": "requires approval",
+                                "description": "requires approval",
                             },
                         ),
                     ],
@@ -824,7 +824,7 @@ class TestExtractDeferredCalls:
         assert calls[0].tool_name == "run_shell"
         assert calls[0].tool_call_id == "call_1"
         assert calls[0].args == {"command": "ls"}
-        assert calls[0].reason == "requires approval"
+        assert calls[0].description == "requires approval"
 
     def test_returns_empty_when_no_deferred_artifacts(self):
         task = _make_task(
@@ -858,7 +858,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_1",
                                 "args": {},
-                                "reason": "",
+                                "description": "",
                             },
                         ),
                         _make_text_part(
@@ -868,7 +868,7 @@ class TestExtractDeferredCalls:
                                 "tool_name": "run_shell",
                                 "tool_call_id": "call_2",
                                 "args": {},
-                                "reason": "",
+                                "description": "",
                             },
                         ),
                     ],

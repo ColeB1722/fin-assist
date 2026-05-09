@@ -70,9 +70,9 @@ async def run_approval_widget(
         if args_display:
             content.append("Args: ", style="bold")
             content.append(f"{args_display}\n")
-        if call.reason:
-            content.append("Reason: ", style="bold")
-            content.append(call.reason)
+        if call.description:
+            content.append("Description: ", style="bold")
+            content.append(call.description)
 
         console.print(Panel(content, title="Approval Required", border_style="yellow"))
 
