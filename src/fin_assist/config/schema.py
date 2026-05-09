@@ -156,6 +156,12 @@ class SkillConfig(BaseModel):
     in ``.fin/skills/<name>/SKILL.md`` or
     ``~/.config/fin/skills/<name>/SKILL.md``.  SKILL.md takes precedence
     for same-name skills.
+
+    ``tools`` lists only the tools this skill **adds** beyond the
+    agent's ``base_tools``.  Listing a ``base_tools`` member here is
+    redundant — the runtime union already deduplicates — and should be
+    avoided for clarity.  If an agent needs zero always-on tools, set
+    ``base_tools = []``.
     """
 
     description: str = ""

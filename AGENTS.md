@@ -171,7 +171,7 @@ base_tools = ["read_file"]
 
 [agents.git.skills.commit]
 description = "Generate a conventional commit message from current changes."
-tools = ["git", "read_file"]
+tools = ["git"]
 prompt_template = "git-commit"
 entry_prompt = "Analyze the current staged and unstaged changes and generate a conventional commit message."
 
