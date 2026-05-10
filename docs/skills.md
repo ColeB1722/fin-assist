@@ -37,7 +37,7 @@ flowchart LR
 | `ToolPolicyConfig` | `config/schema.py` | Agent-level tool approval policy (default mode + rules) |
 | `ToolPolicyRuleConfig` | `config/schema.py` | Single fnmatch-based approval rule in config |
 | `ApprovalPolicy` | `agents/tools.py` | Runtime policy: `evaluate(args) -> tuple[mode, description]` (first-match rules, default fallback) |
-| `AgentConfig.base_tools` | `config/schema.py` | Always-available safe/read-only tools (default: `["read_file"]`) |
+| `AgentConfig.base_tools` | `config/schema.py` | Always-available tools (default: `[]`; agents opt in via config or skills) |
 | `AgentConfig.tool_policies` | `config/schema.py` | Agent-level tool approval policies (dict keyed by tool name) |
 
 ## Skill lifecycle
@@ -58,7 +58,7 @@ flowchart LR
 
 The key behavior: **tools are not all registered up front**. `_build_pydantic_agent()` registers only:
 
-- `base_tools` (always available, default `["read_file"]`)
+- `base_tools` (always available, default `[]`)
 - `SkillManager.loaded_tool_names()` (tools from loaded skills)
 
 The LLM can only use tools from loaded skills. Unloaded skills' tools simply don't exist from the agent's perspective — skill boundaries are enforced, not advisory.
@@ -191,7 +191,7 @@ CLI usage:
 | Tools shared across skills | Name collisions = config error | Single tool registry; same tool name must map to same callable |
 | Tool gating by loaded skills | `base_tools` + `loaded_tool_names()` only | Makes skill boundaries meaningful; LLM can't use unloaded tools |
 | Agent-level tool policies | `tool_policies` on `AgentConfig`, not per-skill | Each tool has exactly one policy — no merge/conflict |
-| `base_tools` default `["read_file"]` | Safe/read-only tools always available | Agents always need file reading; no skill load required |
+| `base_tools` default `[]` | No tools implied; agents opt in | Tool availability is explicit — no hidden dependencies on implicit defaults |
 | Agent-driven + CLI skill loading | `load_skill` tool + `skills/invoke` endpoint + `--skill` flag | Multiple entry points for different workflows |
 | `/skill:<name>` REPL pattern | Mirrors `@file:` pattern with `SkillCompleter` | Consistent UX; fuzzy completion via rapidfuzz |
 | SKILL.md follows agentskills.io | Standard format with `metadata.fin-assist.*` extensions | Interoperability with other agent platforms |

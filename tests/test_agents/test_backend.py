@@ -64,7 +64,7 @@ def _make_spec_with_tools(
             description="Default agent",
             system_prompt="chain-of-thought",
             output_type="text",
-            base_tools=base_tools or ["read_file"],
+            base_tools=base_tools or [],
             skills=skills,
         ),
         config=mock_config,

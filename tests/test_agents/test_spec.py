@@ -440,7 +440,7 @@ class TestAgentSpecConfigProperties:
             config=mock_config,
             credentials=mock_credentials,
         )
-        assert agent.base_tools == ["read_file"]
+        assert agent.base_tools == []
 
     def test_base_tools_custom(self, mock_config, mock_credentials) -> None:
         agent = AgentSpec(

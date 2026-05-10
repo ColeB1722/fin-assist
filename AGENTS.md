@@ -241,7 +241,7 @@ Use conventional commits format...
 - Tools are **gated** — only `base_tools` + loaded skills' tools are registered; unloaded skills' tools are not available
 - Tools are **shared** across skills — name collisions are a config validation error
 - **Agent-level** `tool_policies` define approval per tool, not per skill (eliminates merge conflicts)
-- `AgentSpec.base_tools` lists always-available safe/read-only tools (default: `["read_file"]`)
+- `AgentSpec.base_tools` lists always-available tools (default: `[]`; opt in via config or skills)
 - `--skill` CLI flag pre-loads a skill: `fin do git --skill commit`
 - Positional skill matching: `fin do git commit` → agent=git, skill=commit
 - `/skill:<name>` REPL command loads a skill mid-session

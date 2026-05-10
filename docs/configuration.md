@@ -80,7 +80,7 @@ tools = ["run_shell"]
 | `thinking` | `"off"`/`"low"`/`"medium"`/`"high"` or null | `"medium"` | Pydantic-AI thinking effort; `"off"` disables, `null` inherits from `[general]` |
 | `serving_modes` | list[`"do"`/`"talk"`] | `["do", "talk"]` | Which CLI modes this agent supports |
 | `enabled` | bool | true | Whether to mount this agent in the hub |
-| `base_tools` | list[str] | `["read_file"]` | Always-available tools (no skill load required) |
+| `base_tools` | list[str] | `[]` | Always-available tools (opt in via config or skills) |
 | `skills` | dict[str, SkillConfig] | `{}` | Per-skill config (see [`docs/skills.md`](skills.md)) |
 | `tool_policies` | dict[str, ToolPolicyConfig] | `{}` | Per-tool approval policy (agent-level, not per-skill) |
 
