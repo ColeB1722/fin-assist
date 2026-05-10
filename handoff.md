@@ -15,6 +15,10 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-10 (session 2):** Audited context provider wiring (#129). The two paths (@-completion and tool calls) are incoherent: separate instances, no shared cache, `git` tool bypasses `GitContext` entirely, `git_status` and `Environment` are unreachable. Filed #129 with three design options and a blocking note on #84 (ToolProvider shape depends on answer) and #115 (don't wire Environment with current pattern). Added v0.1.1 milestone note that #129 direction must be resolved before those two ship.
+
+**2026-05-10 (session 1):** Audited `AgentCardMeta` field wiring. Finding: `serving_modes` is the only field with runtime enforcement; `supported_context_types` (computed, published, never consumed for filtering), `supported_providers` (always `None`, no config key), `supports_model_selection` (always `True`, never read), and `supports_thinking` (set but never read by CLI) are all declarative-only. Documented in milestone notes: context-type filtering paired with #115 in v0.1.1; provider filtering + model selection + thinking gate deferred to v0.2.1 with design questions. Also: `docs/architecture.md` edits from the doc-restructure session (deliverables table, local-first principle, maintenance contract, backend diagram) are on disk but uncommitted — awaiting user review.
+
 **2026-05-10:** Added "ToolProvider Protocol" design sketch — unifies tool registration across builtin, MCP, and file-based sources. Informs v0.1.1 (#84) architecture; ships progressively through v0.3. Updated milestone descriptions for v0.1.1, v0.2, v0.3 with ToolProvider context. Added comment to #84 with implementation sequence.
 
 **2026-05-09:** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open issues), four-phase roadmap captured as milestones (v0.1.1 → v0.2 → v0.2.1 → v0.3). v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch below.
