@@ -11,36 +11,60 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Each job invokes a `just` recipe so the justfile remains the single source of
+# truth for what runs in CI. Adding a step to `just ci` automatically extends
+# CI — no YAML changes required. See AGENTS.md § Commands.
+
 jobs:
   format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v21
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
-      - run: nix shell nixpkgs#treefmt nixpkgs#nixfmt-rfc-style nixpkgs#ruff --command treefmt --ci
+        with:
+          use-flakehub: false
+      - run: nix shell nixpkgs#just nixpkgs#treefmt nixpkgs#nixfmt-rfc-style nixpkgs#ruff --command just check
 
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v21
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
       - run: |
-          nix shell nixpkgs#uv nixpkgs#ruff --command bash -c "
+          nix shell nixpkgs#just nixpkgs#uv nixpkgs#ruff --command bash -c "
             uv sync --all-extras
-            ruff check src/
-            uv run ty check src/
+            just lint
+            just lint-imports
+          "
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
+      - run: |
+          nix shell nixpkgs#just nixpkgs#uv --command bash -c "
+            uv sync --all-extras
+            just typecheck
           "
 
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: DeterminateSystems/nix-installer-action@v21
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@v22
       - uses: DeterminateSystems/magic-nix-cache-action@v13
+        with:
+          use-flakehub: false
       - run: |
-          nix shell nixpkgs#uv --command bash -c "
+          nix shell nixpkgs#just nixpkgs#uv --command bash -c "
             uv sync --all-extras
-            uv run pytest tests/ -x --tb=short
+            just test -x --tb=short
           "
