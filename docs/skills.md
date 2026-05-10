@@ -6,6 +6,27 @@ Approval policies are defined at the **agent level** via `tool_policies`, not pe
 
 ## Key types
 
+```mermaid
+flowchart LR
+    subgraph config ["Config layer (config/schema.py)"]
+        AC[AgentConfig] -->|skills.*| SC[SkillConfig]
+        AC -->|tool_policies.*| TPC[ToolPolicyConfig]
+        TPC -->|rules| TPRC[ToolPolicyRuleConfig]
+    end
+
+    subgraph runtime ["Runtime layer (agents/)"]
+        SC -->|resolved by| SL[SkillLoader]
+        SL -->|produces| SD[SkillDefinition]
+        SD -->|feeds| SM[SkillManager]
+        SM -->|generates| SCat[SkillCatalog]
+        TPC -->|resolved into| AP[ApprovalPolicy]
+    end
+
+    AC -.->|base_tools| RT[Registered tools]
+    SM -->|loaded_tool_names| RT
+    AP -->|evaluate| RT
+```
+
 | Type | Location | Purpose |
 |------|----------|---------|
 | `SkillDefinition` | `agents/skills.py` | Runtime representation of a resolved skill |
