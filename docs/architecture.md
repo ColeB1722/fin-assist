@@ -19,6 +19,30 @@ Developer reference for fin-assist's internals. For the user-facing pitch, see [
 
 **CLI-first, TUI-later.** Start with a simple CLI client for fast iteration and testing, then layer on TUI and other clients. The server is the stable core; clients are interchangeable.
 
+## Deliverables: Hub vs Client
+
+fin-assist is two distinct deliverables in one repository, separated by the A2A protocol:
+
+| Deliverable | Role | Lives in | Talks to clients via |
+|-------------|------|----------|----------------------|
+| **Agent Hub** | Platform — hosts agents, routes A2A traffic, persists context, manages credentials | `src/fin_assist/hub/` + `src/fin_assist/agents/` + supporting infra (`config/`, `context/`, `credentials/`, `llm/`, `providers.py`) | A2A (JSON-RPC over HTTP, SSE for streaming) |
+| **CLI** | Client — one of N possible A2A clients; today the only one. REPL, prompt, rendering, session storage | `src/fin_assist/cli/` | n/a (it *is* the user interface) |
+
+**The protocol is the contract.** The hub does not know what kind of client is talking to it. The CLI does not know any hub internals — it only knows the A2A wire format and the `fin_assist:meta` agent-card extension. A future TUI, web UI, or remote-Tailscale deployment is a different *client* or *deployment topology*, not a different product.
+
+**Import-firewall rule.** Code in `hub/` must never import from `cli/`. Code in `cli/` must never import from `hub/` *for client purposes* — the only allowed direction is the in-process launcher path used by `fin-assist serve` (which loads `hub.app`/`logging`/`pidfile`/`tracing` to boot the FastAPI app in this process).
+
+The rule is enforced by [`import-linter`](https://import-linter.readthedocs.io/) via two `forbidden` contracts in `pyproject.toml` under `[tool.importlinter]`. Run with `just lint-imports` (also part of `just ci`). The launcher allowlist is currently:
+
+- `cli/main.py → hub.app` / `hub.logging` / `hub.pidfile` / `hub.tracing` — `_serve_command` boots the FastAPI hub in-process
+- `cli/tracing.py → hub.file_exporter` — CLI-side spans share the hub's JSONL sink
+
+Notably, `cli/server.py` (process-lifecycle: `start`/`stop`/`status`/`ensure_running`) is *not* on the allowlist — it spawns the hub as a subprocess via `httpx` + `Popen` and never imports `hub.*`. That cross-process boundary is the cleanest possible separation and should stay that way.
+
+**New `cli/` code talking to the hub must go through `cli/client.py`** (the A2A client), not direct `hub.*` imports. If you legitimately need to extend the launcher path, add the specific `module -> module` line to `ignore_imports` in `pyproject.toml` with a justifying comment — don't weaken the contract itself.
+
+**Why this matters now.** Today the boundary is already clean (hub has zero CLI imports; CLI's only hub imports are the two launcher files). Pinning the rule with `import-linter` prevents drift before a second client (TUI, future workspace-split — see [`decisions.md`](decisions.md)) makes the cost of drift concrete. When the workspace split lands ([#128](https://github.com/ColeB1722/fin-assist/issues/128)), the contracts become per-package and the launcher allowlist either disappears (launcher moves into the hub package) or shrinks to a single declared dependency edge.
+
 ## Design principles
 
 1. **Config-driven agents** — Behavior (system prompt, output type, thinking, serving modes, approval, skills) lives in TOML, not Python subclasses. New agents are config entries, not new classes.
@@ -27,6 +51,7 @@ Developer reference for fin-assist's internals. For the user-facing pitch, see [
 4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
 5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
 6. **Metadata-driven clients** — Clients read agent capabilities from agent cards and adapt dynamically. No client-side agent-specific code.
+7. **Protocol is the contract** — The hub and its clients communicate only through A2A + the `fin_assist:meta` extension. `cli/` does not import from `hub/` (except the in-process launcher path for `fin-assist serve`); `hub/` never imports from `cli/`. See *Deliverables: Hub vs Client* above.
 
 ## Non-goals
 

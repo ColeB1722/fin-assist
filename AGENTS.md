@@ -67,6 +67,7 @@ After design is sketched, write tests BEFORE writing implementation code:
 | `just fmt` | Format all code |
 | `just lint` | Run linter |
 | `just lint-fix` | Auto-fix lint issues |
+| `just lint-imports` | Enforce hub/cli architecture firewall (import-linter) |
 | `just typecheck` | Run type checker |
 | `just test` | Run tests |
 | `just test-cov` | Run tests with coverage |

@@ -32,6 +32,7 @@ dev = [
     "ruff>=0.9",
     "ty>=0.0.1a1",
     "arize-phoenix>=8.0",
+    "import-linter>=2.0",
 ]
 
 [project.scripts]
@@ -78,3 +79,45 @@ pythonVersion = "3.13"
 extraPaths = ["src"]
 reportMissingImports = true
 reportMissingTypeStubs = false
+
+# ---------------------------------------------------------------------------
+# Architecture firewall — see docs/architecture.md § "Deliverables: Hub vs Client"
+#
+# fin-assist is two deliverables in one repo, separated by the A2A protocol:
+#   - hub/  is the platform (Agent Hub)
+#   - cli/  is one A2A client (today the only one)
+#
+# The contracts below enforce the import boundary. Run with `just lint-imports`
+# (also part of `just ci`).
+#
+# When a new cli/ file legitimately needs the in-process launcher path (for
+# `fin-assist serve`), add the specific import to `ignore_imports` with a
+# justifying comment — DON'T weaken the contract itself.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "fin_assist"
+
+[[tool.importlinter.contracts]]
+name = "hub must not import from cli"
+type = "forbidden"
+source_modules = ["fin_assist.hub"]
+forbidden_modules = ["fin_assist.cli"]
+# No ignore_imports — the platform must never know about specific clients.
+
+[[tool.importlinter.contracts]]
+name = "cli must not import from hub (except in-process launcher path)"
+type = "forbidden"
+source_modules = ["fin_assist.cli"]
+forbidden_modules = ["fin_assist.hub"]
+ignore_imports = [
+    # `fin-assist serve` boots the FastAPI hub in-process. These four imports
+    # are the launcher path; everything else in cli/ talks to the hub via
+    # cli/client.py over A2A.
+    "fin_assist.cli.main -> fin_assist.hub.app",
+    "fin_assist.cli.main -> fin_assist.hub.logging",
+    "fin_assist.cli.main -> fin_assist.hub.pidfile",
+    "fin_assist.cli.main -> fin_assist.hub.tracing",
+    # cli tracing setup re-uses the hub's file span exporter so CLI-side
+    # spans land in the same JSONL sink as hub-side spans.
+    "fin_assist.cli.tracing -> fin_assist.hub.file_exporter",
+]
