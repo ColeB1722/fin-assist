@@ -25,6 +25,11 @@ lint:
 lint-fix:
     uv run ruff check --fix src/
 
+# Architecture firewall — enforces hub/cli import boundary.
+# See docs/architecture.md § "Deliverables: Hub vs Client".
+lint-imports:
+    uv run lint-imports
+
 typecheck:
     uv run ty check src/
 
@@ -34,7 +39,7 @@ test *args:
 test-cov:
     uv run pytest tests/ --cov=fin_assist --cov-report=term-missing
 
-ci: check lint typecheck test
+ci: check lint lint-imports typecheck test
 
 # ── Local dev ────────────────────────────────────────────────────────────────
 

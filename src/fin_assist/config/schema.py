@@ -186,7 +186,7 @@ class AgentConfig(BaseModel):
     thinking: ThinkingEffort = "medium"
     serving_modes: list[ServingMode] = Field(default_factory=lambda: ["do", "talk"])
     tags: list[str] = Field(default_factory=list)
-    base_tools: list[str] = Field(default_factory=lambda: ["read_file"])
+    base_tools: list[str] = Field(default_factory=list)
     tool_policies: dict[str, ToolPolicyConfig] = Field(default_factory=dict)
     skills: dict[str, SkillConfig] = Field(default_factory=dict)
 
