@@ -51,21 +51,23 @@ Notably, `cli/server.py` (process-lifecycle: `start`/`stop`/`status`/`ensure_run
 1. **Config-driven agents** — Behavior (system prompt, output type, thinking, serving modes, approval, skills) lives in TOML, not Python subclasses. New agents are config entries, not new classes.
 2. **Protocol-native** — A2A via a2a-sdk v1.0 for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **Platform owns abstractions, backends adapt them** — Tools, approval, context, step events, tracing are framework-agnostic platform types in `agents/`. LLM frameworks plug in via backends that adapt platform concepts to their APIs. The platform never imports from backends.
-4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default.
+4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default. Local-first for iteration speed (fast feedback, no infra overhead), not as a permanent constraint. Remote topologies (Tailscale, remote workstation) are planned once the local experience is stable — same pattern as CLI-first, TUI-later.
 5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
 6. **Metadata-driven clients** — Clients read agent capabilities from agent cards and adapt dynamically. No client-side agent-specific code.
 7. **Protocol is the contract** — The hub and its clients communicate only through A2A + the `fin_assist:meta` extension. `cli/` does not import from `hub/` (except the in-process launcher path for `fin-assist serve`); `hub/` never imports from `cli/`. See *Deliverables: Hub vs Client* above.
 
 ## Non-goals
 
-- Network-accessible deployment (personal use only, local-first)
+- Network-accessible deployment (personal use only, local-first — remote topologies planned post-v0.2)
 - Real-time command suggestions (on-demand only)
 - IDE/editor integration (beyond future MCP)
 - TOML-based agent *creation* — agents are defined via TOML config, but `AgentSpec` is the only spec implementation. There is no `fin ingest` to create new agent classes from TOML.
 
 ## Maintenance contract
 
-When a structural change to the system lands, update the relevant doc(s) in the same commit. Any claim in this document that a subsystem is "integrated" or a design decision is "Resolved" must cite a real call site (`file:line`) somewhere in `src/` — not just a test or a TOML field.
+When a structural change lands, update the relevant doc(s) before the milestone closes — not necessarily in the same commit, but before the work is considered shipped. Design sketches live in `handoff.md` during development; once the shape stabilizes, the durable claims move here.
+
+Any status claim ("integrated", "resolved", "implemented") must be **verifiable** — a reader who opens the referenced module should be able to confirm it. Use module-level references (`agents/backend.py`, `hub/executor.py`), not line numbers. Line numbers rot at this project's velocity and become false priors for agents consuming this doc as context. If a claim can't be verified without a specific line, it's too narrow to be a forever-doc claim — it belongs in a PR description or `handoff.md`.
 
 ## Hub internals
 
@@ -124,7 +126,9 @@ Parent FastAPI App (127.0.0.1:4096)
 
 ## Backend layer
 
-How the Executor reaches the LLM.
+How the Executor reaches the LLM, and how config flows through the stack.
+
+**Ownership chain:** `AgentFactory` constructs a `PydanticAIBackend(spec=agent_spec)`. The backend holds the spec as `self._spec` and reads all runtime config from it (system prompt, output type, thinking, tool policies, skill definitions, credential checks). The spec wraps `Config` and `CredentialStore` — the backend never touches them directly. When the backend needs an LLM model, it lazily creates its own `ProviderRegistry` and calls `spec.get_api_key()` / `spec.get_model_name()` to get provider-specific credentials and model names.
 
 ```mermaid
 graph TD
@@ -132,32 +136,29 @@ graph TD
 
     subgraph BACKEND_GRP["Backend Layer"]
         BEH["«protocol» AgentBackend"]
-        PAI["PydanticAIBackend<br/>pydantic-ai Agent · FallbackModel"]
-        SH["StreamHandle<br/>async iter (deltas) + result()"]
+        PAI["PydanticAIBackend"]
+        SH["StepHandle<br/>async iter · StepEvents · result()"]
         MCE["MissingCredentialsError<br/>raised when API key absent"]
+        REG["ProviderRegistry<br/>backend-owned · lazy"]
     end
 
     subgraph SPEC_GRP["Agent Specification"]
         SPEC["AgentSpec<br/>pure config · zero framework deps"]
-    end
-
-    subgraph SHARED["Shared Services"]
         CREDS["CredentialStore<br/>env → file → keyring"]
-        CONFIG["ConfigLoader<br/>TOML + env (FIN_*)<br/>pydantic-settings"]
-        REG["ProviderRegistry<br/>LLM providers · api_key injected"]
+        CONFIG["Config<br/>TOML + env (FIN_*)<br/>pydantic-settings"]
     end
 
     LLM["LLM Providers<br/>Anthropic · OpenAI · OpenRouter · Google"]
 
-    EXEC --> BEH
+    EXEC -->|"depends on"| BEH
     BEH -.->|"implemented by"| PAI
-    PAI --> SH
-    PAI -->|"create_model(provider, api_key)"| REG
-    REG --> LLM
-    PAI --> SPEC
+    PAI -->|"yields events"| SH
+    PAI -->|"holds ref · reads config"| SPEC
+    PAI -->|"lazy creates · create_model()"| REG
     PAI -.->|"raises on missing key"| MCE
-    SPEC -->|"get_api_key(provider)"| CREDS
-    SPEC --> CONFIG
+    REG -->|"provider API calls"| LLM
+    SPEC -->|"wraps · delegates get_api_key()"| CREDS
+    SPEC -->|"wraps · delegates model names"| CONFIG
 
     classDef external fill:#f5f5f5,stroke:#999,stroke-dasharray: 3 3
     class EXEC,LLM external
@@ -165,10 +166,13 @@ graph TD
     class MCE error
 ```
 
+Arrow semantics: solid = direct dependency (calls, holds, yields to); dashed = implements or raises; edge labels clarify the relationship where the arrow direction alone is ambiguous.
+
 **Spec/backend split.** fin-assist splits "what the agent is" from "how it runs":
 
-- **`AgentSpec`** (`src/fin_assist/agents/spec.py`) — a pure configuration object. Zero framework imports. Answers "what is this agent's system prompt?", "what's its output type?", "what metadata goes on its agent card?". Constructed from an `AgentConfig` (TOML section), the global `Config`, and a `CredentialStore`.
-- **`AgentBackend`** (`src/fin_assist/agents/backend.py`) — a `Protocol` that says how to actually run a spec: stream output, convert A2A messages to framework messages, serialize history, check credentials. The only production implementation is `PydanticAIBackend`, which wraps `pydantic_ai.Agent` + `FallbackModel`.
+- **`AgentSpec`** (`agents/spec.py`) — a pure configuration object. Zero framework imports. Wraps `Config` and `CredentialStore`; answers "what is this agent's system prompt?", "what's its output type?", "what metadata goes on its agent card?", "which providers have API keys?". The backend reads all runtime config through the spec and never touches `Config` or `CredentialStore` directly.
+- **`AgentBackend`** (`agents/backend.py`) — a `Protocol` that says how to actually run a spec: stream output, convert A2A messages to framework messages, serialize history, check credentials. The only production implementation is `PydanticAIBackend`, which wraps `pydantic_ai.Agent` + `FallbackModel`.
+- **`ProviderRegistry`** — not a shared service. Each `PydanticAIBackend` lazily creates its own `ProviderRegistry` the first time it builds a model. The registry translates `(provider_name, model_name, api_key)` into a pydantic-ai `Model` instance.
 
 The `Executor` (`src/fin_assist/hub/executor.py`) depends on the `AgentBackend` protocol. `AgentSpec` is never imported by the executor — it flows through the backend. This isolates pydantic-ai to one file, so swapping LLM frameworks (or stubbing for tests) touches only `backend.py`.
 
@@ -492,7 +496,7 @@ Static (discovery time):                    Dynamic (per-response):
 
 ## Local-only security
 
-The server binds to `127.0.0.1` by default — only local processes can communicate with agents. This is intentional: fin-assist is designed for personal use on a trusted machine.
+The server binds to `127.0.0.1` by default — only local processes can communicate with agents. This is intentional: fin-assist is designed for personal use on a trusted machine. The local-only default is an iteration-speed choice, not a permanent limitation. Remote deployment topologies (Tailscale tunneling, remote workstations) are planned once the local experience stabilizes. When remote topologies land, the workspace split ([#128](https://github.com/ColeB1722/fin-assist/issues/128)) makes deployment boundaries explicit in the package structure.
 
 ## See also
 
