@@ -15,6 +15,8 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-10:** Added "ToolProvider Protocol" design sketch — unifies tool registration across builtin, MCP, and file-based sources. Informs v0.1.1 (#84) architecture; ships progressively through v0.3. Updated milestone descriptions for v0.1.1, v0.2, v0.3 with ToolProvider context. Added comment to #84 with implementation sequence.
+
 **2026-05-09:** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open issues), four-phase roadmap captured as milestones (v0.1.1 → v0.2 → v0.2.1 → v0.3). v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch below.
 
 **Context-strategy refactor (across three sessions):** documented the issue/milestone split and doc-surface roles in `AGENTS.md`; pruned this file from 625 → ~220 lines; split the 1464-line `docs/architecture.md` into `architecture.md` (slim contracts + diagrams), `tracing.md`, `skills.md`, `decisions.md`, `configuration.md`; rewrote `README.md` with user-lens framing; ran code-validation pass and corrected ~25 drift items (signatures, defaults, phantom commands, unwired features).
@@ -23,7 +25,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 **Recommended picks (in priority order):**
 
-1. **Begin v0.1.1 work** — slimmed to 7 focused issues: MCP ([#84](https://github.com/ColeB1722/fin-assist/issues/84)), pluggable prompts ([#89](https://github.com/ColeB1722/fin-assist/issues/89)), GitContext size limits ([#85](https://github.com/ColeB1722/fin-assist/issues/85)), Environment context ([#115](https://github.com/ColeB1722/fin-assist/issues/115)), and the three drift-wiring issues from doc-validation ([#123](https://github.com/ColeB1722/fin-assist/issues/123) skill tracing, [#124](https://github.com/ColeB1722/fin-assist/issues/124) `/connect`, [#125](https://github.com/ColeB1722/fin-assist/issues/125) SKILL.md runtime). Per-subcommand approval is still in v0.1.x scope but not yet filed as an issue.
+1. **Begin v0.1.1 work** — slimmed to 7 focused issues. Start with the `ToolProvider` protocol extraction (Phase A from the new Design Sketch) before #84 MCP implementation — it's a ~50-line refactor that prevents MCP from being bolted onto `create_default_registry()`. Then proceed with #84, #89, #85, #115, and the three drift-wiring issues (#123, #124, #125).
 2. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
 
 **Sequence:** v0.1.1 (foundations) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility — badges + demo gif, [#127](https://github.com/ColeB1722/fin-assist/issues/127)) → v0.2 (sub-agents).
@@ -141,6 +143,140 @@ Sub-agents are the anchor, but several issues become much more useful once sub-a
 - **HITL inside sub-agents** — v0.3
 - **`report_format` argument** — v0.3
 - **Cross-agent skill invocation outside sub-agents** — explicitly NOT a feature; if you want skill B's tools while running agent A's skill, invoke a sub-agent with skill B loaded.
+
+---
+
+### ToolProvider Protocol: Unifying Tool Registration (sketched 2026-05-10)
+
+**Status:** Design sketch. Informs v0.1.1 (#84 MCP) architecture; ship progressively through v0.2–v0.3.
+
+**Problem:** `create_default_registry()` hardcodes 5 tools into `ToolRegistry`. Skills *reference* tools by name but can't *define* them. MCP (#84) adds a second tool source. The platform is becoming a tool host, but the registration architecture is still "platform defines, agents consume." This is the anti-pattern — tools should be discoverable from the agent's own repo/context, not hardcoded in the platform.
+
+**Concept:** Introduce a `ToolProvider` protocol that decouples tool *discovery* from tool *registration*. `ToolRegistry` becomes an aggregator of providers rather than a flat dict. Each provider contributes tools at startup (or lazily). This unifies three tool sources under one API:
+
+```text
+ToolProvider (protocol)
+├── BuiltinToolProvider     — migrated from create_default_registry()
+├── MCPToolProvider         — v0.1.1 (#84)
+└── FileToolProvider        — discovers .py tool files from configured directories
+```
+
+#### Industry patterns researched (2026-05-10)
+
+| Pattern | Framework | Mechanism |
+|---------|-----------|-----------|
+| Decorator + file discovery | Strands, Selectools | `@tool` on functions; auto-scan `.py` from directories; hot-reload |
+| Manifest + implementation | mcpp | `tool.yaml` (schema) + `mcpptool.py` (execute); lazy import on first call |
+| Extension registration | Pi | `pi.registerTool()` at runtime; progressive disclosure; dynamic add/remove |
+| Filesystem browsing | AgentPatterns.ai | Tools as files in directory tree; agent navigates on-demand (98% token reduction vs upfront registration) |
+| Auto-discovery from modules | InitRunner | `custom` tool type: import module, scan for public functions → register all |
+| Plugin registry | R2R | Built-in path + user-tools path; `inspect` for `Tool` subclasses |
+
+Key takeaway: the two dominant models are **decorator-based auto-discovery** (scan `.py`, find `@tool` functions — most Pythonic) and **manifest + implementation** (separate schema from code — most portable). We should support both.
+
+#### ToolProvider protocol
+
+```python
+class ToolProvider(Protocol):
+    """Discovers and contributes ToolDefinitions to the registry."""
+
+    def discover(self) -> list[ToolDefinition]:
+        """Return all tools this provider contributes. Called at startup."""
+        ...
+
+    @property
+    def name(self) -> str:
+        """Provider identifier for logging and debugging."""
+        ...
+```
+
+`ToolRegistry` gains a provider-aggregation layer:
+
+```python
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: dict[str, ToolDefinition] = {}
+        self._providers: dict[str, ToolProvider] = {}
+
+    def add_provider(self, provider: ToolProvider) -> None:
+        """Register a provider and merge its tools into the registry."""
+        self._providers[provider.name] = provider
+        for tool in provider.discover():
+            self.register(tool)
+
+    def get_provider(self, name: str) -> ToolProvider | None: ...
+```
+
+Existing `register()` / `get()` / `get_for_agent()` APIs unchanged — providers are an *ingestion path*, not a new query interface.
+
+#### FileToolProvider — file-based tool discovery
+
+This is the new capability. Analogous to how skills are discovered from `.fin/skills/`, tools are discovered from `.fin/tools/` (project-local) and `~/.config/fin/tools/` (user-global).
+
+**Directory convention:**
+
+```text
+.fin/tools/
+├── deploy.py          # single-function tool
+├── db_query.py        # module with multiple tools
+└── s3/
+    ├── __init__.py
+    ├── list_objects.py
+    └── upload.py
+```
+
+**Discovery rules:**
+1. Scan `.fin/tools/` and `~/.config/fin/tools/` for `.py` files
+2. For each file, import the module and scan for functions decorated with `@tool` (our own decorator, not pydantic-ai's)
+3. If no `@tool` functions found, fall back to scanning for public callables with type-hinted signatures + docstrings (InitRunner pattern)
+4. Project-local takes precedence over user-global for name collisions
+5. Skip files starting with `_`
+
+**`@tool` decorator:**
+
+```python
+from fin_assist.agents.tools import tool, ApprovalPolicy
+
+@tool(
+    description="Deploy the current branch to staging",
+    approval=ApprovalPolicy(default="always"),
+)
+def deploy(branch: str, env: str = "staging") -> str:
+    """Deploy the current branch."""
+    ...
+```
+
+The decorator is optional — plain functions with type hints and docstrings auto-register (schema derived from signature, like pydantic-ai's `tools=` argument). The decorator just lets you override description, approval policy, and name.
+
+**How this differs from skills:**
+- Skills *reference* tools by name; they don't define them
+- File-based tools *define* new callables; they're a tool *source*
+- A skill can reference a file-based tool the same way it references `git` or `read_file` — by name in `tools = [...]`
+
+#### Progressive shipping plan
+
+| Phase | What | Milestone |
+|-------|------|-----------|
+| **A: Protocol + BuiltinToolProvider** | Extract `ToolProvider` protocol; refactor `create_default_registry()` into `BuiltinToolProvider`; `ToolRegistry.add_provider()`. Zero behavior change — same 5 tools, same API. | v0.1.1 (#84 dependency) |
+| **B: MCPToolProvider** | Implement as part of #84. MCP servers discovered from config → `MCPToolProvider.discover()` returns `ToolDefinition` per MCP tool. | v0.1.1 (#84) |
+| **C: FileToolProvider** | New provider; `@tool` decorator; `.fin/tools/` discovery. First new capability — tools not defined by the platform. | v0.2 (sub-agents need per-agent tool sets) |
+| **D: Repo-as-tool-package** | Agent experiment repos ship with `.fin/tools/` + `.fin/skills/` + `evals/`; clone → discover → run. Tool packages as a first-class concept. | v0.3 (federated agents + eval) |
+
+Phase A is the critical path — if #84 ships without `ToolProvider`, MCP tools get bolted onto `create_default_registry()` and the retrofit is harder. The protocol costs ~50 lines; it should land before or alongside #84.
+
+#### Relation to sub-agents (v0.2)
+
+Sub-agents (`invoke_subagent`) construct a fresh `AgentSpec` with a constrained tool set. With `FileToolProvider`, a sub-agent's tools can come from its own `.fin/tools/` directory rather than the global registry. The `Executor.run_subtask()` call creates a scoped `ToolRegistry` with only the sub-agent's providers.
+
+This also means `invoke_subagent` can be replaced: instead of a hardcoded built-in tool, it becomes a file-defined tool in `.fin/tools/subagent.py`. The platform ships *defaults*, not *mandates*.
+
+#### Open questions
+
+1. **Lazy vs eager discovery.** Should `FileToolProvider.discover()` import all `.py` files at startup (eager, like current `create_default_registry`) or defer imports until the tool is first called (lazy, like mcpp)? Lean: eager at startup — simpler, errors surface early, and the tool count is small (<50 per project).
+2. **Approval policy for file-based tools.** Should file-defined tools default to `always` (safe) or `never` (convenient)? Lean: `always` — file-based tools are user code, unvetted. Explicit `@tool(approval=ApprovalPolicy(default="never"))` to opt out.
+3. **Tool name collision resolution.** What happens when a file-based tool has the same name as a built-in or MCP tool? Lean: raise at startup with a clear error (consistent with `ToolRegistry.register()` duplicate-name behavior). Override via explicit allowlist in config if needed.
+4. **`@tool` decorator location.** Should `@tool` live in `fin_assist.agents.tools` (next to `ToolDefinition`) or a new `fin_assist.agents.tool_decorator` module? Lean: `fin_assist.agents.tools` — keeps the tool API in one place.
+5. **Package-level discovery.** Should we support `fin_assist.tools` namespace packages (like R2R's built-in path)? Or just filesystem directories? Lean: filesystem only for now — namespace packages are an advanced pattern that can come later if needed.
 
 ---
 

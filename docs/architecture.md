@@ -25,8 +25,11 @@ fin-assist is two distinct deliverables in one repository, separated by the A2A 
 
 | Deliverable | Role | Lives in | Talks to clients via |
 |-------------|------|----------|----------------------|
-| **Agent Hub** | Platform — hosts agents, routes A2A traffic, persists context, manages credentials | `src/fin_assist/hub/` + `src/fin_assist/agents/` + supporting infra (`config/`, `context/`, `credentials/`, `llm/`, `providers.py`) | A2A (JSON-RPC over HTTP, SSE for streaming) |
+| **Agent Hub** | Platform server — hosts agents, routes A2A traffic, persists context | `src/fin_assist/hub/` | A2A (JSON-RPC over HTTP, SSE for streaming) |
+| **Platform abstractions** | Shared infra used by both products — specs, backends, tools, skills, config, context, credentials, LLM registry | `src/fin_assist/agents/`, `config/`, `context/`, `credentials/`, `llm/`, `providers.py` | n/a (internal, not a networked service) |
 | **CLI** | Client — one of N possible A2A clients; today the only one. REPL, prompt, rendering, session storage | `src/fin_assist/cli/` | n/a (it *is* the user interface) |
+
+These sibling packages sit alongside `hub/` and `cli/` in the flat namespace (`src/fin_assist/`), not nested under either deliverable. They are platform types consumed by both sides — the CLI imports `agents.metadata` and `config.loader`, the hub imports `agents.backend` and `agents.tools`. Nesting them under `hub/` would break the import firewall. The workspace split ([#128](https://github.com/ColeB1722/fin-assist/issues/128)) is the right moment to reorganize into a shared `fin-protocol` package.
 
 **The protocol is the contract.** The hub does not know what kind of client is talking to it. The CLI does not know any hub internals — it only knows the A2A wire format and the `fin_assist:meta` agent-card extension. A future TUI, web UI, or remote-Tailscale deployment is a different *client* or *deployment topology*, not a different product.
 
