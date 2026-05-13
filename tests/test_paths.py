@@ -31,6 +31,10 @@ class TestPathsFinDataDir:
         _reload_paths(str(tmp_path / "fin-data"))
         assert paths_module.DATA_DIR == tmp_path / "fin-data"
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows uses %LOCALAPPDATA%/fin — covered by TestPathsWindowsDefault",
+    )
     def test_paths_default_still_home_local_share(self, monkeypatch):
         monkeypatch.delenv("FIN_DATA_DIR", raising=False)
         importlib.reload(paths_module)

@@ -16,6 +16,7 @@ def _reset_module_state():
     """Ensure module globals are clean between tests."""
     pidfile._lock = None
     pidfile._pid_path = None
+    pidfile._lock_path = None
     yield
     pidfile.release()
 
@@ -38,7 +39,9 @@ class TestAcquire:
         pid_file = tmp_path / "hub.pid"
         pidfile.acquire(pid_file)
 
-        probe = FileLock(str(pid_file), timeout=0)
+        # The lock is held on the sidecar file, not the PID file itself.
+        lock_file = pidfile._lock_path_for(pid_file)
+        probe = FileLock(str(lock_file), timeout=0)
         with pytest.raises(Timeout):
             probe.acquire()
         probe.release()
@@ -76,6 +79,7 @@ class TestRelease:
 
         assert pidfile._lock is None
         assert pidfile._pid_path is None
+        assert pidfile._lock_path is None
 
     def test_idempotent(self, tmp_path: Path):
         pid_file = tmp_path / "hub.pid"
@@ -83,6 +87,16 @@ class TestRelease:
 
         pidfile.release()
         pidfile.release()
+
+    def test_removes_sidecar_lock_file(self, tmp_path: Path):
+        pid_file = tmp_path / "hub.pid"
+        lock_file = pidfile._lock_path_for(pid_file)
+
+        pidfile.acquire(pid_file)
+        assert lock_file.exists()
+
+        pidfile.release()
+        assert not lock_file.exists()
 
 
 class TestIsLocked:
