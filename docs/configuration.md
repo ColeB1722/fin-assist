@@ -124,4 +124,9 @@ Today, set credentials by either exporting the env var (`export ANTHROPIC_API_KE
 
 ## Runtime paths
 
-All runtime state derives from `FIN_DATA_DIR` (default `~/.local/share/fin` on Linux/macOS, `%LOCALAPPDATA%\fin` on Windows). For local development, set `FIN_DATA_DIR=./.fin` to keep state colocated with the repo. See [`AGENTS.md`](../AGENTS.md#local-development-paths) for the full table of paths.
+All runtime state derives from `FIN_DATA_DIR`. Platform defaults (from [`paths.py`](../src/fin_assist/paths.py)):
+
+- **Linux/macOS:** `~/.local/share/fin/` (XDG convention)
+- **Windows:** `%LOCALAPPDATA%\fin` (falls back to `~` if `LOCALAPPDATA` is unset)
+
+For local development, set `FIN_DATA_DIR=./.fin` to keep state colocated with the repo. See [`AGENTS.md`](../AGENTS.md#local-development-paths) for the full table of paths.

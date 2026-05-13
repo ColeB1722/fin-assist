@@ -25,6 +25,14 @@ The "why" behind structural choices. New decisions go here when they shape the p
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |
 
+## Windows
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Install method | `uv tool install -e .` (not Scoop) | Scoop distributes pre-built binaries; Python tools use `uv tool install` instead. Pure-Python projects (FastAPI, Textual, pydantic-ai) use pip/uv only — no Scoop manifest precedent |
+| Scoop manifest | Deferred post-1.0 | Requires PyInstaller/Nuitka build pipeline + signing. Not worth the effort until there's a pre-built binary story |
+| Default data dir | `%LOCALAPPDATA%\fin` | Platform convention; matches Chrome, VS Code, etc. `FIN_DATA_DIR` override still works |
+
 ## Skills
 
 See [`docs/skills.md`](skills.md#design-decisions) for skill-specific design decisions (tool gating, agent-level policies, SKILL.md format, etc.).
