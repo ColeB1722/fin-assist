@@ -100,12 +100,32 @@ def _read_pid(pid_file: Path = PID_FILE) -> int | None:
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Return True if a process with this PID is currently running."""
+    """Return True if a process with this PID is currently running.
+
+    On Unix, uses ``os.kill(pid, 0)`` (signal 0 = existence check).
+    On Windows, ``os.kill`` with signal 0 is not supported, so we
+    use ``psutil``-style ``OpenProcess`` via ``ctypes``.
+    """
+    if sys.platform == "win32":
+        return _pid_is_running_win32(pid)
     try:
         os.kill(pid, 0)
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def _pid_is_running_win32(pid: int) -> bool:
+    """Windows-specific PID liveness check using ``OpenProcess``."""
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return False
 
 
 def _find_server_pid(port: int) -> int | None:
