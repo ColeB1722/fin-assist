@@ -3,7 +3,11 @@
 The hub server writes and locks the PID file for its entire lifetime.
 On shutdown (clean exit, SIGTERM), the file is removed via ``atexit``.
 On crash/SIGKILL, the OS releases the lock — clients detect the stale
-file by attempting a non-blocking ``flock``.
+file by attempting a non-blocking lock probe via :func:`is_locked`.
+
+Uses the ``filelock`` library for cross-platform locking:
+- Unix: ``fcntl.flock``
+- Windows: ``msvcrt.locking``
 
 This module is only used by the server process (``fin-assist serve``).
 Client-side PID reading lives in ``cli/server.py``.
@@ -13,17 +17,18 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import fcntl
 import os
 import signal
 import sys
 from typing import TYPE_CHECKING
 
+from filelock import BaseFileLock, FileLock, Timeout
+
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-_pid_fd: int | None = None
+_lock: BaseFileLock | None = None
 _pid_path: Path | None = None
 
 
@@ -37,38 +42,33 @@ def acquire(pid_file: Path) -> None:
 
     Raises ``SystemExit`` if another server already holds the lock.
     """
-    global _pid_fd, _pid_path  # noqa: PLW0603
+    global _lock, _pid_path  # noqa: PLW0603
 
     pid_file.parent.mkdir(parents=True, exist_ok=True)
 
-    fd = os.open(str(pid_file), os.O_CREAT | os.O_RDWR, 0o644)
+    lock = FileLock(str(pid_file), timeout=0)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        os.close(fd)
+        lock.acquire()
+    except Timeout:
         print(
             f"Another hub is already running (lock held on {pid_file}).",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    os.ftruncate(fd, 0)
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.write(fd, f"{os.getpid()}\n".encode())
-    os.fsync(fd)
+    pid_file.write_text(f"{os.getpid()}\n")
 
-    _pid_fd = fd
+    _lock = lock
     _pid_path = pid_file
 
     atexit.register(release)
 
-    # Replace default SIGTERM handler so atexit functions run on SIGTERM.
-    # The default SIGTERM handler terminates without running atexit.
-    def _sigterm(signum: int, frame: object) -> None:  # noqa: ARG001
-        # Trigger normal shutdown so atexit handlers fire.
-        sys.exit(0)
+    if sys.platform != "win32":
 
-    signal.signal(signal.SIGTERM, _sigterm)
+        def _sigterm(signum: int, frame: object) -> None:  # noqa: ARG001
+            sys.exit(0)
+
+        signal.signal(signal.SIGTERM, _sigterm)
 
 
 def release() -> None:
@@ -77,13 +77,12 @@ def release() -> None:
     Safe to call multiple times.  Registered as an ``atexit`` handler
     by :func:`acquire`.
     """
-    global _pid_fd, _pid_path  # noqa: PLW0603
+    global _lock, _pid_path  # noqa: PLW0603
 
-    if _pid_fd is not None:
+    if _lock is not None:
         with contextlib.suppress(OSError):
-            fcntl.flock(_pid_fd, fcntl.LOCK_UN)
-            os.close(_pid_fd)
-        _pid_fd = None
+            _lock.release()
+        _lock = None
 
     if _pid_path is not None:
         with contextlib.suppress(OSError):
@@ -94,24 +93,16 @@ def release() -> None:
 def is_locked(pid_file: Path) -> bool:
     """Return True if *pid_file* is currently held by a running process.
 
-    Uses a non-blocking ``flock`` probe: if we can acquire the lock the
+    Uses a non-blocking lock probe: if we can acquire the lock the
     file is stale; if we can't, a server holds it.
     """
     if not pid_file.exists():
         return False
 
+    lock = FileLock(str(pid_file), timeout=0)
     try:
-        fd = os.open(str(pid_file), os.O_RDONLY)
-    except OSError:
+        lock.acquire()
+        lock.release()
         return False
-
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        # We got the lock — file is stale.
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    except OSError:
-        # Lock is held by another process — server is alive.
+    except Timeout:
         return True
-    finally:
-        os.close(fd)
