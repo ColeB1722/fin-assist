@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -73,3 +74,37 @@ class TestPathsFinDataDir:
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
+
+
+class TestPathsWindowsDefault:
+    def test_windows_default_uses_localappdata(self, monkeypatch):
+        monkeypatch.delenv("FIN_DATA_DIR", raising=False)
+        with (
+            patch("fin_assist.paths.sys") as mock_sys,
+            patch("fin_assist.paths.os.environ.get") as mock_env_get,
+        ):
+            mock_sys.platform = "win32"
+            mock_env_get.side_effect = lambda key, default="": (
+                "C:\\Users\\test\\AppData\\Local" if key == "LOCALAPPDATA" else default
+            )
+            result = paths_module._default_data_dir()
+            assert result == Path("C:\\Users\\test\\AppData\\Local") / "fin"
+
+    def test_windows_default_falls_back_to_home(self, monkeypatch):
+        monkeypatch.delenv("FIN_DATA_DIR", raising=False)
+        with (
+            patch("fin_assist.paths.sys") as mock_sys,
+            patch("fin_assist.paths.os.environ.get") as mock_env_get,
+        ):
+            mock_sys.platform = "win32"
+            mock_env_get.side_effect = lambda key, default="": (
+                os.path.expanduser("~") if key == "LOCALAPPDATA" else default
+            )
+            result = paths_module._default_data_dir()
+            assert result == Path(os.path.expanduser("~")) / "fin"
+
+    def test_unix_default_unchanged(self):
+        with patch("fin_assist.paths.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            result = paths_module._default_data_dir()
+            assert result == Path("~/.local/share/fin").expanduser()

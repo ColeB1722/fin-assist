@@ -63,7 +63,7 @@ After design is sketched, write tests BEFORE writing implementation code:
 | Command | Description |
 |---------|-------------|
 | `just` | List all tasks |
-| `just dev` | Enter dev shell |
+| `just dev` | Enter dev shell (devenv on Unix, `uv sync` on Windows) |
 | `just fmt` | Format all code |
 | `just lint` | Run linter |
 | `just lint-fix` | Auto-fix lint issues |
@@ -74,6 +74,7 @@ After design is sketched, write tests BEFORE writing implementation code:
 | `just ci` | Run full CI suite |
 | `just run` | Run the TUI locally |
 | `just install-fish` | Install fish plugin |
+| `uv tool install -e .` | Install `fin` and `fin-assist` on PATH (editable) |
 
 ## Project Structure
 
@@ -98,7 +99,7 @@ fish/                 - Fish shell plugin (future)
 
 This project is intended to run locally for personal use. Dev ergonomics: runtime state (logs, database, PID file, sessions, history, credentials) should stay colocated with the repo while developing, not scattered under `~/.local/share/fin/`.
 
-**Current state:** All runtime paths derive from `FIN_DATA_DIR` (default `~/.local/share/fin`). Set `FIN_DATA_DIR=./.fin` to keep state local to the repo.
+**Current state:** All runtime paths derive from `FIN_DATA_DIR` (default `~/.local/share/fin` on Linux/macOS, `%LOCALAPPDATA%\fin` on Windows). Set `FIN_DATA_DIR=./.fin` to keep state local to the repo.
 
 | Path | Default location | Env override |
 |------|------------------|--------------|
@@ -142,6 +143,9 @@ This split is **project-specific**, not an industry standard — but we apply it
 | Fuzzy matching | `rapidfuzz` | Unified across slash commands and `@file:` completion; C-backed, path-aware ranking via `fuzz.WRatio` |
 | File discovery | `os.walk` + `pathspec` | Gitignore-aware directory pruning (files still included so local configs like `config.toml` complete); pure Python, no subprocess |
 | Completion threading | `PromptSession(complete_in_thread=True)` | Keeps UI responsive even on cold scans — non-negotiable for `@file:` |
+| Windows install | `uv tool install` (not Scoop) | Scoop ships pre-built binaries; Python tools use `uv tool install` instead. Scoop manifest deferred to post-1.0 binary build story |
+| Justfile | `windows-shell` + `os_family()` conditionals | Just natively supports pwsh on Windows; `if os_family() == "windows"` branches replace Unix-isms |
+| Windows data dir | `%LOCALAPPDATA%\fin` | Platform convention; matches Chrome, VS Code, etc. `FIN_DATA_DIR` override still works |
 
 ## Testing
 
