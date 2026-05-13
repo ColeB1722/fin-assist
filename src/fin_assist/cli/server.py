@@ -100,12 +100,77 @@ def _read_pid(pid_file: Path = PID_FILE) -> int | None:
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Return True if a process with this PID is currently running."""
+    """Return True if a process with this PID is currently running.
+
+    On Unix, uses ``os.kill(pid, 0)`` (signal 0 = existence check).
+    On Windows, ``os.kill`` with signal 0 is not supported, so we
+    use ``psutil``-style ``OpenProcess`` via ``ctypes``.
+    """
+    if sys.platform == "win32":
+        return _pid_is_running_win32(pid)
     try:
         os.kill(pid, 0)
         return True
     except (ProcessLookupError, PermissionError):
         return False
+
+
+def _pid_is_running_win32(pid: int) -> bool:
+    """Windows-specific PID liveness check using ``OpenProcess``."""
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    kernel32 = ctypes.windll.kernel32  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+def _force_kill(pid: int) -> None:
+    """Forcefully terminate a process — the OS-level "kill -9" equivalent.
+
+    On Unix, sends ``SIGKILL``.  On Windows, opens the process with
+    ``PROCESS_TERMINATE`` and calls ``TerminateProcess``.  Either way,
+    the target process gets no chance to clean up.
+
+    Raises ``ProcessLookupError`` if the PID is gone or ``PermissionError``
+    if the caller can't signal it.
+    """
+    if sys.platform == "win32":
+        _force_kill_win32(pid)
+        return
+    os.kill(pid, signal.SIGKILL)
+
+
+def _force_kill_win32(pid: int) -> None:
+    """Windows-specific forceful termination using ``TerminateProcess``."""
+    import ctypes
+
+    PROCESS_TERMINATE = 0x0001
+    kernel32 = ctypes.windll.kernel32  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+    handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+    if not handle:
+        # Process is gone or we don't have permission.  Match the Unix
+        # contract: ESRCH-like → ProcessLookupError.
+        raise ProcessLookupError(f"No such process: {pid}")
+    try:
+        if not kernel32.TerminateProcess(handle, 1):
+            raise PermissionError(f"TerminateProcess failed for pid {pid}")
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _cleanup_pid_files(pid_file: Path) -> None:
+    """Remove both the PID file and its sidecar ``.lock`` file.
+
+    The server normally removes both via its own ``atexit`` handler,
+    but this is a defensive cleanup for crash/SIGKILL recovery and the
+    failed-startup path.
+    """
+    pid_file.unlink(missing_ok=True)
+    pid_file.with_name(pid_file.name + ".lock").unlink(missing_ok=True)
 
 
 def _find_server_pid(port: int) -> int | None:
@@ -200,7 +265,7 @@ def _spawn_serve(
     # the ``open()`` below raises ``FileNotFoundError``.
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
 
-    with open(log_path, "a", buffering=1) as stderr_file:  # noqa: SIM115
+    with open(log_path, "a", buffering=1, encoding="utf-8") as stderr_file:  # noqa: SIM115
         proc = subprocess.Popen(
             args,
             stdin=subprocess.DEVNULL,
@@ -274,7 +339,7 @@ async def ensure_server_running(
     # (SIGKILL) and left the file behind without the lock.
     existing_pid = _read_pid(pid_file)
     if existing_pid and not _pid_is_running(existing_pid):
-        pid_file.unlink(missing_ok=True)
+        _cleanup_pid_files(pid_file)
 
     console.print(f"[dim]Starting fin-assist hub at {base_url}...[/dim]")
 
@@ -294,7 +359,7 @@ async def ensure_server_running(
         return base_url
     except TimeoutError as e:
         _kill_and_cleanup(proc)
-        pid_file.unlink(missing_ok=True)
+        _cleanup_pid_files(pid_file)
         log_path = os.path.expanduser(config.server.log_path)
         hint = _read_log_tail(log_path)
         msg = f"Server failed to start within {timeout}s."
@@ -317,8 +382,9 @@ def stop_server(
 ) -> bool:
     """Stop the hub server by sending SIGTERM and waiting for exit.
 
-    The server process cleans up its own PID file via ``atexit``.
-    If it doesn't exit within *timeout* seconds, SIGKILL is sent.
+    The server process cleans up its own PID and sidecar lock files via
+    ``atexit``.  If it doesn't exit within *timeout* seconds, a forceful
+    kill is sent (SIGKILL on Unix, TerminateProcess on Windows).
 
     When the PID file is missing (orphaned server), falls back to
     scanning ``/proc`` for a ``fin-assist serve`` process on *port*.
@@ -342,13 +408,16 @@ def stop_server(
 
     if not _pid_is_running(pid):
         # Process is gone but PID file remains (crash / SIGKILL).
-        pid_file.unlink(missing_ok=True)
+        _cleanup_pid_files(pid_file)
         return False
 
+    # Note: on Windows, ``os.kill(pid, signal.SIGTERM)`` calls ``TerminateProcess``
+    # — there is no SIGTERM/SIGKILL distinction.  The escalation path below
+    # exists for Unix; on Windows the first kill is already forceful.
     try:
         os.kill(pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
-        pid_file.unlink(missing_ok=True)
+        _cleanup_pid_files(pid_file)
         return False
 
     # Wait for the process to exit.
@@ -359,21 +428,21 @@ def stop_server(
         if not _pid_is_running(pid):
             # Server exited cleanly — it removed its own PID file.
             # Clean up just in case (e.g. race with atexit).
-            pid_file.unlink(missing_ok=True)
+            _cleanup_pid_files(pid_file)
             return True
         elapsed += interval
         interval = min(interval * 2, 0.5)
 
-    # Escalate to SIGKILL.
+    # Escalate to a forceful kill (SIGKILL on Unix, TerminateProcess on Windows).
     try:
-        os.kill(pid, signal.SIGKILL)
+        _force_kill(pid)
     except (ProcessLookupError, PermissionError):
-        pid_file.unlink(missing_ok=True)
+        _cleanup_pid_files(pid_file)
         return True
 
-    # Brief wait for SIGKILL to take effect.
+    # Brief wait for the kill to take effect.
     time.sleep(0.2)
-    pid_file.unlink(missing_ok=True)
+    _cleanup_pid_files(pid_file)
     return True
 
 

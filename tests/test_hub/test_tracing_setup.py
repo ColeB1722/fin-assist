@@ -225,7 +225,7 @@ class TestIdempotencyAndVendorNeutrality:
 
         import fin_assist.hub.tracing as tracing_mod
 
-        with open(tracing_mod.__file__) as f:
+        with open(tracing_mod.__file__, encoding="utf-8") as f:
             src = f.read()
         assert "openinference.instrumentation" not in src, (
             "hub/tracing.py must stay vendor-neutral — backend-specific "

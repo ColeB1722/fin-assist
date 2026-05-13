@@ -334,6 +334,10 @@ phase = "experimental"
 
 ## Recent work
 
+### 2026-05-12 — Windows dev ergonomics shipped
+
+Cross-platform justfile (`set windows-shell`), platform-aware `DATA_DIR` in `paths.py` (`%LOCALAPPDATA%\fin` on Windows), CI `test-windows` job, and 14 test-fix buckets (sidecar PID lock, `encoding="utf-8"`, `_force_kill`/`TerminateProcess`, `re.escape` in match). See [`docs/decisions.md`](docs/decisions.md) (Windows section) and [`README.md`](README.md) (non-Nix quick start).
+
 ### 2026-05-09 (latest) — README rewrite + milestone re-split
 
 - Rewrote README into technical-writing register (per user feedback that "user-lens" had become conversational). Structure: Concepts → Example → Architecture → Install → CLI reference → Documentation → Status. Replaced user-lens diagram with structural Architecture diagram. Paired TOML config with invocation example so reader has vocabulary before seeing the CLI session. 161 → 141 lines.
