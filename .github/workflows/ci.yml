@@ -75,6 +75,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v6
       - name: Install just
-        run: scoop install just
+        run: choco install just --yes
       - run: uv sync --all-groups
       - run: just test
