@@ -208,6 +208,33 @@ class TestMCPToolProviderDiscovery:
 
         assert tools1 is tools2
 
+    def test_initialize_failure_unwinds_transport(self, mock_stdio_client):
+        """If session.initialize() fails, the transport context manager is
+        closed and provider state is reset so a retry starts clean."""
+        cm, _, _ = mock_stdio_client
+        config = MCPServerConfig(
+            transport="stdio",
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-memory"],
+        )
+        provider = MCPToolProvider("memory", config)
+
+        with patch("mcp.client.stdio.stdio_client", return_value=cm):
+            with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
+                session = MagicMock()
+                session.initialize = AsyncMock(side_effect=RuntimeError("init boom"))
+                MockSession.return_value = session
+
+                with pytest.raises(RuntimeError, match="init boom"):
+                    provider.discover()
+
+        # Transport CM should have been exited so we don't leak the connection.
+        cm.__aexit__.assert_awaited_once()
+        # Provider state should be reset so a subsequent retry can re-enter
+        # `_connect()` from the top instead of short-circuiting on a stale CM.
+        assert provider._session is None
+        assert provider._cm is None
+
 
 class TestCreateDefaultRegistryWithMCP:
     """Tests for create_default_registry with MCP servers."""

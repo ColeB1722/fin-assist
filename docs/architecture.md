@@ -319,7 +319,7 @@ class ToolRegistry:
 
 #### `ContextProvider` + `ContextProviderRegistry`
 
-```
+```python
 class ContextProvider(ABC):
     @abstractmethod
     def search(self, query: str) -> list[ContextItem]: ...

@@ -8,7 +8,7 @@ Architecture
 ~~~~~~~~~~~~
 - One MCPToolProvider per configured MCP server
 - Provider name: ``mcp-<server>`` (e.g. ``mcp-memory``)
-- Tool names: ``mc p.<server>.<<tool>`` (e.g. ``mc p.memory.add_note``)
+- Tool names: ``mcp.<server>.<tool>`` (e.g. ``mcp.memory.add_note``)
 - Eager connect at startup via ``discover()``
 - Session stays alive for the lifetime of the provider
 - Tool callables delegate to ``session.call_tool()``
@@ -27,6 +27,7 @@ Agent-level ``tool_policies`` in config still override everything.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 from mcp.client.session import ClientSession
@@ -51,7 +52,16 @@ def _run_async(coro: Any) -> Any:
 def _annotations_to_policy(annotations: Any | None) -> ApprovalPolicy:
     """Map MCP ToolAnnotations to platform ApprovalPolicy.
 
-    Defaults are conservative: no annotations → always require approval.
+    Defaults are conservative:
+
+    - ``annotations is None`` → ``always`` (no signal from the server).
+    - ``readOnlyHint=True`` → ``never`` (server promises no side effects).
+    - ``destructiveHint`` is **assumed True when absent** so any non-read-only
+      tool whose server omits the hint still requires approval.
+    - The "non-destructive write" branch is only reached when the server
+      *explicitly* sets ``destructiveHint=False`` (and is not read-only).
+      Today this still maps to ``always``; the branch exists so the
+      mapping can be relaxed later without re-shaping the control flow.
     """
     if annotations is None:
         return ApprovalPolicy(
@@ -120,7 +130,12 @@ class MCPToolProvider:
 
     async def _connect_and_discover(self) -> None:
         await self._connect()
-        assert self._session is not None
+        if self._session is None:
+            # Defensive: _connect() raises on failure, so this should be
+            # unreachable.  Keeping the check (rather than `assert`) so it
+            # survives `python -O` and surfaces a clear error if the
+            # invariant is ever broken by a refactor.
+            raise RuntimeError(f"MCP provider {self.name!r}: session is None after _connect()")
         result = await self._session.list_tools()
         self._tools = self._map_tools(result.tools)
 
@@ -131,26 +146,52 @@ class MCPToolProvider:
         if self._config.transport == "stdio":
             from mcp.client.stdio import StdioServerParameters, stdio_client
 
-            assert self._config.command is not None, "stdio transport requires command"
+            if self._config.command is None:
+                raise ValueError(
+                    f"MCP server {self._server_name!r}: stdio transport requires `command`"
+                )
             params = StdioServerParameters(
                 command=self._config.command,
                 args=self._config.args,
                 env=self._config.env or None,
             )
             self._cm = stdio_client(params)
-            read, write = await self._cm.__aenter__()
         else:  # sse
             from mcp.client.sse import sse_client
 
-            assert self._config.url is not None, "sse transport requires url"
+            if self._config.url is None:
+                raise ValueError(f"MCP server {self._server_name!r}: sse transport requires `url`")
             self._cm = sse_client(
                 self._config.url,
                 headers=self._config.headers or None,
             )
-            read, write = await self._cm.__aenter__()
 
-        self._session = ClientSession(read, write)
-        await self._session.initialize()
+        # Enter the transport context manager and initialize the session.
+        # If anything fails after `_cm` is assigned, unwind it so we don't
+        # leak a half-open stdio/sse connection and so a retry can start
+        # from a clean state.
+        try:
+            read, write = await self._cm.__aenter__()
+            self._session = ClientSession(read, write)
+            await self._session.initialize()
+        except BaseException:
+            await self._close_cm_quietly()
+            self._session = None
+            raise
+
+    async def _close_cm_quietly(self) -> None:
+        """Best-effort close of the transport context manager.
+
+        Used on the cleanup-after-failure path: any exception raised by
+        ``__aexit__`` is suppressed so the *original* error (the one that
+        triggered cleanup) is what propagates to the caller.
+        """
+        cm = self._cm
+        self._cm = None
+        if cm is None:
+            return
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
 
     def _map_tools(self, mcp_tools: list[MCPTool]) -> list[ToolDefinition]:
         prefix = f"mcp.{self._server_name}."

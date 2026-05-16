@@ -63,7 +63,7 @@ Decisions deferred until the relevant work picks them up.
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Dependency | `mcp>=1.26.0` in `pyproject.toml` dependencies (not extra) | Direct dependency; needed at runtime for stdio/SSE client sessions |
-| Namespacing | `mcp.<server>.<<tool>` with dot-safe identifiers | Collision on full name = startup error; optional `alias` in config |
+| Namespacing | `mcp.<server>.<tool>` with dot-safe identifiers | Collision on full name = startup error; optional `alias` in config |
 | Discovery | Eager connect at startup (`discover()` triggers `_connect()`) | Reliability > responsiveness; session stays alive for tool calls |
 | Approval mapping (#141) | `readOnlyHint=true` → `never`; `destructiveHint=true` → `always`; no annotations → `always` | Conservative defaults match MCP spec; agent-level `tool_policies` still override |
 | Caching | None in v0.1.1 | Ecosystem consensus is that discovery caching is standard, but v0.1.1 defers to keep change focused. See open questions table above. |

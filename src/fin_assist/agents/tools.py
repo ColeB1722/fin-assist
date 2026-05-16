@@ -228,7 +228,7 @@ def create_default_registry(
     ``mcp_servers`` is an optional mapping of server name to
     ``MCPServerConfig``.  Each enabled server gets an ``MCPToolProvider``
     that connects eagerly and registers its tools with namespaced names
-    (``mcp.<server>.<<tool>``).
+    (``mcp.<server>.<tool>``).
     """
     registry = ToolRegistry()
     registry.add_provider(BuiltinToolProvider(context_settings=context_settings))
