@@ -75,7 +75,7 @@ addopts = "-v --tb=short"
 [tool.pyright]
 venvPath = ".devenv/state"
 venv = "venv"
-pythonVersion = "3.13"
+pythonVersion = "3.12"
 extraPaths = ["src"]
 reportMissingImports = true
 reportMissingTypeStubs = false

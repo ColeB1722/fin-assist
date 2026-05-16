@@ -5,7 +5,7 @@
     nixfmt-rfc-style
     nil
 
-    python3
+    python312
     uv
     ruff
 
