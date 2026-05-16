@@ -241,8 +241,12 @@ def _spawn_serve(
     port = config.server.port
     log_path = os.path.expanduser(config.server.log_path)
 
+    executable = sys.executable
+    if sys.platform == "win32" and executable.endswith("python.exe"):
+        executable = executable[: -len("python.exe")] + "pythonw.exe"
+
     args = [
-        sys.executable,
+        executable,
         "-m",
         "fin_assist",
         "serve",
