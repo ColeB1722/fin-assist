@@ -29,15 +29,15 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Immediate:** Continue v0.1.1 work — #89 (system prompts) and #85 (hub config) are now the active picks. #123-125 (drift wiring) can proceed in parallel.
+**Immediate:** PR #152 opened for MCP + tooling context overhaul. Awaiting review/merge. Once merged, tackle remaining v0.1.1 items as small focused PRs: #85 (GitContext limits), #123 (skill tracing — notes added to issue), #89 (system prompts), #124 (/connect), #125 (SKILL.md runtime wiring), #135 (dogfooding).
 
 **Recommended picks (in priority order):**
 
-1. **#89 (system prompt)** and **#85 (hub config)** — Can proceed in parallel with MCP.
-2. **Drift-wiring issues (#123, #124, #125)** — Small refactors that prevent config drift.
-3. **Environment (#115)** — Already validated by Phase A. Can close if no further work needed.
-4. **Config composition (#138)** — #149 recommends solving this next as the concrete validation point for TOML `extends` + `[merge]` semantics. Consider for v0.1.1 if bandwidth allows; otherwise v0.1.2.
-5. **CLI grammar consolidation (#148)** — Move into v0.1.3 alongside #137 and #143.
+1. **#85 (GitContext size limits)** — Small, safe, closes a gap.
+2. **#89 (system prompt)** — Design questions still open; needs discussion before implementation.
+3. **#124 (/connect interactive provider setup)** — UX polish, not a functionality blocker.
+4. **#125 (SKILL.md runtime wiring)** — The only "maybe" remaining for v0.1.1 completeness.
+5. **#135 (Dogfooding repo agent)** — Validation task, post-release is fine.
 
 **Sequence:** v0.1.1 (foundations, in progress) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (CLI grammar) → v0.2 (sub-agents).
 
