@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import signal
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +16,7 @@ from fin_assist.cli.server import (
     ServerStartupError,
     _check_health,
     _find_server_pid,
+    _force_kill,
     _pid_is_running,
     _read_pid,
     _wait_for_health,
@@ -225,6 +228,25 @@ class TestFindServerPid:
 # ---------------------------------------------------------------------------
 
 
+class TestForceKill:
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix-only signal path")
+    def test_unix_calls_os_kill_with_sigkill(self):
+        with patch("fin_assist.cli.server.os.kill") as mock_kill:
+            _force_kill(12345)
+        mock_kill.assert_called_once_with(12345, signal.SIGKILL)
+
+    def test_propagates_process_lookup_error(self):
+        if sys.platform == "win32":
+            # On Windows, a non-existent PID makes OpenProcess return NULL,
+            # which our wrapper translates into ProcessLookupError.
+            with pytest.raises(ProcessLookupError):
+                _force_kill(0xFFFFFFFE)  # very unlikely to exist
+        else:
+            with patch("fin_assist.cli.server.os.kill", side_effect=ProcessLookupError):
+                with pytest.raises(ProcessLookupError):
+                    _force_kill(12345)
+
+
 class TestStopServer:
     def test_returns_false_when_no_pid_file(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
@@ -278,28 +300,35 @@ class TestStopServer:
 
         assert result is True
 
-    def test_escalates_to_sigkill_on_timeout(self, tmp_path):
+    def test_escalates_to_force_kill_on_timeout(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
         pid_file.write_text("12345\n")
 
-        kill_calls: list[tuple[int, int]] = []
+        sigterm_calls: list[tuple[int, int]] = []
+        force_kill_calls: list[int] = []
 
         def track_kill(pid: int, sig: int) -> None:
-            kill_calls.append((pid, sig))
+            sigterm_calls.append((pid, sig))
 
-        # Process never exits from SIGTERM
+        def track_force_kill(pid: int) -> None:
+            force_kill_calls.append(pid)
+
+        # Process never exits from SIGTERM, so we must escalate to _force_kill.
+        # We patch _force_kill directly so the test is portable: on Unix it
+        # would have called os.kill(SIGKILL); on Windows, TerminateProcess.
         with (
             patch("fin_assist.cli.server.os.kill", side_effect=track_kill),
+            patch("fin_assist.cli.server._force_kill", side_effect=track_force_kill),
             patch("fin_assist.cli.server._pid_is_running", return_value=True),
             patch("fin_assist.cli.server.time.sleep"),
         ):
             result = stop_server(pid_file, timeout=0.0)
 
         assert result is True
-        # Should have sent SIGTERM then SIGKILL
-        signals_sent = [sig for _, sig in kill_calls]
-        assert signal.SIGTERM in signals_sent
-        assert signal.SIGKILL in signals_sent
+        # Initial SIGTERM was sent (Unix-style graceful first attempt) ...
+        assert (12345, signal.SIGTERM) in sigterm_calls
+        # ... then we escalated to a forceful kill.
+        assert 12345 in force_kill_calls
 
     def test_returns_true_on_successful_stop(self, tmp_path):
         pid_file = tmp_path / "hub.pid"
@@ -438,7 +467,7 @@ class TestEnsureServerRunning:
             config.server.port = 4096
             config.server.log_path = str(log_path)
 
-            with pytest.raises(ServerStartupError, match=str(log_path)):
+            with pytest.raises(ServerStartupError, match=re.escape(str(log_path))):
                 await ensure_server_running(config)
 
     async def test_removes_pid_file_on_startup_failure(self, tmp_path):

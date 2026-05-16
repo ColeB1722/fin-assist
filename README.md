@@ -88,7 +88,9 @@ One hub process serves N agents, each as its own A2A sub-app at `/agents/<name>/
 
 ## Install
 
-Requirements: [`devenv`](https://devenv.sh/), or Python 3.12+ with [`uv`](https://docs.astral.sh/uv/).
+Requirements: Python 3.12+ with [`uv`](https://docs.astral.sh/uv/) and [`just`](https://github.com/casey/just).
+
+**With Nix (recommended on Linux/macOS):**
 
 ```bash
 just dev                              # enter dev shell (Nix-managed)
@@ -100,7 +102,30 @@ export ANTHROPIC_API_KEY=sk-...       # or OPENAI_API_KEY, OPENROUTER_API_KEY, G
 fin-assist agents                     # verify install — lists configured agents
 ```
 
-State (logs, hub DB, sessions, history, credentials, traces) lives under `$FIN_DATA_DIR`, default `~/.local/share/fin/`. The repo's `devenv.nix` sets `FIN_DATA_DIR=./.fin` so state is colocated with the checkout during development.
+**Without Nix (Linux/macOS/Windows):**
+
+```bash
+# Install tooling
+scoop install uv just                 # Windows (scoop)
+brew install uv just                  # macOS/Linux (Homebrew)
+
+# Setup
+uv sync                               # install dependencies
+just test                             # verify everything works
+
+# Run globally from this checkout
+uv tool install -e .                  # puts 'fin' and 'fin-assist' on PATH
+fin-assist agents                     # verify install
+
+export ANTHROPIC_API_KEY=sk-...       # set your API key
+```
+
+State (logs, hub DB, sessions, history, credentials, traces) lives under `$FIN_DATA_DIR`. Platform defaults:
+
+- Linux/macOS: `~/.local/share/fin/`
+- Windows: `%LOCALAPPDATA%\fin`
+
+The repo's `devenv.nix` sets `FIN_DATA_DIR=./.fin` so state is colocated with the checkout during development.
 
 ## CLI reference
 
