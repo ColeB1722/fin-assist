@@ -36,7 +36,6 @@ from fin_assist.agents.metadata import AgentCardMeta
 from fin_assist.providers import PROVIDER_META
 
 if TYPE_CHECKING:
-    from fin_assist.agents.skills import SkillDefinition
     from fin_assist.config.schema import AgentConfig, Config, SkillConfig, ToolPolicyConfig
     from fin_assist.credentials.store import CredentialStore
 
@@ -68,7 +67,7 @@ class AgentSpec:
         self._agent_config = agent_config
         self._config = config
         self._credentials = credentials
-        self._skill_definitions: list[SkillDefinition] | None = None
+        self._skill_definitions: list[SkillConfig] | None = None
 
     @property
     def name(self) -> str:
@@ -127,8 +126,8 @@ class AgentSpec:
         """
         seen: set[str] = set()
         result: list[str] = []
-        for skill_cfg in self._agent_config.skills.values():
-            for tool_name in skill_cfg.tools:
+        for skill in self.get_skill_definitions():
+            for tool_name in skill.tools:
                 if tool_name not in seen:
                     seen.add(tool_name)
                     result.append(tool_name)
@@ -149,7 +148,7 @@ class AgentSpec:
             supported_context_types=sorted(self._supported_context_types),
         )
 
-    def get_skill_definitions(self) -> list[SkillDefinition]:
+    def get_skill_definitions(self) -> list[SkillConfig]:
         """Load and cache skill definitions from the agent's config."""
         if self._skill_definitions is None:
             from fin_assist.agents.skills import SkillLoader

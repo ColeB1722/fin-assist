@@ -15,7 +15,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
-**2026-05-16 (session 3):** Phase A extraction shipped. Both `ToolProvider` protocol and `ContextProviderRegistry` now live in the codebase. `ToolRegistry` aggregates providers via `add_provider()`; `BuiltinToolProvider` encapsulates the 5 built-in tools previously hardcoded in `create_default_registry()`. `ContextProviderRegistry` registers providers by type, unifying `@`-resolution and tool-delegation paths. Environment (#115) validated as the 6th context type (`@env:VAR` and `@env:`). All 949 tests passing, zero behavior change. See Design Sketch below for Phase B→D plan.
+**2026-05-16 (session 4):** #142 skill type collapse shipped. `SkillDefinition` and `SkillCatalog` removed; `SkillConfig` is now the unified type with `name` field. `SkillLoader` returns `SkillConfig` directly. `SkillManager` absorbs catalog rendering. `AgentSpec.skill_tool_names` delegates to `get_skill_definitions()`. 949 tests passing, lint + typecheck clean. Next: #84 Part 1 (MCPToolProvider) + #141 (annotation-aware policies).
 
 **2026-05-16 (session 2):** #129 resolved — Option B (context providers as first-class primitive alongside tools). Resolution: parallel ContextProvider track mirroring ToolProvider's Phase A→D rollout. `base_context_providers` on `AgentSpec`, `context_providers` on `Skill`, parallel to `base_tools` / `tools`. Motivating case is the planning agent (#147), which needs resident project-state context (`gh_state`, `recent_decisions`) that doesn't fit the tool abstraction. The parallel-phasing model is now the canonical design; see [#129 comment](https://github.com/ColeB1722/fin-assist/issues/129) and [#147 comment](https://github.com/ColeB1722/fin-assist/issues/147).
 
@@ -27,11 +27,11 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Immediate:** Continue v0.1.1 work — #84 MCP (`MCPToolProvider` / `MCPContextProvider`, Phase B) is now unblocked. The registries exist and accept providers; MCP integration plugs in cleanly.
+**Immediate:** Continue v0.1.1 work — #84 Part 1 (MCPToolProvider) + #141 (annotation-aware policies) is now the active work.
 
 **Recommended picks (in priority order):**
 
-1. **#84 MCP** — Implement `MCPToolProvider` and `MCPContextProvider`. Both registries already support `add_provider()` / `register()`.
+1. **#84 Part 1 + #141** — Implement `MCPToolProvider` and annotation-aware policies together. MCP tools arrive with annotations; we should read them. Both registries already support `add_provider()` / `register()`.
 2. **#89 (system prompt)** and **#85 (hub config)** — Can proceed in parallel with MCP.
 3. **Drift-wiring issues (#123, #124, #125)** — Small refactors that prevent config drift.
 4. **Environment (#115)** — Already validated by Phase A. Can close if no further work needed.

@@ -10,17 +10,17 @@ conflicts when multiple skills reference the same tool.
 
 Key types:
 
-- ``SkillDefinition`` — runtime representation of a resolved skill
-- ``SkillCatalog`` — generates the skill catalog text injected into the
-  agent's system prompt for agent-driven skill discovery
-- ``SkillLoader`` — resolves ``SkillConfig`` (from config.toml) or
-  SKILL.md files into ``SkillDefinition`` instances
+- ``SkillConfig`` — unified config + runtime representation of a resolved skill
+- ``SkillLoader`` — resolves ``SkillConfig`` instances from config.toml or
+  SKILL.md files
+- ``SkillManager`` — manages skill loading and generates the skill catalog
+  for the system prompt
 
 Design decisions (see docs/skills.md for full rationale):
 
 1. Skills are additive.  No skill unloading in v0.1.
 2. Tools are shared across skills.  Name collisions (two different
-   ``ToolDefinition``\\s with the same name) are a config error.
+   ``ToolDefinition``s with the same name) are a config error.
 3. Approval policies are agent-level, not skill-level.  Each tool has
    exactly one policy definition — no merge/conflict.
 4. Agent-driven loading: the agent sees a catalog and calls
@@ -31,15 +31,14 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from fin_assist.config.schema import SkillConfig
 from fin_assist.paths import DATA_DIR
 
 if TYPE_CHECKING:
     from fin_assist.agents.tools import ToolRegistry
-    from fin_assist.config.schema import ServingMode, SkillConfig
 
 logger = logging.getLogger(__name__)
 
@@ -52,71 +51,8 @@ _USER_SKILLS_DIR = Path.home() / ".config" / "fin" / "skills"
 _PROJECT_SKILLS_DIR = DATA_DIR / "skills"
 
 
-@dataclass
-class SkillDefinition:
-    """Runtime representation of a fully resolved skill.
-
-    Created by ``SkillLoader`` from either a ``SkillConfig`` (config.toml)
-    or a SKILL.md file.  Contains all the information the backend needs
-    to register tools and inject context.
-
-    Approval policies are defined at the agent level via
-    ``AgentConfig.tool_policies``, not on the skill.
-    """
-
-    name: str
-    description: str
-    tools: list[str]
-    prompt_template: str = ""
-    entry_prompt: str = ""
-    context: str = ""
-    serving_modes: list[ServingMode] | None = None
-
-
-@dataclass
-class SkillCatalog:
-    """Generates the skill catalog text for the agent's system prompt.
-
-    The catalog is a concise summary of available (but not yet loaded)
-    skills, formatted so the LLM can reason about which skill to load
-    next.  Loaded skills are excluded from the catalog.
-    """
-
-    skills: list[SkillDefinition] = field(default_factory=list)
-    loaded: set[str] = field(default_factory=set)
-
-    def add(self, skill: SkillDefinition) -> None:
-        self.skills.append(skill)
-
-    def mark_loaded(self, name: str) -> None:
-        self.loaded.add(name)
-
-    def available_skills(self) -> list[SkillDefinition]:
-        return [s for s in self.skills if s.name not in self.loaded]
-
-    def render(self) -> str:
-        """Render the catalog as text for the system prompt.
-
-        Returns an empty string when no skills are available (so the
-        catalog section can be omitted entirely from the prompt).
-        """
-        available = self.available_skills()
-        if not available:
-            return ""
-
-        lines = ["## Available skills", ""]
-        for skill in available:
-            desc = skill.description or "(no description)"
-            lines.append(f"- **{skill.name}**: {desc}")
-            if skill.tools:
-                lines.append(f"  Tools: {', '.join(skill.tools)}")
-        lines.append("")
-        lines.append("To activate a skill, use the `load_skill` tool with the skill name.")
-        return "\n".join(lines)
-
-
 class SkillLoader:
-    """Resolves ``SkillConfig`` instances into ``SkillDefinition`` objects.
+    """Resolves ``SkillConfig`` instances from TOML config or SKILL.md files.
 
     Handles two sources:
 
@@ -130,9 +66,10 @@ class SkillLoader:
     def __init__(self, tool_registry: ToolRegistry | None = None) -> None:
         self._tool_registry = tool_registry
 
-    def load_from_config(self, name: str, config: SkillConfig) -> SkillDefinition:
-        """Resolve a ``SkillConfig`` into a ``SkillDefinition``."""
-        return SkillDefinition(
+    def load_from_config(self, name: str, config: SkillConfig) -> SkillConfig:
+        """Resolve a ``SkillConfig`` from config, ensuring ``name`` is set."""
+        # Create a copy with name populated (SkillConfig is immutable via pydantic)
+        return SkillConfig(
             name=name,
             description=config.description,
             tools=config.tools,
@@ -145,16 +82,16 @@ class SkillLoader:
     def load_all_from_agent_config(
         self,
         skills_config: dict[str, SkillConfig],
-    ) -> list[SkillDefinition]:
+    ) -> list[SkillConfig]:
         """Load all skills from an agent's config.
 
-        Returns a list of ``SkillDefinition`` instances, one per entry
-        in the ``skills`` dict.
+        Returns a list of ``SkillConfig`` instances, one per entry
+        in the ``skills`` dict, with ``name`` populated.
         """
         return [self.load_from_config(name, cfg) for name, cfg in skills_config.items()]
 
-    def load_from_skill_md(self, path: Path) -> SkillDefinition:
-        """Parse a SKILL.md file and return a ``SkillDefinition``.
+    def load_from_skill_md(self, path: Path) -> SkillConfig:
+        """Parse a SKILL.md file and return a ``SkillConfig``.
 
         SKILL.md format follows the agentskills.io open standard:
 
@@ -192,7 +129,7 @@ class SkillLoader:
         entry_prompt = fin_meta.get("entry-prompt", "")
         serving_modes = fin_meta.get("serving-modes")
 
-        return SkillDefinition(
+        return SkillConfig(
             name=name,
             description=description,
             tools=tools,
@@ -238,15 +175,14 @@ class SkillManager:
 
     def __init__(
         self,
-        skills: list[SkillDefinition],
+        skills: list[SkillConfig],
         tool_registry: ToolRegistry | None = None,
     ) -> None:
         self._skills = {s.name: s for s in skills}
         self._loaded: set[str] = set()
         self._tool_registry = tool_registry
-        self._catalog = SkillCatalog(skills=skills)
 
-    def get_skill(self, name: str) -> SkillDefinition | None:
+    def get_skill(self, name: str) -> SkillConfig | None:
         return self._skills.get(name)
 
     def is_loaded(self, name: str) -> bool:
@@ -268,11 +204,10 @@ class SkillManager:
             return f"Skill '{name}' is already loaded."
 
         self._loaded.add(name)
-        self._catalog.mark_loaded(name)
         tools_str = ", ".join(skill.tools) if skill.tools else "none"
         return f"Skill '{name}' loaded. Tools now available: {tools_str}"
 
-    def loaded_skills(self) -> list[SkillDefinition]:
+    def loaded_skills(self) -> list[SkillConfig]:
         return [self._skills[n] for n in sorted(self._loaded) if n in self._skills]
 
     def loaded_tool_names(self) -> list[str]:
@@ -286,11 +221,28 @@ class SkillManager:
                     result.append(tool_name)
         return result
 
-    def available_skills(self) -> list[SkillDefinition]:
-        return self._catalog.available_skills()
+    def available_skills(self) -> list[SkillConfig]:
+        return [s for s in self._skills.values() if s.name not in self._loaded]
 
     def catalog_text(self) -> str:
-        return self._catalog.render()
+        """Render the skill catalog as text for the system prompt.
+
+        Returns an empty string when no skills are available (so the
+        catalog section can be omitted entirely from the prompt).
+        """
+        available = self.available_skills()
+        if not available:
+            return ""
+
+        lines = ["## Available skills", ""]
+        for skill in available:
+            desc = skill.description or "(no description)"
+            lines.append(f"- **{skill.name}**: {desc}")
+            if skill.tools:
+                lines.append(f"  Tools: {', '.join(skill.tools)}")
+        lines.append("")
+        lines.append("To activate a skill, use the `load_skill` tool with the skill name.")
+        return "\n".join(lines)
 
     def make_load_skill_callable(self):
         """Return an async callable suitable for registration as a tool.

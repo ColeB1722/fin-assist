@@ -164,6 +164,7 @@ class SkillConfig(BaseModel):
     ``base_tools = []``.
     """
 
+    name: str = ""
     description: str = ""
     tools: list[str] = []
     prompt_template: str = ""
