@@ -7,17 +7,21 @@ Both context paths are fully wired:
   via ``create_default_registry()`` in ``agents/tools.py``.
 
 - **User-driven** (``@``-completion): ``@file:``, ``@git:diff``,
-  ``@git:log``, ``@history:`` tokens in FinPrompt are resolved by
-  ``resolve_at_references()`` in ``cli/interaction/prompt.py``.
-  Works in both ``do`` and ``talk`` modes.
-
-Not yet wired:
-- ``Environment`` provider not exposed as a tool (intentional — sensitive).
+  ``@git:log``, ``@git:status``, ``@history:``, ``@env:`` tokens in
+  FinPrompt are resolved by ``resolve_at_references()`` in
+  ``cli/interaction/prompt.py``.  Works in both ``do`` and ``talk`` modes.
 """
 
 from __future__ import annotations
 
-from fin_assist.context.base import ContextItem, ContextProvider, ContextType, ItemStatus
+from fin_assist.context.base import (
+    ContextItem,
+    ContextProvider,
+    ContextProviderRegistry,
+    ContextType,
+    ItemStatus,
+    create_default_context_registry,
+)
 from fin_assist.context.environment import Environment
 from fin_assist.context.files import FileFinder
 from fin_assist.context.git import GitContext
@@ -26,8 +30,10 @@ from fin_assist.context.history import ShellHistory
 __all__ = [
     "ContextItem",
     "ContextProvider",
+    "ContextProviderRegistry",
     "ContextType",
     "ItemStatus",
+    "create_default_context_registry",
     "Environment",
     "FileFinder",
     "GitContext",

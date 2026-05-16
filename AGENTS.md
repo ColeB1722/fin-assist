@@ -52,7 +52,21 @@ After design is sketched, write tests BEFORE writing implementation code:
 3. **Refactor** — improve code while keeping tests green
 4. **Update handoff.md** — document what was accomplished
 
-**Test quality standards:**
+## Post-Merge Documentation Discipline
+
+After any significant PR is merged, **before starting the next feature**:
+
+1. **Update `handoff.md`** — Mark shipped work in Current State; update or delete Design Sketches that are now implemented; prune stale context
+2. **Update relevant `docs/*.md`** — If the work changed architectural assumptions, update the canonical architecture docs (not `handoff.md`)
+3. **Issue/milestone hygiene** — Comment on issues that are now unblocked; move issues between milestones; close issues that are fully resolved
+4. **Commit docs with code** — Each commit should tell a complete story: code, tests, and docs. Do not separate "code commit" from "docs commit" for the same logical unit.
+
+**Rationale:** Documentation drift happens because context evaporates between "code now, docs later." Later never comes. The 10-minute cost of documenting immediately is lower than the hours of archaeology required to reconstruct context from `git diff` in two weeks.
+
+**Commit boundary:** A commit is a complete unit of work — code + tests + docs + issue updates for the same logical change. If you wouldn't feel confident explaining the PR to a reviewer without the docs, don't commit without them.
+
+### Test quality standards
+
 - Test behavior, not implementation (avoid exact string matches)
 - Use public API, not private state
 - Derive expected values from centralized types (e.g., `ContextType`)

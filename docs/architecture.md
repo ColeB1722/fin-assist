@@ -297,31 +297,50 @@ SYSTEM_PROMPTS: dict[str, str] = {
 }
 ```
 
-### `ContextProvider`
+### Tool and context registries
+
+Both tools and context providers use a **provider-protocol pattern**: a registry aggregates contributed items from one or more providers, rather than hardcoding them.
+
+#### `ToolProvider` + `ToolRegistry`
 
 ```python
-@dataclass
-class ContextItem:
-    id: str
-    type: Literal["file", "git_diff", "git_log", "git_status", "history", "env"]
-    content: str
-    metadata: dict[str, object]
-    status: Literal["available", "not_found", "excluded", "error"] = "available"
-    error_reason: str | None = None
+class ToolProvider(Protocol):
+    @property
+    def name(self) -> str: ...
+    def discover(self) -> list[ToolDefinition]: ...
 
+class ToolRegistry:
+    def add_provider(self, provider: ToolProvider) -> None: ...
+    def get(self, name: str) -> ToolDefinition | None: ...
+    def get_for_agent(self, tool_names: list[str]) -> list[ToolDefinition]: ...
+```
+
+`BuiltinToolProvider` contributes the five built-in tools (`read_file`, `git`, `gh`, `shell_history`, `run_shell`). Future providers (`MCPToolProvider`, `FileToolProvider`) plug into the same registry.
+
+#### `ContextProvider` + `ContextProviderRegistry`
+
+```
 class ContextProvider(ABC):
     @abstractmethod
     def search(self, query: str) -> list[ContextItem]: ...
     @abstractmethod
-    def get_item(self, id: str) -> ContextItem | None: ...
+    def get_item(self, id: str) -> ContextItem: ...
     @abstractmethod
     def get_all(self) -> list[ContextItem]: ...
+    @abstractmethod
+    def _supported_types(self) -> set[ContextType]: ...
+
+class ContextProviderRegistry:
+    def register(self, provider: ContextProvider) -> None: ...
+    def get_by_type(self, context_type: ContextType) -> ContextProvider | None: ...
 ```
 
-Context gathering works two ways:
+The registry enforces **one provider per context type** (`file`, `git_diff`, `git_log`, `git_status`, `history`, `env`). Built-in providers are registered via `create_default_context_registry()`. The CLI's `@`-resolution and tool callables both route through this registry, eliminating the previous split-brain problem where `@`-completion and tool calls created separate provider instances.
 
-- **Model-driven** — `ContextProvider`s are wired as tools via `create_default_registry()`, so the agent can request context during execution.
-- **User-driven** — `@`-completion in `FinPrompt` injects context into the prompt before sending (`@file:path`, `@git:diff`, `@history:query`).
+Context gathering works two ways, both through the registry:
+
+- **Model-driven** — `ContextProvider`s are wired as tools via `ToolRegistry`, so the agent can request context during execution.
+- **User-driven** — `@`-completion in `FinPrompt` resolves via `ContextProviderRegistry` before sending (`@file:path`, `@git:diff`, `@history:query`, `@env:VAR`).
 
 ## Hub factory
 

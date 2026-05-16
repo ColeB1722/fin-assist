@@ -15,6 +15,10 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-16 (session 3):** Phase A extraction shipped. Both `ToolProvider` protocol and `ContextProviderRegistry` now live in the codebase. `ToolRegistry` aggregates providers via `add_provider()`; `BuiltinToolProvider` encapsulates the 5 built-in tools previously hardcoded in `create_default_registry()`. `ContextProviderRegistry` registers providers by type, unifying `@`-resolution and tool-delegation paths. Environment (#115) validated as the 6th context type (`@env:VAR` and `@env:`). All 949 tests passing, zero behavior change. See Design Sketch below for Phase B→D plan.
+
+**2026-05-16 (session 2):** #129 resolved — Option B (context providers as first-class primitive alongside tools). Resolution: parallel ContextProvider track mirroring ToolProvider's Phase A→D rollout. `base_context_providers` on `AgentSpec`, `context_providers` on `Skill`, parallel to `base_tools` / `tools`. Motivating case is the planning agent (#147), which needs resident project-state context (`gh_state`, `recent_decisions`) that doesn't fit the tool abstraction. The parallel-phasing model is now the canonical design; see [#129 comment](https://github.com/ColeB1722/fin-assist/issues/129) and [#147 comment](https://github.com/ColeB1722/fin-assist/issues/147).
+
 **2026-05-15:** Windows `fin start` background-detachment fixed end-to-end. The bug was a multi-layer chain — Unix-only `fcntl` in `pidfile.py` (fixed by merging the in-flight `filelock` PR), wrong `creationflags` combination (`CREATE_NEW_PROCESS_GROUP` blocked by corporate EDR), and a `pythonw.exe` swap that broke on `uv tool install`-managed installs. Final fix: `CREATE_NO_WINDOW` + `STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`, no `DETACHED_PROCESS`, no `CREATE_NEW_PROCESS_GROUP`, no `pythonw.exe`. Confirmed working on both personal and corporate Windows machines. Regression tests in `tests/test_cli/test_server.py::TestSpawnServe` for both Unix and Windows branches. Full write-up in [`docs/decisions.md`](docs/decisions.md#fin-start-background-spawn-on-windows). Branch `fix/windows-detachment`, PR pending.
 
 **2026-05-10 (session 2):** Audited context provider wiring (#129). The two paths (@-completion and tool calls) are incoherent: separate instances, no shared cache, `git` tool bypasses `GitContext` entirely, `git_status` and `Environment` are unreachable. Filed #129 with three design options and a blocking note on #84 (ToolProvider shape depends on answer) and #115 (don't wire Environment with current pattern). Added v0.1.1 milestone note that #129 direction must be resolved before those two ship.
@@ -23,14 +27,18 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Immediate:** Land the `fix/windows-detachment` PR — branch is clean and ready, see Recent work below.
+**Immediate:** Continue v0.1.1 work — #84 MCP (`MCPToolProvider` / `MCPContextProvider`, Phase B) is now unblocked. The registries exist and accept providers; MCP integration plugs in cleanly.
 
-**Then, recommended picks (in priority order):**
+**Recommended picks (in priority order):**
 
-1. **Begin v0.1.1 work** — slimmed to 7 focused issues. Start with the `ToolProvider` protocol extraction (Phase A from the new Design Sketch) before #84 MCP implementation — it's a ~50-line refactor that prevents MCP from being bolted onto `create_default_registry()`. Then proceed with #84, #89, #85, #115, and the three drift-wiring issues (#123, #124, #125).
-2. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
+1. **#84 MCP** — Implement `MCPToolProvider` and `MCPContextProvider`. Both registries already support `add_provider()` / `register()`.
+2. **#89 (system prompt)** and **#85 (hub config)** — Can proceed in parallel with MCP.
+3. **Drift-wiring issues (#123, #124, #125)** — Small refactors that prevent config drift.
+4. **Environment (#115)** — Already validated by Phase A. Can close if no further work needed.
+5. **Config composition (#138)** — #149 recommends solving this next as the concrete validation point for TOML `extends` + `[merge]` semantics. Consider for v0.1.1 if bandwidth allows; otherwise v0.1.2.
+6. **CLI grammar consolidation (#148)** — Move into v0.1.3 alongside #137 and #143.
 
-**Sequence:** v0.1.1 (foundations) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility — badges + demo gif, [#127](https://github.com/ColeB1722/fin-assist/issues/127)) → v0.2 (sub-agents).
+**Sequence:** v0.1.1 (foundations, in progress) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (CLI grammar) → v0.2 (sub-agents).
 
 ---
 
@@ -148,11 +156,15 @@ Sub-agents are the anchor, but several issues become much more useful once sub-a
 
 ---
 
-### ToolProvider Protocol: Unifying Tool Registration (sketched 2026-05-10)
+### ToolProvider + ContextProvider Protocols: Unifying Provider Registration (sketched 2026-05-10, extended 2026-05-16)
 
-**Status:** Design sketch. Informs v0.1.1 (#84 MCP) architecture; ship progressively through v0.2–v0.3.
+**Status:** Resolved / canonical. #129 closed with Option B; this sketch is now the implementation plan for v0.1.1–v0.3. Ship progressively through v0.2–v0.3.
+
+**Extension (2026-05-16):** The context-provider system has the same fundamental shape as the tool-provider system. #129 (context provider architecture) resolved to parallel-phased rollout. The two tracks are designed together and ship in lockstep. See [comment on #129](https://github.com/ColeB1722/fin-assist/issues/129) for the full architecture argument; the parallel phasing table is below in "Progressive shipping plan."
 
 **Problem:** `create_default_registry()` hardcodes 5 tools into `ToolRegistry`. Skills *reference* tools by name but can't *define* them. MCP (#84) adds a second tool source. The platform is becoming a tool host, but the registration architecture is still "platform defines, agents consume." This is the anti-pattern — tools should be discoverable from the agent's own repo/context, not hardcoded in the platform.
+
+**Parallel problem for context (#129):** The context system has two incoherent paths (`@`-completion and tool calls) that share an ABC but no instances, no caches, no resolution logic. Context providers are second-class compared to tools — there's no `ContextProvider`-discovery mechanism, no way for skills/agents to declare which providers they need, and no path for MCP or file-based packages to contribute providers. Resolving this in lockstep with the ToolProvider extraction means the protocol shape can be designed once and applied twice.
 
 **Concept:** Introduce a `ToolProvider` protocol that decouples tool *discovery* from tool *registration*. `ToolRegistry` becomes an aggregator of providers rather than a flat dict. Each provider contributes tools at startup (or lazily). This unifies three tool sources under one API:
 
@@ -255,22 +267,26 @@ The decorator is optional — plain functions with type hints and docstrings aut
 - File-based tools *define* new callables; they're a tool *source*
 - A skill can reference a file-based tool the same way it references `git` or `read_file` — by name in `tools = [...]`
 
-#### Progressive shipping plan
+#### Progressive shipping plan (parallel tracks)
 
-| Phase | What | Milestone |
-|-------|------|-----------|
-| **A: Protocol + BuiltinToolProvider** | Extract `ToolProvider` protocol; refactor `create_default_registry()` into `BuiltinToolProvider`; `ToolRegistry.add_provider()`. Zero behavior change — same 5 tools, same API. | v0.1.1 (#84 dependency) |
-| **B: MCPToolProvider** | Implement as part of #84. MCP servers discovered from config → `MCPToolProvider.discover()` returns `ToolDefinition` per MCP tool. | v0.1.1 (#84) |
-| **C: FileToolProvider** | New provider; `@tool` decorator; `.fin/tools/` discovery. First new capability — tools not defined by the platform. | v0.2 (sub-agents need per-agent tool sets) |
-| **D: Repo-as-tool-package** | Agent experiment repos ship with `.fin/tools/` + `.fin/skills/` + `evals/`; clone → discover → run. Tool packages as a first-class concept. | v0.3 (federated agents + eval) |
+| Phase | ToolProvider track | ContextProvider track | Milestone |
+|-------|--------------------|------------------------|-----------|
+| **A** | Extract `ToolProvider` protocol; refactor `create_default_registry()` into `BuiltinToolProvider`; `ToolRegistry.add_provider()`. Zero behavior change — same 5 tools, same API. | Extract `ContextProvider` protocol (already exists as ABC, needs registry shape); build `ContextProviderRegistry`; migrate the 5 existing providers (FileFinder, GitContext, ShellHistory, Environment, GitContext-status) onto it. Unify `@`-resolution and tool-delegation through one registry, fixing the `git`-tool-bypasses-`GitContext` problem. Finally wires Environment (#115). | v0.1.1 (#84, #129) |
+| **B** | `MCPToolProvider` — MCP servers discovered from config → `discover()` returns `ToolDefinition` per MCP tool. | `MCPContextProvider` — MCP spec already separates tools from *resources*; this track surfaces resources as context providers. | v0.1.1 (#84) |
+| **C** | `FileToolProvider` — `.fin/tools/` discovery + `@tool` decorator. First new capability where tools are not defined by the platform. | `FileContextProvider` — `.fin/context/` discovery. Plus config wiring for `base_context_providers` on `AgentSpec` and `context_providers` on `Skill`, parallel to `base_tools` / `tools`. Sub-agents (v0.2) inherit scoped provider sets the same way they inherit tools. | v0.2 (sub-agents need per-agent tool + context sets) |
+| **D** | Repo-as-package: `.fin/tools/` + `.fin/skills/` + `evals/`. | Repo-as-package gains `.fin/context/`. Planning agent (#147) is the motivating package: ships `gh_state` + `recent_decisions` providers alongside `triage` / `breakdown` / `reflect` skills. | v0.3 (federated agents + eval) |
 
-Phase A is the critical path — if #84 ships without `ToolProvider`, MCP tools get bolted onto `create_default_registry()` and the retrofit is harder. The protocol costs ~50 lines; it should land before or alongside #84.
+Phase A is the critical path for **both tracks** — if #84 ships without `ToolProvider`, MCP tools get bolted onto `create_default_registry()` and the retrofit is harder; if #115 (Environment) ships without `ContextProviderRegistry`, the second incoherent context path gets a sixth hardcoded entry and the retrofit is also harder. Each protocol costs ~50 lines; they should land together in v0.1.1 before #84 or #115 finalize.
+
+**Mental model the two tracks share:** "platform-defined → MCP-contributed → file-defined → repo-packaged" is the progression of who-owns-what. Tools and context providers travel through the same progression. Skills *reference* both by name. Agents declare *base* sets of both. Packages bundle both. The dual structure means there is one packaging story, not two.
+
+**Refresh semantics for context providers (open question):** Tools are stateless / self-managed. Context providers may want explicit caching — `gh_state` is expensive and should refresh on a schedule, not per-session. Lean: each provider self-manages, but the protocol carries `last_refreshed_at` for observability. Defer cache layer to providers that need it.
 
 #### Relation to sub-agents (v0.2)
 
-Sub-agents (`invoke_subagent`) construct a fresh `AgentSpec` with a constrained tool set. With `FileToolProvider`, a sub-agent's tools can come from its own `.fin/tools/` directory rather than the global registry. The `Executor.run_subtask()` call creates a scoped `ToolRegistry` with only the sub-agent's providers.
+Sub-agents (`invoke_subagent`) construct a fresh `AgentSpec` with a constrained tool set **and** a constrained context-provider set. With `FileToolProvider` + `FileContextProvider`, a sub-agent's tools and providers can both come from its own `.fin/tools/` and `.fin/context/` directories rather than the global registries. The `Executor.run_subtask()` call creates scoped `ToolRegistry` and `ContextProviderRegistry` instances with only the sub-agent's contributions.
 
-This also means `invoke_subagent` can be replaced: instead of a hardcoded built-in tool, it becomes a file-defined tool in `.fin/tools/subagent.py`. The platform ships *defaults*, not *mandates*.
+This also means `invoke_subagent` can be replaced: instead of a hardcoded built-in tool, it becomes a file-defined tool in `.fin/tools/subagent.py`. The platform ships *defaults*, not *mandates*. The same applies to context providers — `gh_state` is not a built-in, it's a provider the planning agent package contributes.
 
 #### Open questions
 

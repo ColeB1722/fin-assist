@@ -86,6 +86,7 @@ class TestResolveAtReferences:
             id="test.py", type="file", content="print('hi')", status="available"
         )
         with patch("fin_assist.context.files.FileFinder") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"file"}
             mock_cls.return_value.get_item.return_value = mock_item
             result = resolve_at_references("explain @file:test.py")
 
@@ -100,6 +101,11 @@ class TestResolveAtReferences:
             id="git_diff", type="git_diff", content="diff --git a/file", status="available"
         )
         with patch("fin_assist.context.git.GitContext") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {
+                "git_diff",
+                "git_log",
+                "git_status",
+            }
             mock_cls.return_value.get_item.return_value = mock_item
             result = resolve_at_references("review @git:diff")
 
@@ -114,6 +120,11 @@ class TestResolveAtReferences:
             id="git_log", type="git_log", content="abc123 commit msg", status="available"
         )
         with patch("fin_assist.context.git.GitContext") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {
+                "git_diff",
+                "git_log",
+                "git_status",
+            }
             mock_cls.return_value.get_item.return_value = mock_item
             result = resolve_at_references("@git:log recent changes")
 
@@ -129,6 +140,7 @@ class TestResolveAtReferences:
             ContextItem(id="1", type="history", content="ls -la", status="available"),
         ]
         with patch("fin_assist.context.history.ShellHistory") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"history"}
             mock_cls.return_value.get_all.return_value = items
             result = resolve_at_references("@history: similar to")
 
@@ -143,6 +155,7 @@ class TestResolveAtReferences:
             ContextItem(id="0", type="history", content="git commit", status="available"),
         ]
         with patch("fin_assist.context.history.ShellHistory") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"history"}
             mock_cls.return_value.search.return_value = items
             result = resolve_at_references("@history:commit what did I do")
 
@@ -156,6 +169,7 @@ class TestResolveAtReferences:
             id="missing.py", type="file", content="", status="not_found", error_reason="not found"
         )
         with patch("fin_assist.context.files.FileFinder") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"file"}
             mock_cls.return_value.get_item.return_value = mock_item
             result = resolve_at_references("explain @file:missing.py")
 
@@ -170,7 +184,13 @@ class TestResolveAtReferences:
             patch("fin_assist.context.files.FileFinder") as file_cls,
             patch("fin_assist.context.git.GitContext") as git_cls,
         ):
+            file_cls.return_value._supported_types.return_value = {"file"}
             file_cls.return_value.get_item.return_value = file_item
+            git_cls.return_value._supported_types.return_value = {
+                "git_diff",
+                "git_log",
+                "git_status",
+            }
             git_cls.return_value.get_item.return_value = diff_item
             result = resolve_at_references("review @file:a.py and @git:diff")
 
@@ -184,8 +204,37 @@ class TestResolveAtReferences:
 
         mock_item = ContextItem(id="f.py", type="file", content="code", status="available")
         with patch("fin_assist.context.files.FileFinder") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"file"}
             mock_cls.return_value.get_item.return_value = mock_item
             result = resolve_at_references("explain @file:f.py")
 
         assert "Context:" in result
         assert "User request:" in result
+
+    def test_resolves_env_reference(self):
+        from fin_assist.cli.interaction.prompt import resolve_at_references
+
+        mock_item = ContextItem(id="HOME", type="env", content="/home/user", status="available")
+        with patch("fin_assist.context.environment.Environment") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"env"}
+            mock_cls.return_value.get_item.return_value = mock_item
+            result = resolve_at_references("check @env:HOME")
+
+        assert "[ENV: HOME]" in result
+        assert "/home/user" in result
+
+    def test_resolves_env_all(self):
+        from fin_assist.cli.interaction.prompt import resolve_at_references
+
+        items = [
+            ContextItem(id="HOME", type="env", content="/home/user", status="available"),
+            ContextItem(id="USER", type="env", content="alice", status="available"),
+        ]
+        with patch("fin_assist.context.environment.Environment") as mock_cls:
+            mock_cls.return_value._supported_types.return_value = {"env"}
+            mock_cls.return_value.get_all.return_value = items
+            result = resolve_at_references("show @env:")
+
+        assert "[ENVIRONMENT]" in result
+        assert "HOME=/home/user" in result
+        assert "USER=alice" in result
