@@ -560,6 +560,111 @@ class TestSpawnServe:
 
         assert log_path.parent.is_dir()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Tests Unix branch of _spawn_serve")
+    def test_unix_uses_start_new_session(self, tmp_path):
+        """On Unix the child must be spawned with ``start_new_session=True``
+        so it survives terminal closure.  No Windows-specific flags should
+        leak through (``creationflags``/``startupinfo``)."""
+        import subprocess as _subprocess
+
+        from fin_assist.cli.server import _spawn_serve
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+        config.server.db_path = str(tmp_path / "hub.db")
+        config.server.log_path = str(tmp_path / "hub.log")
+        pid_file = tmp_path / "hub.pid"
+
+        mock_proc = MagicMock()
+        with patch("fin_assist.cli.server.subprocess.Popen", return_value=mock_proc) as mock_popen:
+            _spawn_serve(config, pid_file=pid_file)
+
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs.get("start_new_session") is True
+        # creationflags either absent or 0 on Unix; never a Windows constant.
+        assert kwargs.get("creationflags", 0) == 0
+        assert kwargs.get("startupinfo") is None
+        # stdin and stdout must be redirected to DEVNULL to truly detach
+        # from the controlling terminal.
+        assert kwargs.get("stdin") == _subprocess.DEVNULL
+        assert kwargs.get("stdout") == _subprocess.DEVNULL
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Tests Windows branch of _spawn_serve")
+    def test_windows_uses_hidden_console_session(self, tmp_path):
+        """Regression for corporate-EDR Windows machines.
+
+        We need *exactly* this flag combination:
+
+        * ``creationflags=CREATE_NO_WINDOW`` — allocate a windowless console
+          session up front so libraries that probe the console don't trigger
+          ``AllocConsole`` and pop a window.
+        * ``STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`` — belt-and-suspenders
+          hint that any console window must be hidden.
+        * NO ``DETACHED_PROCESS`` — mutually exclusive with
+          ``CREATE_NO_WINDOW``; combining them was observed to either pop a
+          window (some libraries call ``AllocConsole`` when no console exists)
+          or be silently killed by EDR.
+        * NO ``CREATE_NEW_PROCESS_GROUP`` — observed to hang or be killed by
+          corporate EDR.
+        * NO ``pythonw.exe`` swap — uv-managed installs ship a working
+          ``python.exe`` but a ``pythonw.exe`` that fails to start.
+        """
+        # Guard the body under a runtime sys.platform check so the type
+        # checker narrows ``subprocess`` to the Win32 stub (which exposes
+        # STARTUPINFO, CREATE_NO_WINDOW, etc.).  The skipif decorator alone
+        # doesn't narrow the platform for the type checker.
+        if sys.platform != "win32":
+            return
+
+        import subprocess as _subprocess
+
+        from fin_assist.cli.server import _spawn_serve
+
+        config = MagicMock()
+        config.server.host = "127.0.0.1"
+        config.server.port = 4096
+        config.server.db_path = str(tmp_path / "hub.db")
+        config.server.log_path = str(tmp_path / "hub.log")
+        pid_file = tmp_path / "hub.pid"
+
+        mock_proc = MagicMock()
+        with patch("fin_assist.cli.server.subprocess.Popen", return_value=mock_proc) as mock_popen:
+            _spawn_serve(config, pid_file=pid_file)
+
+        kwargs = mock_popen.call_args.kwargs
+
+        # Exact creationflags: CREATE_NO_WINDOW and nothing else.
+        flags = kwargs.get("creationflags", 0)
+        assert flags & _subprocess.CREATE_NO_WINDOW, (
+            "CREATE_NO_WINDOW must be set so the child gets a windowless console"
+        )
+        assert not (flags & _subprocess.DETACHED_PROCESS), (
+            "DETACHED_PROCESS must NOT be combined with CREATE_NO_WINDOW"
+        )
+        assert not (flags & _subprocess.CREATE_NEW_PROCESS_GROUP), (
+            "CREATE_NEW_PROCESS_GROUP triggers EDR on corporate Windows"
+        )
+
+        # STARTUPINFO must request hidden window.
+        startupinfo = kwargs.get("startupinfo")
+        assert startupinfo is not None, "STARTUPINFO required to hide the console window"
+        assert startupinfo.dwFlags & _subprocess.STARTF_USESHOWWINDOW
+        assert startupinfo.wShowWindow == _subprocess.SW_HIDE
+
+        # Sanity: stdin/stdout/stderr properly redirected.
+        assert kwargs.get("stdin") == _subprocess.DEVNULL
+        assert kwargs.get("stdout") == _subprocess.DEVNULL
+        # stderr is the open log file handle, not DEVNULL.
+        assert kwargs.get("stderr") is not None
+
+        # Sanity: executable must be ``python.exe``, not ``pythonw.exe``.
+        # The first arg to Popen is the argv list; args[0] is the interpreter.
+        argv = mock_popen.call_args.args[0]
+        assert not argv[0].endswith("pythonw.exe"), (
+            "pythonw.exe was observed to fail on uv-managed corporate installs"
+        )
+
 
 # ---------------------------------------------------------------------------
 # check_status
