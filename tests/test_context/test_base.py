@@ -65,8 +65,8 @@ class TestContextProviderABC:
             def search(self, query: str) -> list[ContextItem]:
                 return []
 
-            def get_item(self, id: str) -> ContextItem | None:
-                return None
+            def get_item(self, id: str) -> ContextItem:
+                return ContextItem(id=id, type="file", status="not_found")
 
             def get_all(self) -> list[ContextItem]:
                 return []
