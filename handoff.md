@@ -15,19 +15,17 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-15:** Windows `fin start` background-detachment fixed end-to-end. The bug was a multi-layer chain — Unix-only `fcntl` in `pidfile.py` (fixed by merging the in-flight `filelock` PR), wrong `creationflags` combination (`CREATE_NEW_PROCESS_GROUP` blocked by corporate EDR), and a `pythonw.exe` swap that broke on `uv tool install`-managed installs. Final fix: `CREATE_NO_WINDOW` + `STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`, no `DETACHED_PROCESS`, no `CREATE_NEW_PROCESS_GROUP`, no `pythonw.exe`. Confirmed working on both personal and corporate Windows machines. Regression tests in `tests/test_cli/test_server.py::TestSpawnServe` for both Unix and Windows branches. Full write-up in [`docs/decisions.md`](docs/decisions.md#fin-start-background-spawn-on-windows). Branch `fix/windows-detachment`, PR pending.
+
 **2026-05-10 (session 2):** Audited context provider wiring (#129). The two paths (@-completion and tool calls) are incoherent: separate instances, no shared cache, `git` tool bypasses `GitContext` entirely, `git_status` and `Environment` are unreachable. Filed #129 with three design options and a blocking note on #84 (ToolProvider shape depends on answer) and #115 (don't wire Environment with current pattern). Added v0.1.1 milestone note that #129 direction must be resolved before those two ship.
 
-**2026-05-10 (session 1):** Audited `AgentCardMeta` field wiring. Finding: `serving_modes` is the only field with runtime enforcement; `supported_context_types` (computed, published, never consumed for filtering), `supported_providers` (always `None`, no config key), `supports_model_selection` (always `True`, never read), and `supports_thinking` (set but never read by CLI) are all declarative-only. Documented in milestone notes: context-type filtering paired with #115 in v0.1.1; provider filtering + model selection + thinking gate deferred to v0.2.1 with design questions. Also: `docs/architecture.md` edits from the doc-restructure session (deliverables table, local-first principle, maintenance contract, backend diagram) are on disk but uncommitted — awaiting user review.
-
-**2026-05-10:** Added "ToolProvider Protocol" design sketch — unifies tool registration across builtin, MCP, and file-based sources. Informs v0.1.1 (#84) architecture; ships progressively through v0.3. Updated milestone descriptions for v0.1.1, v0.2, v0.3 with ToolProvider context. Added comment to #84 with implementation sequence.
-
-**2026-05-09:** v0.1 shipped (PR #114, tag `v0.1`). 940 tests passing. v0.2 planning complete: backlog groomed (84 → 57 open issues), four-phase roadmap captured as milestones (v0.1.1 → v0.2 → v0.2.1 → v0.3). v0.2 anchor is in-process sub-agents as a context-compression primitive — see Design Sketch below.
-
-**Context-strategy refactor (across three sessions):** documented the issue/milestone split and doc-surface roles in `AGENTS.md`; pruned this file from 625 → ~220 lines; split the 1464-line `docs/architecture.md` into `architecture.md` (slim contracts + diagrams), `tracing.md`, `skills.md`, `decisions.md`, `configuration.md`; rewrote `README.md` with user-lens framing; ran code-validation pass and corrected ~25 drift items (signatures, defaults, phantom commands, unwired features).
+**2026-05-10 (session 1):** Audited `AgentCardMeta` field wiring. Finding: `serving_modes` is the only field with runtime enforcement; `supported_context_types` (computed, published, never consumed for filtering), `supported_providers` (always `None`, no config key), `supports_model_selection` (always `True`, never read), and `supports_thinking` (set but never read by CLI) are all declarative-only. Documented in milestone notes: context-type filtering paired with #115 in v0.1.1; provider filtering + model selection + thinking gate deferred to v0.2.1 with design questions.
 
 ## Next session
 
-**Recommended picks (in priority order):**
+**Immediate:** Land the `fix/windows-detachment` PR — branch is clean and ready, see Recent work below.
+
+**Then, recommended picks (in priority order):**
 
 1. **Begin v0.1.1 work** — slimmed to 7 focused issues. Start with the `ToolProvider` protocol extraction (Phase A from the new Design Sketch) before #84 MCP implementation — it's a ~50-line refactor that prevents MCP from being bolted onto `create_default_registry()`. Then proceed with #84, #89, #85, #115, and the three drift-wiring issues (#123, #124, #125).
 2. **Resolve open questions in the sub-agents Design Sketch below** before implementation begins. There are 5 questions; answering them unblocks v0.2.
@@ -334,55 +332,18 @@ phase = "experimental"
 
 ## Recent work
 
+### 2026-05-15 — Windows `fin start` background detachment fixed
+
+The original 10s-timeout failure on a corporate-EDR Windows machine turned out to be three stacked bugs:
+
+1. **`fcntl` import crash in `pidfile.py`** — Unix-only module. Resolved by merging the in-flight PR branch `55a153c` which replaced `fcntl` with the cross-platform `filelock` library + sidecar `.lock` file pattern. Also brought in `_pid_is_running_win32` / `_force_kill_win32` for Windows process-existence checks and `_cleanup_pid_files` for sidecar cleanup.
+2. **Wrong subprocess creationflags** — `start_new_session=True` (default Unix idiom in `Popen`) maps to `CREATE_NEW_PROCESS_GROUP` on Windows, which corporate EDR blocks silently. Iterated through `DETACHED_PROCESS | CREATE_NO_WINDOW` (worked on personal Windows, console window flashed on corporate) and a `pythonw.exe` swap (broke uv-managed installs entirely — process exited immediately).
+3. **Final working combination:** `CREATE_NO_WINDOW` + `STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`, no `DETACHED_PROCESS`, no `CREATE_NEW_PROCESS_GROUP`, `python.exe` not `pythonw.exe`. Confirmed working on both personal and corporate Windows. Hub starts invisibly, `/health` responds, survives terminal closure.
+
+Tests: `tests/test_cli/test_server.py::TestSpawnServe::test_windows_uses_hidden_console_session` asserts exact flag combination (runs on Windows CI). `test_unix_uses_start_new_session` prevents the Unix path being polluted with Windows flags. Both branches now have explicit regression coverage. 947 tests passing.
+
+Full write-up in [`docs/decisions.md`](docs/decisions.md#fin-start-background-spawn-on-windows) documenting the *full* problem space (what we tried, why each attempt failed, why the final combination is the one we want). The "why deferred" rationale for each rejected flag is preserved so future contributors don't re-try them.
+
 ### 2026-05-12 — Windows dev ergonomics shipped
 
 Cross-platform justfile (`set windows-shell`), platform-aware `DATA_DIR` in `paths.py` (`%LOCALAPPDATA%\fin` on Windows), CI `test-windows` job, and 14 test-fix buckets (sidecar PID lock, `encoding="utf-8"`, `_force_kill`/`TerminateProcess`, `re.escape` in match). See [`docs/decisions.md`](docs/decisions.md) (Windows section) and [`README.md`](README.md) (non-Nix quick start).
-
-### 2026-05-09 (latest) — README rewrite + milestone re-split
-
-- Rewrote README into technical-writing register (per user feedback that "user-lens" had become conversational). Structure: Concepts → Example → Architecture → Install → CLI reference → Documentation → Status. Replaced user-lens diagram with structural Architecture diagram. Paired TOML config with invocation example so reader has vocabulary before seeing the CLI session. 161 → 141 lines.
-- Split v0.1.1 (was 35 issues, three mixed themes) into:
-  - **v0.1.1 — Foundations** (7 issues): #84, #85, #89, #115, #123, #124, #125
-  - **v0.1.2 — Visibility** (new milestone, 1 issue): [#127](https://github.com/ColeB1722/fin-assist/issues/127) (badges + demo gif)
-  - **No milestone** (28 issues): chore batch — test cleanup, type hints, CodeRabbit refactors. Per AGENTS.md context strategy, "things to do when convenient" don't belong in milestones.
-- Updated v0.1.1 milestone description to reflect the new 7-issue scope and document the chore-unmilestoning rationale.
-
-### 2026-05-09 (earlier) — Code-validation pass on the new doc structure
-
-- Ran a four-track validation pass (one sub-agent per doc) of every concrete claim in `architecture.md`, `skills.md`, `tracing.md`, `configuration.md` against `src/`. Each sub-agent returned a structured report citing `file:line` for every check.
-- Found ~25 drift items, grouped into four buckets:
-  - **Critical (3)** — features documented as live but not actually wired up: `fin_assist.skill_load` span never emitted, `start_task_span(skill_id=...)` never invoked, SKILL.md files discoverable by `list skills` but not loaded into runtime `SkillManager`.
-  - **API drift (8)** — wrong signatures in arch.md "Key types" section: `AgentSpec.tools` → `skill_tool_names`, `run_stream` → `run_steps` returning `StepHandle` of `StepEvent`s (not text deltas), `AgentBackend` protocol has 8+1 methods not 5, `ContextItem.status` default `"available"` not `"ready"`, `create_hub_app` signature is `(agents: Sequence[AgentSpec], db_path: str = ":memory:", ...)` not `(config, credentials, *, db_path)`.
-  - **Phantom commands (3)** — `_poll_task` (doesn't exist anywhere in `src/`), `fin-assist /connect` (no command exists), bare positional `fin do <agent> <skill>` (argparse only has one positional; what works is `fin do --agent git commit` via prompt-as-skill auto-promotion).
-  - **Definition drift (12)** — thinking defaults, `system_prompt` "required" vs has default, `ProviderRegistry` doesn't read TOML, task-state enum missing `resumed_from_approval`, `DropSpansProcessor` is public not `_DropSpansProcessor`, `tracing_shared.py` omitted from Files list, etc.
-- Filed three GH issues under v0.1.1: [#123](https://github.com/ColeB1722/fin-assist/issues/123) (skill tracing wiring), [#124](https://github.com/ColeB1722/fin-assist/issues/124) (`/connect` interactive setup), [#125](https://github.com/ColeB1722/fin-assist/issues/125) (wire SKILL.md files into runtime `SkillManager`).
-- Applied fixes: rewrote `AgentSpec`/`AgentBackend`/`ContextItem`/`create_hub_app` API blocks in arch.md; demoted unwired skill spans to "scaffolding, not yet invoked" in skills.md + tracing.md; corrected `thinking`/`system_prompt`/`ProviderRegistry` claims in configuration.md; replaced phantom CLI commands with what actually works in arch.md + README; added `tracing_shared.py` to tracing.md Files. `just lint` clean.
-- 6 files changed, +130/-89 lines. Branch `docs/planning` still 1 commit ahead of origin (d8920a6); drift-fix changes are unstaged for the user to review and commit.
-
-### 2026-05-09 (later) — Doc split + README "project soul" pass
-
-- Split `docs/architecture.md` (1464 lines) into focused docs:
-  - `docs/architecture.md` (~330 lines) — slim: principles, contracts, hub structure, A2A integration, structural request flow. Keeps Hub Internals + Backend Layer Mermaid diagrams.
-  - `docs/tracing.md` (~140 lines) — extracted tracing prose plus the full instrumented request-flow sequence diagram (with HITL pause/resume).
-  - `docs/skills.md` (~170 lines) — extracted skills section.
-  - `docs/decisions.md` (~70 lines) — Appendix Design Decisions + Open Questions table + External Federation deep-dive.
-  - `docs/configuration.md` (~110 lines) — extracted config schema, env var convention pointer, credential storage.
-- Rewrote `README.md` (256 → ~140 lines) with a user-lens framing: example `fin do git commit` interaction up top, single user-friendly Mermaid diagram surfacing skills/tools/agents/approval (replaces the 4 developer-lens diagrams which moved to `docs/`), getting-started flow, 30-second config example. Deleted the 17-row Status phase table (milestones own that now).
-- Deleted from old architecture.md: ASCII System Overview + Component Diagram (160 lines, redundant with new Mermaid), Directory Structure tree (110 lines), Implementation Phases (150 lines, git log territory), Future Considerations long-term/deferred bullets, Related Documents/Issues sections.
-- Fixed link references: `AGENTS.md` x5 (architecture.md → specific deep-dives where relevant), `handoff.md` x1, `src/fin_assist/agents/skills.py:19` (architecture.md → docs/skills.md). `.coderabbit.yaml` references kept (architecture.md still canonical for component contracts).
-
-### 2026-05-09 (earlier) — Context-strategy refactor
-
-- Added `Context Strategy` section to `AGENTS.md` documenting the surface/job/cadence table and the issue-vs-milestone rule.
-- Slimmed `AGENTS.md` "Session Handoffs" subsection to match handoff.md's narrowed role.
-- Pruned `handoff.md` from 625 lines to its actual job: current state header + Design Sketches + rolling session log. Removed the Implementation Progress table, the Sequenced Roadmap table (milestones own this now), the Tracing/_TaskTracer/Skills-API historical implementation logs (git log territory), the Historical Reference section, and the duplicated Notes/Quick-Start sections.
-
-### 2026-05-09 (earlier) — v0.2 planning
-
-- Backlog grooming pass: 84 → 57 open issues. Closed 27 stale items (shipped, Textual-era, duplicates, superseded). Chore-batched 9 small items into v0.1.1.
-- Created four GitHub milestones with descriptions: [v0.1.1](https://github.com/ColeB1722/fin-assist/milestone/1), [v0.2](https://github.com/ColeB1722/fin-assist/milestone/2), [v0.2.1](https://github.com/ColeB1722/fin-assist/milestone/3), [v0.3](https://github.com/ColeB1722/fin-assist/milestone/4).
-- Aligned on sub-agents as v0.2 anchor (rejecting transitive `requires` field on skills); split into in-process (v0.2) vs federated (v0.3) flavors with shared caller-side API. Captured as Design Sketch above.
-
-### 2026-05-03 — Skill loading refactor (v0.1)
-
-Implemented REPL `/skills` + `/skill:<name>` commands with `SkillCompleter` (rapidfuzz fuzzy matching, mirrors `@file:` pattern), skill tracing attributes/spans (`fin_assist.skill_load`, `fin_assist.cli.skill`), and updated docs. Tool gating, agent-level `tool_policies`, `base_tools` defaults, `skills/invoke` + `GET /skills` endpoints, REPL slash-command loading, `fin list skills`. 940 tests passing. v0.1 shipped as PR #114, tagged `v0.1`.

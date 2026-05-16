@@ -229,6 +229,18 @@ def _spawn_serve(
     ``Popen`` has no such lifecycle coupling: the child lives independently
     after ``Popen`` returns.
 
+    Platform-specific detachment:
+
+    * **Unix:** ``start_new_session=True`` puts the child in its own session
+      so it survives terminal closure.
+    * **Windows:** ``CREATE_NO_WINDOW`` + ``STARTUPINFO(SW_HIDE)`` gives the
+      child a windowless console.  We deliberately avoid
+      ``DETACHED_PROCESS``, ``CREATE_NEW_CONSOLE`` and
+      ``CREATE_NEW_PROCESS_GROUP`` — see the inline comments for the
+      EDR-related reasons.  We also avoid ``pythonw.exe``: although it is
+      the conventional GUI-subsystem interpreter, on some corporate
+      machines (uv-managed installs, EDR-protected) it fails to start.
+
     Args:
         config: Resolved configuration.
         pid_file: Path the server should write its PID to.
@@ -266,14 +278,51 @@ def _spawn_serve(
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
 
     with open(log_path, "a", buffering=1, encoding="utf-8") as stderr_file:  # noqa: SIM115
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=stderr_file,
-            env=env,
-            start_new_session=True,
-        )
+        if sys.platform == "win32":
+            # Hide the child's console window.
+            #
+            # ``CREATE_NO_WINDOW`` tells Windows to allocate a console session
+            # for the child *without* a visible window.  We pair it with
+            # ``STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`` because some
+            # corporate Windows configurations honor the STARTUPINFO hint but
+            # not the creationflag (or vice versa) — supplying both makes the
+            # outcome reliable across machines.
+            #
+            # We intentionally do *not* use ``DETACHED_PROCESS`` here: it is
+            # documented as mutually exclusive with ``CREATE_NO_WINDOW`` and
+            # has been observed to either (a) leave the child without any
+            # console at all (some libraries then call ``AllocConsole`` and
+            # pop a window) or (b) silently fail under EDR.  A windowless
+            # console session is what we actually want.
+            #
+            # We also do *not* set ``CREATE_NEW_PROCESS_GROUP``: on
+            # EDR-protected corporate machines that flag has been observed
+            # to make the spawn hang or be killed silently.  The child
+            # already survives parent exit thanks to the windowless
+            # console + the OS not propagating console signals through
+            # ``stdin=DEVNULL``.
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                env=env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                startupinfo=startupinfo,
+                close_fds=True,
+            )
+        else:
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                env=env,
+                start_new_session=True,
+            )
 
     return proc
 

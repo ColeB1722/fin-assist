@@ -32,6 +32,8 @@ The "why" behind structural choices. New decisions go here when they shape the p
 | Install method | `uv tool install -e .` (not Scoop) | Scoop distributes pre-built binaries; Python tools use `uv tool install` instead. Pure-Python projects (FastAPI, Textual, pydantic-ai) use pip/uv only — no Scoop manifest precedent |
 | Scoop manifest | Deferred post-1.0 | Requires PyInstaller/Nuitka build pipeline + signing. Not worth the effort until there's a pre-built binary story |
 | Default data dir | `%LOCALAPPDATA%\fin` | Platform convention; matches Chrome, VS Code, etc. `FIN_DATA_DIR` override still works |
+| `fin start` detachment | `CREATE_NO_WINDOW` + `STARTUPINFO(SW_HIDE)` | See [§`fin start` background spawn on Windows](#fin-start-background-spawn-on-windows) below |
+| PID file locking | `filelock` library + sidecar `.lock` file | `fcntl` is Unix-only; `filelock` wraps `fcntl` on Unix and `msvcrt.locking` on Windows. `msvcrt.locking` locks byte ranges of the file you open (preventing a separate write to the PID payload) — so we lock a sidecar `hub.pid.lock` and write the PID to `hub.pid` separately |
 
 ## Skills
 
@@ -88,3 +90,39 @@ url = "http://127.0.0.1:5002"
 **What external agents don't get:** `ContextStore`, `CredentialStore`, `ContextProviders` are in-process Python services. External agents manage their own credentials, context, and conversation history. This is the correct boundary: shared services are an implementation convenience for internal agents, not a protocol requirement.
 
 **Why defer:** No external agents exist yet. The change is small (~50 lines) but designing the schema without a real external process to validate against risks over-fitting. Once a toy Rust/Gleam agent exists, the schema will be obvious.
+
+## `fin start` background spawn on Windows
+
+`fin start` spawns `fin-assist serve` as a detached background process so the hub keeps running after the terminal closes.  Windows does not have a `daemon()` syscall — the closest equivalent is choosing the right combination of `CreateProcess` flags and `STARTUPINFO` fields.  Getting that combination wrong manifests in three different failure modes that we worked through:
+
+1. **Hang at startup on EDR-protected machines** — observed on the corporate laptop, not on the personal machine.  Manifested as `fin start` timing out after 10s with an empty `hub.log`.
+2. **Visible console window** — the spawned process briefly flashed a terminal window, then either stayed open or closed without detaching.
+3. **Console window stays open and kills the hub when closed** — child was sharing the parent's console.
+
+### What we tried
+
+| Approach | Outcome |
+|----------|---------|
+| `start_new_session=True` (Unix idiom; maps to `CREATE_NEW_PROCESS_GROUP` on Windows) | EDR blocks `CREATE_NEW_PROCESS_GROUP` silently; spawn hangs |
+| `DETACHED_PROCESS \| CREATE_NO_WINDOW` | Worked on personal Windows; on corporate machine sometimes spawned a visible console (some library calls `AllocConsole` when no console exists) |
+| Swap `sys.executable` from `python.exe` to `pythonw.exe` | `pythonw.exe` failed to start on `uv tool install`-managed corporate installs — process exited immediately, empty log |
+| **`CREATE_NO_WINDOW` + `STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`, no `DETACHED_PROCESS`, no `CREATE_NEW_PROCESS_GROUP`, no `pythonw.exe`** | Works on personal + corporate; no visible window; child survives terminal closure |
+
+### Why the working combination works
+
+`CREATE_NO_WINDOW` tells `CreateProcess` to allocate a console session for the child *without* a visible window.  The console handles are valid (so libraries that probe `GetConsoleWindow()` succeed without calling `AllocConsole`), but there is no window to show.
+
+`STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)` is a belt-and-suspenders hint: if any code path *does* create a window, the OS is instructed to hide it on first display.
+
+We deliberately drop `DETACHED_PROCESS`:
+
+* Per [the Python docs and CPython issue 41619](https://bugs.python.org/issue41619), `CREATE_NO_WINDOW` and `DETACHED_PROCESS` are mutually exclusive — combining them is documented as undefined.
+* `DETACHED_PROCESS` means "no console at all," which means downstream code that calls `GetStdHandle` gets `NULL` handles; some libraries respond by calling `AllocConsole` and the window pops up anyway.
+
+We deliberately drop `CREATE_NEW_PROCESS_GROUP`: it was observed to make the spawn hang or be killed silently on corporate EDR-protected machines.  The child survives terminal closure without it because (a) `stdin` is `DEVNULL` (no `Ctrl+C` propagation path), and (b) the windowless console is a separate session from the parent's interactive console.
+
+We deliberately do not swap to `pythonw.exe`: the GUI-subsystem interpreter is the conventional choice for hidden-console daemons, but on `uv tool install`-managed Windows installs it fails to start on at least one corporate machine.  `python.exe` + `CREATE_NO_WINDOW` achieves the same hidden-console effect without that risk.
+
+### Regression tests
+
+`tests/test_cli/test_server.py::TestSpawnServe::test_windows_uses_hidden_console_session` asserts the exact flag combination and runs on Windows CI (`runs-on: windows-latest` in `.github/workflows/ci.yml`).  `test_unix_uses_start_new_session` asserts the Unix path stays clean.  Together they prevent silent regression of either platform's spawn semantics.
