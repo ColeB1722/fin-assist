@@ -10,7 +10,7 @@ Env vars use the ``FIN_`` prefix with ``__`` as nested delimiter:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_settings import (
@@ -115,6 +115,41 @@ class ServerSettings(BaseModel):
     log_path: str = str(DATA_DIR / "hub.log")
 
 
+class MCPSettings(BaseModel):
+    """MCP server configuration.
+
+    Per-server settings for connecting to external MCP (Model Context
+    Protocol) servers.  Servers are identified by the key name in the
+    ``[mcp.servers.<name>]`` TOML block.
+    """
+
+    servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
+
+
+class MCPServerConfig(BaseModel):
+    """Connection configuration for a single MCP server.
+
+    Supports both ``stdio`` (subprocess-based) and ``sse`` (HTTP
+    Server-Sent Events) transports.
+    """
+
+    transport: Literal["stdio", "sse"] = "stdio"
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    url: str | None = None
+    alias: str | None = None
+    enabled: bool = True
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout: int = 30
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError("MCP stdio server requires 'command' field")
+        if self.transport == "sse" and not self.url:
+            raise ValueError("MCP SSE server requires 'url' field")
+
+
 class ToolPolicyRuleConfig(BaseModel):
     """A single fnmatch-based approval rule in config.
 
@@ -214,6 +249,7 @@ class Config(BaseSettings):
     context: ContextSettings = ContextSettings()
     server: ServerSettings = ServerSettings()
     tracing: TracingSettings = TracingSettings()
+    mcp: MCPSettings = MCPSettings()
     providers: dict[str, ProviderConfig] = {}
     agents: dict[str, AgentConfig] = Field(default_factory=lambda: _DEFAULT_AGENTS)
 

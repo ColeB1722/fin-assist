@@ -17,6 +17,8 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 **2026-05-16 (session 4):** #142 skill type collapse shipped. `SkillDefinition` and `SkillCatalog` removed; `SkillConfig` is now the unified type with `name` field. `SkillLoader` returns `SkillConfig` directly. `SkillManager` absorbs catalog rendering. `AgentSpec.skill_tool_names` delegates to `get_skill_definitions()`. 949 tests passing, lint + typecheck clean. Next: #84 Part 1 (MCPToolProvider) + #141 (annotation-aware policies).
 
+**2026-05-16 (session 5):** #84 Part 1 + #141 shipped. `mcp>=1.26.0` added to dependencies. `MCPToolProvider` connects to configured MCP servers at startup and registers tools as `mcp.<server>.<<tool>` with annotation-aware `ApprovalPolicy` mapping. `MCPServerConfig` and `MCPSettings` added to config schema. `create_default_registry()` now accepts `mcp_servers`. Wired into `cli/main.py` and `hub/factory.py` + `hub/app.py`. 22 new tests in `tests/test_agents/test_mcp.py`. 971 tests passing, lint + typecheck clean. Docs updated in `docs/decisions.md` §MCP integration.
+
 **2026-05-16 (session 2):** #129 resolved — Option B (context providers as first-class primitive alongside tools). Resolution: parallel ContextProvider track mirroring ToolProvider's Phase A→D rollout. `base_context_providers` on `AgentSpec`, `context_providers` on `Skill`, parallel to `base_tools` / `tools`. Motivating case is the planning agent (#147), which needs resident project-state context (`gh_state`, `recent_decisions`) that doesn't fit the tool abstraction. The parallel-phasing model is now the canonical design; see [#129 comment](https://github.com/ColeB1722/fin-assist/issues/129) and [#147 comment](https://github.com/ColeB1722/fin-assist/issues/147).
 
 **2026-05-15:** Windows `fin start` background-detachment fixed end-to-end. The bug was a multi-layer chain — Unix-only `fcntl` in `pidfile.py` (fixed by merging the in-flight `filelock` PR), wrong `creationflags` combination (`CREATE_NEW_PROCESS_GROUP` blocked by corporate EDR), and a `pythonw.exe` swap that broke on `uv tool install`-managed installs. Final fix: `CREATE_NO_WINDOW` + `STARTUPINFO(STARTF_USESHOWWINDOW, SW_HIDE)`, no `DETACHED_PROCESS`, no `CREATE_NEW_PROCESS_GROUP`, no `pythonw.exe`. Confirmed working on both personal and corporate Windows machines. Regression tests in `tests/test_cli/test_server.py::TestSpawnServe` for both Unix and Windows branches. Full write-up in [`docs/decisions.md`](docs/decisions.md#fin-start-background-spawn-on-windows). Branch `fix/windows-detachment`, PR pending.
@@ -27,16 +29,15 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Immediate:** Continue v0.1.1 work — #84 Part 1 (MCPToolProvider) + #141 (annotation-aware policies) is now the active work.
+**Immediate:** Continue v0.1.1 work — #89 (system prompts) and #85 (hub config) are now the active picks. #123-125 (drift wiring) can proceed in parallel.
 
 **Recommended picks (in priority order):**
 
-1. **#84 Part 1 + #141** — Implement `MCPToolProvider` and annotation-aware policies together. MCP tools arrive with annotations; we should read them. Both registries already support `add_provider()` / `register()`.
-2. **#89 (system prompt)** and **#85 (hub config)** — Can proceed in parallel with MCP.
-3. **Drift-wiring issues (#123, #124, #125)** — Small refactors that prevent config drift.
-4. **Environment (#115)** — Already validated by Phase A. Can close if no further work needed.
-5. **Config composition (#138)** — #149 recommends solving this next as the concrete validation point for TOML `extends` + `[merge]` semantics. Consider for v0.1.1 if bandwidth allows; otherwise v0.1.2.
-6. **CLI grammar consolidation (#148)** — Move into v0.1.3 alongside #137 and #143.
+1. **#89 (system prompt)** and **#85 (hub config)** — Can proceed in parallel with MCP.
+2. **Drift-wiring issues (#123, #124, #125)** — Small refactors that prevent config drift.
+3. **Environment (#115)** — Already validated by Phase A. Can close if no further work needed.
+4. **Config composition (#138)** — #149 recommends solving this next as the concrete validation point for TOML `extends` + `[merge]` semantics. Consider for v0.1.1 if bandwidth allows; otherwise v0.1.2.
+5. **CLI grammar consolidation (#148)** — Move into v0.1.3 alongside #137 and #143.
 
 **Sequence:** v0.1.1 (foundations, in progress) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (visibility) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (CLI grammar) → v0.2 (sub-agents).
 

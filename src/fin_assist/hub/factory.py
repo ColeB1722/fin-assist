@@ -47,7 +47,7 @@ from fin_assist.hub.executor import Executor
 if TYPE_CHECKING:
     from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
-    from fin_assist.config.schema import ContextSettings
+    from fin_assist.config.schema import ContextSettings, MCPServerConfig
     from fin_assist.hub.context_store import ContextStore
 
 logger = logging.getLogger(__name__)
@@ -67,9 +67,12 @@ class AgentFactory:
         context_store: ContextStore,
         tool_registry: ToolRegistry | None = None,
         context_settings: ContextSettings | None = None,
+        mcp_servers: dict[str, MCPServerConfig] | None = None,
     ) -> None:
         self._context_store = context_store
-        self._tool_registry = tool_registry or create_default_registry(context_settings)
+        self._tool_registry = tool_registry or create_default_registry(
+            context_settings, mcp_servers=mcp_servers
+        )
 
     def create_a2a_app(
         self,

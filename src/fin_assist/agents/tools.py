@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from fin_assist.config.schema import ContextSettings
+    from fin_assist.config.schema import ContextSettings, MCPServerConfig
 
 
 @dataclass
@@ -214,6 +214,7 @@ class ToolRegistry:
 
 def create_default_registry(
     context_settings: ContextSettings | None = None,
+    mcp_servers: dict[str, MCPServerConfig] | None = None,
 ) -> ToolRegistry:
     """Create a ``ToolRegistry`` pre-loaded with built-in context tools.
 
@@ -223,9 +224,20 @@ def create_default_registry(
 
     ``context_settings`` is forwarded to provider constructors so tool
     callables respect the same limits as the user-driven context path.
+
+    ``mcp_servers`` is an optional mapping of server name to
+    ``MCPServerConfig``.  Each enabled server gets an ``MCPToolProvider``
+    that connects eagerly and registers its tools with namespaced names
+    (``mcp.<server>.<<tool>``).
     """
     registry = ToolRegistry()
     registry.add_provider(BuiltinToolProvider(context_settings=context_settings))
+    if mcp_servers:
+        from fin_assist.agents.mcp import MCPToolProvider
+
+        for name, cfg in mcp_servers.items():
+            if cfg.enabled:
+                registry.add_provider(MCPToolProvider(name, cfg))
     return registry
 
 

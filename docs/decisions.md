@@ -54,6 +54,21 @@ Decisions deferred until the relevant work picks them up.
 | gRPC transport | Open — deferred | A2A protocol supports gRPC; a2a-sdk v1.0 supports it; not yet used by fin-assist |
 | Non-blocking agents | Open | `SendMessage` with `blocking: false`; client-side polling not yet wired |
 | Deep evals criteria | Open | Must/must-not/should per agent, LLM-as-judge default — designed when eval harness is built (v0.3) |
+| MCP discovery caching | Deferred to v0.1.2 — [#84](https://github.com/ColeB1722/fin-assist/issues/84) | v0.1.1 ships eager connect with no caching. v0.1.2 adds 60s TTL + `listChanged` invalidation. See §MCP integration below. |
+
+## MCP integration
+
+**ToolDefinition carries only `approval_policy`.** Source-specific metadata (MCP `ToolAnnotations`, future file-based `@tool` decorators) is translated by the provider during `discover()` into the platform's `ApprovalPolicy` type. There is no `annotations` field on `ToolDefinition`.
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Dependency | `mcp>=1.26.0` in `pyproject.toml` dependencies (not extra) | Direct dependency; needed at runtime for stdio/SSE client sessions |
+| Namespacing | `mcp.<server>.<<tool>` with dot-safe identifiers | Collision on full name = startup error; optional `alias` in config |
+| Discovery | Eager connect at startup (`discover()` triggers `_connect()`) | Reliability > responsiveness; session stays alive for tool calls |
+| Approval mapping (#141) | `readOnlyHint=true` → `never`; `destructiveHint=true` → `always`; no annotations → `always` | Conservative defaults match MCP spec; agent-level `tool_policies` still override |
+| Caching | None in v0.1.1 | Ecosystem consensus is that discovery caching is standard, but v0.1.1 defers to keep change focused. See open questions table above. |
+| Config schema | `[mcp.servers.<name>]` with `transport`, `command`/`args`, `url`, `alias`, `enabled`, `env`, `timeout`, `headers` | Covers stdio + SSE; forward-compat with auth headers |
+| Timeout | 30s default per `tools/call`, per-server configurable | Ecosystem consensus (OpenAI SDK, MCP spec RFC #1492); `asyncio.timeout()` implementation |
 
 ## External agent federation
 
