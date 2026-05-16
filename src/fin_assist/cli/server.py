@@ -201,14 +201,24 @@ def _spawn_serve(
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
 
     with open(log_path, "a", buffering=1) as stderr_file:  # noqa: SIM115
-        proc = subprocess.Popen(
-            args,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=stderr_file,
-            env=env,
-            start_new_session=True,
-        )
+        if sys.platform == "win32":
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                env=env,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            proc = subprocess.Popen(
+                args,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                env=env,
+                start_new_session=True,
+            )
 
     return proc
 
