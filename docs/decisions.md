@@ -165,3 +165,17 @@ This is the well-known "[required status check deadlock](https://docs.github.com
 **Ruleset update:** the `main` ruleset's required checks were changed from `[format, lint, test]` to `[ci-required]`.  Future required checks should be added by listing them in `ci-required.needs`, not by adding them to the ruleset.  The ruleset is now agnostic to the workflow's internal job structure — one less coupling point between repo settings (managed via the GitHub API/UI) and code (managed via PRs).
 
 **When adding a new job to `ci.yml`:** add it to `ci-required.needs`.  No other CI plumbing changes required.
+
+### Selective execution (follow-up, 2026-05-17)
+
+PR #159 deferred selective execution with the line *"adding the sentinel makes it safe to reintroduce path-conditional jobs later."*  PR #161 surfaced that "later" — a handoff-only PR ran the full ~6–9 min suite (plus a Windows VM), which is the predictable friction of dropping `paths-ignore` wholesale.
+
+**Approach:** the `dorny/paths-filter` Pattern B from the [costops.dev writeup](https://costops.dev/guides/docs-changes-trigger-full-ci) and [dorny/paths-filter's README](https://github.com/dorny/paths-filter).  A small `changes` job runs on every PR and emits a `code` boolean; the expensive jobs (`format`, `lint`, `typecheck`, `test`, `test-windows`) gate on `if: needs.changes.outputs.code == 'true'`.  When the PR only touched markdown/docs, all five skip — and skipped jobs report success for required-check purposes ([GitHub docs](https://docs.github.com/en/actions/how-tos/managing-workflow-runs-and-deployments/managing-workflow-runs/skipping-workflow-runs)).  The `ci-required` sentinel still gates the merge; the deadlock from before remains impossible because the *workflow itself* always runs.
+
+**Filter design:** uses `predicate-quantifier: 'every'` with a positive `**` pattern plus negations for prose-only paths (`**.md`, `docs/**`, `.github/ISSUE_TEMPLATE/**`, `.github/PULL_REQUEST_TEMPLATE.md`).  Everything else — lockfiles, `pyproject.toml`, `justfile`, `flake.*`, `devenv.*`, `.github/workflows/**` — counts as code so environment and CI changes still exercise the full suite.  The `every` quantifier is the [recommended workaround](https://github.com/dorny/paths-filter/issues/184) for picomatch's known bugs with complex negation extglobs.
+
+**Why not workflow-level `paths-ignore`:** would re-create the exact deadlock PR #159 fixed.  Workflow-level filtering = skipped workflow = pending check = unmergeable.  Job-level `if:` filtering is the only pattern that's both selective *and* compatible with required checks.
+
+**Why not commit-message `[skip ci]`:** same deadlock, plus manual.
+
+**When adjusting the filter:** edit the `filters.code` block in `.github/workflows/ci.yml`.  If a new top-level path is added that should *not* run CI when changed alone (e.g. a future `RFCs/` directory), add a negation line.  When in doubt, leave it counting as code — under-running is worse than over-running.

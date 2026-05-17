@@ -358,6 +358,14 @@ phase = "experimental"
 
 ## Recent work
 
+### 2026-05-17 — CI selective execution on doc-only PRs
+
+Followed up on the "later" that PR #159's decisions.md explicitly anticipated. PR #161 (a handoff-only update) had spun the full suite (`format` + `lint` + `typecheck` + `test` + `test-windows`, ~6–9 min cached + a Windows VM) and the friction was real for in-between merges. Researched 2025 patterns ([costops.dev](https://costops.dev/guides/docs-changes-trigger-full-ci), [dorny/paths-filter](https://github.com/dorny/paths-filter)) and confirmed there's exactly one viable pattern that's both selective *and* compatible with required checks: job-level `if:` gating driven by `dorny/paths-filter`.
+
+**Why not just move `handoff.md` to `docs/`:** doesn't solve the problem — there's no `paths-ignore` to match against (PR #159 deliberately removed it). Also flattens the deliberate signal that `handoff.md` is rolling-context vs. the forever-docs in `docs/`. AGENTS.md § "Doc surfaces" makes this distinction load-bearing.
+
+**Implementation:** added a `changes` job to `ci.yml` that runs `dorny/paths-filter@v4` with `predicate-quantifier: 'every'` and a `**` + negation filter. The five expensive jobs gate on `needs.changes.outputs.code == 'true'`. Doc-only PRs skip them; the `ci-required` sentinel still aggregates and reports success per GitHub's skipped-job semantics. Lockfiles, `pyproject.toml`, `justfile`, `flake.*`, `devenv.*`, and `.github/workflows/**` deliberately count as "code" so environment/CI changes still exercise the full suite. Full rationale in [`docs/decisions.md` § CI required checks → Selective execution](docs/decisions.md#ci-required-checks).
+
 ### 2026-05-15 — Windows `fin start` background detachment fixed
 
 The original 10s-timeout failure on a corporate-EDR Windows machine turned out to be three stacked bugs:
