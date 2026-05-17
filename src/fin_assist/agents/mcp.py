@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING, Any
 
 from mcp.client.session import ClientSession
+from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import CallToolResult, TextContent
 from mcp.types import Tool as MCPTool
 
@@ -38,6 +41,11 @@ from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition
 
 if TYPE_CHECKING:
     from fin_assist.config.schema import MCPServerConfig
+
+# Transport context managers from the MCP SDK yield a (read, write) stream
+# pair on __aenter__.  The SDK does not export a public alias for this shape,
+# so we name it locally for readability and proper typing of ``_cm``.
+_MCPTransportCM = AbstractAsyncContextManager[tuple[Any, Any]]
 
 
 def _run_async(coro: Any) -> Any:
@@ -114,7 +122,7 @@ class MCPToolProvider:
     def __init__(self, server_name: str, server_config: MCPServerConfig) -> None:
         self._server_name = server_name
         self._config = server_config
-        self._cm: Any | None = None
+        self._cm: _MCPTransportCM | None = None
         self._session: ClientSession | None = None
         self._tools: list[ToolDefinition] = []
 
@@ -144,8 +152,6 @@ class MCPToolProvider:
             return
 
         if self._config.transport == "stdio":
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-
             if self._config.command is None:
                 raise ValueError(
                     f"MCP server {self._server_name!r}: stdio transport requires `command`"
@@ -157,8 +163,6 @@ class MCPToolProvider:
             )
             self._cm = stdio_client(params)
         else:  # sse
-            from mcp.client.sse import sse_client
-
             if self._config.url is None:
                 raise ValueError(f"MCP server {self._server_name!r}: sse transport requires `url`")
             self._cm = sse_client(

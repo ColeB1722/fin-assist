@@ -110,7 +110,7 @@ class TestMCPToolProviderDiscovery:
         )
         provider = MCPToolProvider("memory", config)
 
-        with patch("mcp.client.stdio.stdio_client", return_value=cm):
+        with patch("fin_assist.agents.mcp.stdio_client", return_value=cm):
             with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
                 session = MagicMock()
                 session.initialize = AsyncMock()
@@ -133,7 +133,7 @@ class TestMCPToolProviderDiscovery:
         )
         provider = MCPToolProvider("github", config)
 
-        with patch("mcp.client.sse.sse_client", return_value=cm):
+        with patch("fin_assist.agents.mcp.sse_client", return_value=cm):
             with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
                 session = MagicMock()
                 session.initialize = AsyncMock()
@@ -162,7 +162,7 @@ class TestMCPToolProviderDiscovery:
         tool.inputSchema = {"type": "object"}
         tool.annotations = MagicMock(readOnlyHint=True, destructiveHint=False)
 
-        with patch("mcp.client.stdio.stdio_client", return_value=cm):
+        with patch("fin_assist.agents.mcp.stdio_client", return_value=cm):
             with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
                 session = MagicMock()
                 session.initialize = AsyncMock()
@@ -194,7 +194,7 @@ class TestMCPToolProviderDiscovery:
         )
         provider = MCPToolProvider("memory", config)
 
-        with patch("mcp.client.stdio.stdio_client", return_value=cm):
+        with patch("fin_assist.agents.mcp.stdio_client", return_value=cm):
             with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
                 session = MagicMock()
                 session.initialize = AsyncMock()
@@ -219,7 +219,7 @@ class TestMCPToolProviderDiscovery:
         )
         provider = MCPToolProvider("memory", config)
 
-        with patch("mcp.client.stdio.stdio_client", return_value=cm):
+        with patch("fin_assist.agents.mcp.stdio_client", return_value=cm):
             with patch("fin_assist.agents.mcp.ClientSession") as MockSession:
                 session = MagicMock()
                 session.initialize = AsyncMock(side_effect=RuntimeError("init boom"))

@@ -303,7 +303,7 @@ class BuiltinToolProvider:
                     mode="always",
                     description=(
                         "Git commands require approval "
-                        "(per-subcommand approval planned in Skills API)"
+                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
                     ),
                 ),
             ),
@@ -331,7 +331,7 @@ class BuiltinToolProvider:
                     mode="always",
                     description=(
                         "GitHub CLI commands require approval "
-                        "(per-subcommand approval planned in Skills API)"
+                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
                     ),
                 ),
             ),

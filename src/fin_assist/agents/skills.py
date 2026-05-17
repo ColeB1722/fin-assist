@@ -67,26 +67,27 @@ class SkillLoader:
         self._tool_registry = tool_registry
 
     def load_from_config(self, name: str, config: SkillConfig) -> SkillConfig:
-        """Resolve a ``SkillConfig`` from config, ensuring ``name`` is set."""
-        # Create a copy with name populated (SkillConfig is immutable via pydantic)
-        return SkillConfig(
-            name=name,
-            description=config.description,
-            tools=config.tools,
-            prompt_template=config.prompt_template,
-            entry_prompt=config.entry_prompt,
-            context=config.context,
-            serving_modes=config.serving_modes,
-        )
+        """Stamp a ``SkillConfig`` with its ``name`` from the parent dict key.
+
+        After the type collapse in #142, ``SkillConfig`` is both the on-disk
+        config shape and the runtime representation — there is no
+        transformation to perform here.  The only thing this method does is
+        propagate the ``name`` (which lives as the dict *key* in
+        ``[agents.<a>.skills.<name>]``) into the value, so downstream code
+        can treat the result as self-describing.
+
+        Returns a new ``SkillConfig`` (pydantic models are immutable).
+        """
+        return config.model_copy(update={"name": name})
 
     def load_all_from_agent_config(
         self,
         skills_config: dict[str, SkillConfig],
     ) -> list[SkillConfig]:
-        """Load all skills from an agent's config.
+        """Stamp each entry of an agent's ``skills`` dict with its key as ``name``.
 
-        Returns a list of ``SkillConfig`` instances, one per entry
-        in the ``skills`` dict, with ``name`` populated.
+        See :meth:`load_from_config` — same single-purpose operation, applied
+        across the whole ``skills`` dict.
         """
         return [self.load_from_config(name, cfg) for name, cfg in skills_config.items()]
 
