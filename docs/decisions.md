@@ -141,3 +141,27 @@ We deliberately do not swap to `pythonw.exe`: the GUI-subsystem interpreter is t
 ### Regression tests
 
 `tests/test_cli/test_server.py::TestSpawnServe::test_windows_uses_hidden_console_session` asserts the exact flag combination and runs on Windows CI (`runs-on: windows-latest` in `.github/workflows/ci.yml`).  `test_unix_uses_start_new_session` asserts the Unix path stays clean.  Together they prevent silent regression of either platform's spawn semantics.
+
+## CI required checks
+
+**Date:** 2026-05-17 (PR #159)
+
+**Problem:** the `main` branch ruleset required `format`, `lint`, and `test` as status checks while `.github/workflows/ci.yml` declared `paths-ignore: [docs/**, *.md]`.  Documentation-only PRs (anything that touched only those paths) skipped the entire workflow.  Skipped workflows don't report their status — so the required checks remained perpetually pending and the PR was unmergeable.
+
+This is the well-known "[required status check deadlock](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-status-checks-to-pass-before-merging)" problem.  Surfaced when the recovery PR #159 (handoff.md doc update missed from #152) hit it.
+
+**Patterns considered:**
+
+| Pattern | Notes |
+|---|---|
+| Duplicate "skip" workflow with same job names (GitHub's old recommended fix) | Doesn't scale past one required check; GitHub removed it from their own docs; creates double-execution edge cases |
+| Drop `paths-ignore` entirely | Simplest. ~6–9 min cached CI per doc PR is acceptable for this project's size. No conditional logic. Works without aggregation jobs. |
+| Single aggregation "sentinel" job using `if: contains(needs.*.result, 'failure')` | The "skipped = success" pattern.  One required check (`ci-required`) that fails only when an upstream job fails or is cancelled.  When upstream jobs run and succeed, the sentinel is skipped (because of its `if:` guard) and reports success.  When upstream jobs would be skipped (path filtering, etc.), the sentinel is also skipped and reports success.  Recommended by [DevOps Directive's 2025 writeup](https://devopsdirective.com/posts/2025/08/github-actions-required-checks-for-conditional-jobs/) and the consensus on [github/docs#21865](https://github.com/github/docs/issues/21865). |
+
+**Choice:** both — drop `paths-ignore` *and* add the `ci-required` sentinel.
+
+`paths-ignore` was solving a problem (don't waste CI minutes on doc PRs) that is real but cheap at this project's scale.  Removing it makes the immediate deadlock impossible.  Adding the sentinel makes it safe to *reintroduce* path-conditional jobs later (e.g., when `test-windows` runtime becomes painful and we want to skip it on doc-only changes) without re-creating the deadlock.
+
+**Ruleset update:** the `main` ruleset's required checks were changed from `[format, lint, test]` to `[ci-required]`.  Future required checks should be added by listing them in `ci-required.needs`, not by adding them to the ruleset.  The ruleset is now agnostic to the workflow's internal job structure — one less coupling point between repo settings (managed via the GitHub API/UI) and code (managed via PRs).
+
+**When adding a new job to `ci.yml`:** add it to `ci-required.needs`.  No other CI plumbing changes required.
