@@ -15,7 +15,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
-**2026-05-17 (in-flight strategic decision):** [`docs/platform-stance.md`](docs/platform-stance.md) is open as an experimental "in-progress decision" doc surface (new row in `AGENTS.md` § Context Strategy). It frames whether fin-hub should expose additional protocol surfaces (ACP-server, ACP-client, MCP-server) given the ecosystem state in May 2026 (A2A v1.0 + 150 orgs, MCP broadly adopted, ACP shipping in Zed/JetBrains/Neovim/VS Code), and how that interacts with the long-pending workspace split (#128 ↔ #132 disagreement) and the CLI's stance (product vs. reference client). Skeleton + Context + Ecosystem committed; decision frame and open questions intentionally not yet populated to avoid AI-assisted framing fossilizing before the human reasons through it. Resume there next session.
+**2026-05-17 (in-flight strategic decision — Q1–Q4 resolved):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 and §4 are now populated. The platform stance is "harmonize, don't decompose": **the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a minimal dev REPL; the #128 workspace split is deferred indefinitely** (#132's BFF framing rejected on the merits). A2A / MCP / ACP are sibling protocols at different layers (agent↔agent, agent↔tool, client↔agent) — they don't substitute for one another. Three follow-on questions remain open (Q5 sequencing of new surfaces, Q6 v0.1.3 fate, Q7 dev-REPL feature line), plus a deferred issue-hygiene pass against #128 / #132 / #137 / #146.
 
 **2026-05-17 (take-stock pass — sessions 4–7 closed out):** PR #152 (MCP + tooling context overhaul) and PR #159 (CI required-check deadlock fix) are both on `main`. Foundation hardening is materially complete; v0.1.1 milestone went from 9 → 7 open after a hygiene pass: closed four shipped-but-still-open issues (#141, #142, #115, #129) and milestoned #156 into v0.1.1, #158 into v0.1.2.
 
@@ -36,7 +36,13 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**If continuing the platform-stance decision:** open [`docs/platform-stance.md`](docs/platform-stance.md), populate §3 (the decision frame) with the four questions framed as options-not-recommendations, then populate §4 (open questions, decomposed) one bite at a time. Working notes at §6 flag three meta-questions to revisit when §3 is filled. This decision blocks the urgency assessment of v0.1.3 (#137 CLI grammar) — depending on outcome, the CLI may downgrade from "product" to "reference client," dropping v0.1.3 priority.
+**If continuing the platform-stance decision:** open [`docs/platform-stance.md`](docs/platform-stance.md). §3/§4 Q1–Q4 are resolved; pick one of the three open questions to bite off:
+
+- **Q5 — surface sequencing.** Of MCP-server / ACP-server / ACP-client, which lands first? Each has a different cost profile and motivating consumer. Enumerate options, frame trade-offs, resolve.
+- **Q6 — v0.1.3 fate.** With CLI demoted to dev tool, #137 (CLI grammar v2) loses most of its scope. Does v0.1.3 ship as-is with reduced #137, fold into v0.1.2, or restructure around Q5?
+- **Q7 — dev-REPL feature line.** Define what "minimal dev REPL" excludes so the REPL doesn't re-grow into a product surface by drift.
+
+Once Q5–Q7 land, the **issue-hygiene pass** is the natural follow-up — comment on #128 (deferred indefinitely, not "until forcing function"), #132 (BFF rejected on the merits), #146 (pkg manager direction confirmed), and re-scope or close #137. After that, durable claims from `platform-stance.md` migrate into `docs/architecture.md` (Deliverables: Hub vs CLI section) and `docs/decisions.md`, and the decision doc compresses to a one-paragraph pointer or is deleted.
 
 **If continuing v0.1.1 implementation work:**
 

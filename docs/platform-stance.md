@@ -152,32 +152,133 @@ Surveyed 2026-05-17 via web search. Key references:
 
 ## 3. The decision frame
 
-*This section will be filled in subsequent commits. It contains the questions, not the answers.*
+The four questions below were framed and resolved together in the 2026-05-17 working session. Each carries its rationale inline; the full decomposed treatment with options-considered is in §4.
 
-Placeholder structure (to be elaborated next):
+### Question A — Integration direction
 
-- **Question A: Integration direction.** Is fin primarily infrastructure that other systems integrate into, or an orchestrator that composes other systems? (Both, in some sequence — what sequence?)
-- **Question B: Protocol surfaces to expose.** Which of ACP-server, MCP-server, ACP-client, others do we add, in what order?
-- **Question C: CLI stance.** Reference client (dev tool), first-class product (status quo), or removed entirely?
-- **Question D: Workspace split timing.** Does the answer to A/B/C make #128 more urgent, less urgent, or unchanged?
+> Is fin primarily infrastructure that other systems integrate into, or an orchestrator that composes other systems?
+
+**Resolved (2026-05-17): both, with no sequencing implied.** The framing "(a) vs (b)" turned out to be a false dichotomy when mapped onto concrete protocol surfaces. The hub does both simultaneously because each direction maps to a different protocol *role*, not a different deliverable. Inbound surfaces (A2A-server, MCP-server, ACP-server) are how systems integrate fin into themselves. Outbound surfaces (MCP-client today; A2A-client and ACP-client later) are how fin composes external systems. These are independent vectors that can grow at their own cadence.
+
+The platform stance that drove this decision: *"I want a system that I can, with a reasonable amount of work, integrate with arbitrary systems in order to make that system agent-enhanced."* Both directions serve that goal — inbound makes fin reachable; outbound makes fin compositional.
+
+### Question B — Protocol surfaces to expose
+
+> Which of ACP-server, MCP-server, ACP-client, others do we add, in what order?
+
+**Resolved (2026-05-17): three inbound, three outbound, all on the hub.**
+
+| Direction | Surface | Status | Consumers / peers |
+|---|---|---|---|
+| Inbound | A2A-server | Existing | CLI dev-REPL; future A2A peers |
+| Inbound | **MCP-server** | New | Claude Desktop, Claude Code, opencode-as-host, Cursor — any MCP host |
+| Inbound | **ACP-server** | New | Zed, JetBrains, Neovim, VS Code (via vscode-acp) |
+| Outbound | MCP-client | Existing (v0.1.1 / #84) | Configured MCP tool servers |
+| Outbound | **ACP-client** | New | cursor-agent, claude-acp, gemini-cli, goose |
+| Outbound | A2A-client | v0.3 (federation) | Federated A2A agents |
+
+A2A, MCP, and ACP are **sibling protocols at different layers, not substitutes**. A2A is shaped for agent-to-agent (task lifecycle, artifacts, signed identity); MCP is shaped for agent-to-tool (JSON-Schema tool defs, resources, prompts); ACP is shaped for editor-to-agent (streaming text/edit deltas, permission round-trips, MCP-server forwarding from client to agent). Both inbound *and* outbound ACP are bundled into one architectural commitment because the cost is largely shared (same protocol library, same session model) and the outbound side is what makes "compose arbitrary ACP agents into fin" tractable without forcing every external agent to grow an A2A face.
+
+Sequencing of when each *new* surface lands is a separate, downstream question (see §4 Q5). The architectural commitment is to the destination shape.
+
+### Question C — CLI stance
+
+> Reference client (dev tool), first-class product (status quo), or removed entirely?
+
+**Resolved (2026-05-17): dev tool only.** The CLI's scope contracts to two responsibilities:
+
+1. **Hub system operations** — `start` / `stop` / `status` / `health`, agent configuration, credential management (`/connect`), and eventually `fin pkg` (#146) for agent installation.
+2. **Simplified REPL for development QoL** — a minimal test harness to verify a newly configured agent responds, exercise an MCP server registration, or sanity-check a skill. Not an end-user product surface.
+
+The conversational REPL does not grow into a fully-featured chat client. End-user conversational use happens through the inbound surfaces — MCP-host clients, ACP-speaking editors, future A2A clients. This collapses the previous "two deliverables" framing in `architecture.md` into one deliverable (the hub) with three inbound integration surfaces, of which the CLI's dev-REPL is just one A2A consumer among many.
+
+The custom REST routes already slated for removal in v0.1.3 (#143) align with this stance — the dev-REPL talks A2A like every other inbound consumer; there are no CLI-shaped special cases on the hub.
+
+### Question D — Workspace split timing
+
+> Does the answer to A/B/C make #128 more urgent, less urgent, or unchanged?
+
+**Resolved (2026-05-17): less urgent — deferred indefinitely.** The #128 ↔ #132 disagreement is resolved in favor of #128's "no decomposition without a forcing function" position, with the added clarification that **no forcing function is currently expected to fire**. The reasoning that drove #132 — "a second client forces the hub API to become client-agnostic" — no longer applies, because the strategy is not to grow a second *client* in the CLI sense. The CLI is contracting, not multiplying. New inbound consumers (MCP hosts, ACP editors) are not "clients of the hub API" in the BFF sense; they are *protocol peers* that interact through standardized inbound surfaces. The protocol *is* the boundary; no BFF layer is needed.
+
+The hub-CLI import-linter firewall stays in CI for hygiene, but the workspace split is no longer on any horizon. #128 should reflect this resolution; #132's BFF framing is rejected on the merits, not just deferred. Issue updates are a follow-on session (see §4 Q6).
 
 ---
 
 ## 4. Open questions, decomposed
 
-*To be populated as we work through the decision frame. Each question gets an internal ID, a one-paragraph framing, options if applicable, and a resolution line once it lands.*
+Q1–Q4 map one-to-one onto §3 Questions A–D and carry the options that were considered, including the ones not chosen, so the reasoning trail survives. Q5+ are the downstream questions surfaced by the resolutions and remain genuinely open.
 
-Question format:
+### Q1: Integration direction (→ §3 Question A)
 
-```
-### Q<n>: <short name>
+**Framing:** Whether fin is "infrastructure others integrate into" (inbound-shaped) or "orchestrator that composes others" (outbound-shaped), or both. The (a)/(b) framing surfaced in the initial conversation implied a sequencing question.
+**Depends on:** none.
+**Blocks:** Q2, Q3.
+**Options considered:**
+- *(a) Inbound-first.* Treat fin as infrastructure; outbound composition deferred.
+- *(b) Outbound-first.* Treat fin as orchestrator; inbound surfaces only via existing A2A.
+- **(c) Both, no sequencing.** Inbound and outbound are independent protocol roles, not competing product directions. Each surface lands when its motivating consumer or peer exists.
+**Resolution:** resolved 2026-05-17 — option (c). The dichotomy dissolved once the question was mapped to protocol roles. Rationale in §3 Question A.
 
-**Framing:** <1-2 paragraphs on what the question is>
-**Depends on:** <other Q-IDs that block this one>
-**Blocks:** <other Q-IDs this one blocks>
-**Options under consideration:** <enumerated>
-**Resolution:** <pending / resolved <date> — see <pointer>>
-```
+### Q2: Protocol surfaces (→ §3 Question B)
+
+**Framing:** Of the surfaces fin does not yet speak (MCP-server, ACP-server, ACP-client), which to commit to architecturally. A2A-server and MCP-client are already shipped; A2A-client is committed via v0.3 federation.
+**Depends on:** Q1.
+**Blocks:** Q3, Q5.
+**Options considered:**
+- *Minimal: ACP-server only.* Smallest new surface; covers the editor integration use case.
+- *ACP-server + MCP-server.* Reach editor ecosystem and MCP-host ecosystem.
+- **ACP-server + MCP-server + ACP-client.** Both ACP directions bundled; full protocol coverage in both directions. *Chosen.*
+- *All of the above + Pi compatibility surface.* Adopting an agent-framework opinion (Pi/Strands/LangGraph) was considered and rejected — it inverts which side of the relationship fin is on (fin becomes runtime under their definition layer).
+**Resolution:** resolved 2026-05-17 — three new surfaces (MCP-server, ACP-server, ACP-client) committed architecturally. Bundling ACP-server and ACP-client into one design decision because the protocol library and session model are shared. Rationale in §3 Question B.
+
+### Q3: CLI stance (→ §3 Question C)
+
+**Framing:** Whether the CLI is a first-class end-user product, a reference client for the hub, or removed entirely. Affects the urgency of v0.1.3 CLI grammar work (#137).
+**Depends on:** Q1, Q2.
+**Blocks:** Q6, Q7.
+**Options considered:**
+- *First-class product (status quo).* CLI grows into a full TUI-shaped conversational client over time. Multiple clients planned (Telegram, etc.).
+- **Dev tool only.** CLI does hub system ops + minimal test-REPL; conversational use happens through inbound MCP-server / ACP-server surfaces. *Chosen.*
+- *Reference client only.* Even narrower — only what's needed to demonstrate the protocol. Rejected because hub system ops (start/stop, `/connect`, `fin pkg`) need a home and the CLI is that home.
+- *Removed entirely.* Rejected — hub system ops still need a CLI surface and there's no compelling reason to push that to a separate binary.
+**Resolution:** resolved 2026-05-17 — dev tool. Rationale in §3 Question C. Implications for v0.1.3 in Q6.
+
+### Q4: Workspace split timing (→ §3 Question D)
+
+**Framing:** Whether #128's deferred workspace split (`fin-protocol` + `fin-hub` + `fin-cli`) becomes more urgent, less urgent, or unchanged. The unresolved #128 ↔ #132 disagreement is also in scope.
+**Depends on:** Q1, Q2, Q3.
+**Blocks:** Q6.
+**Options considered:**
+- *More urgent (#132's position).* New protocol surfaces are "new clients" that force the boundary, so split now.
+- **Less urgent — deferred indefinitely (#128's position, reinforced).** New surfaces are protocol peers, not BFF clients. The protocol *is* the boundary. *Chosen.*
+- *Unchanged.* Rejected — the resolution should be explicit one way or the other.
+**Resolution:** resolved 2026-05-17 — less urgent, deferred indefinitely. #132's BFF framing is rejected on the merits. Hub-CLI import-linter firewall stays for hygiene. Rationale in §3 Question D.
+
+---
+
+### Q5: Surface sequencing — which new protocol surface ships first?
+
+**Framing:** Q2 commits to three new surfaces (MCP-server, ACP-server, ACP-client) but not the order. Each has a different cost profile, a different motivating consumer, and a different relationship to in-flight v0.1.x / v0.2 / v0.3 milestone work. The sequencing decision determines what (if any) new milestone work attaches and how the v0.1.x → v0.2 → v0.3 trajectory reshuffles.
+**Depends on:** Q2.
+**Blocks:** Q6.
+**Options under consideration:** to be enumerated in a follow-up session. Candidates include: ACP-server first (highest user-facing visibility, ties into Zed/JetBrains/Neovim usage); MCP-server first (smallest surface — fin already speaks MCP-client, the server side reuses much of the same library); ACP-client first (enables composing existing ACP agents into fin workflows without waiting on inbound consumers).
+**Resolution:** pending.
+
+### Q6: v0.1.3 fate — what does "CLI grammar v2" mean if the CLI is a dev tool?
+
+**Framing:** v0.1.3 currently contains #137 (CLI grammar v2), #143 (dead-code removal from hub), and #154 (async cascade). Q3's resolution (CLI as dev tool only) significantly drops the urgency of #137 — there's much less surface area to grammar-define. #143 still applies (dead-code removal from hub is independent of CLI shape). #154 also independent. The question is whether v0.1.3 should ship as-is with reduced #137 scope, fold into v0.1.2, or be reorganized around the new surface work from Q5.
+**Depends on:** Q3, Q5.
+**Blocks:** issue hygiene pass.
+**Options under consideration:** to be enumerated in a follow-up session.
+**Resolution:** pending.
+
+### Q7: What "dev REPL" actually means in scope
+
+**Framing:** Q3 resolves the CLI to "hub system ops + dev REPL for testing agent configurations" but doesn't define the dev-REPL's feature line. Current REPL has `@file:` / `@git:` / `@history:` / `@env:` completion, prompt-toolkit session, Rich rendering, slash-command system. Some of that is "essential to verifying an agent works" (basic A2A round-trip, slash commands like `/connect`, `/agents`), some is "polish that arguably belongs in a real client" (multi-line edit, completion menus). A clear feature line keeps the dev-REPL from re-acquiring "product" characteristics by drift.
+**Depends on:** Q3.
+**Blocks:** none directly, but informs which CLI improvements are worth filing as issues.
+**Options under consideration:** to be enumerated in a follow-up session.
+**Resolution:** pending.
 
 ---
 
@@ -203,12 +304,31 @@ Filed 2026-05-16 as durable design thinking, deferred until v0.2 / v0.3 ship. Vi
 
 Dated scratch space. Most recent entries on top.
 
+### 2026-05-17 (second session) — §3 and §4 resolved (Q1–Q4)
+
+Worked through the decision frame in one session. The shape that emerged is "harmonize, don't decompose": rather than splitting the repo or growing a BFF layer, fold the CLI's role inward (dev tool only) and grow outward through standardized protocol surfaces on the hub. Three new surfaces committed (MCP-server, ACP-server, ACP-client) plus the existing A2A-server / MCP-client / planned A2A-client.
+
+Key clarifications that landed during the session:
+
+- The (a)/(b) integration-direction framing dissolved when mapped to protocol roles — inbound vs outbound are independent vectors, not a sequencing decision.
+- A2A, MCP, ACP are sibling protocols at different layers (agent↔agent, agent↔tool, client↔agent), not substitutes. The "do they overlap?" intuition was checked explicitly and the answer is no — each shapes a different consumer's mental model.
+- ACP-client is bundled with ACP-server architecturally because the cost is largely shared and ACP-client is what makes "compose external ACP agents into fin" tractable without forcing each external agent to grow an A2A face.
+- #132's BFF framing is rejected on the merits, not just deferred. The protocol *is* the boundary; new inbound consumers are protocol peers, not BFF clients.
+
+Three meta-questions from session 1 are now resolved or absorbed:
+
+- Question D placement: kept in this doc as Q4 because the resolution is genuinely architectural; the *update to #128* is the follow-up action (Q6 / issue hygiene pass), not the resolution itself.
+- (a)/(b) framing: thrown out, replaced by inbound/outbound protocol-role decomposition.
+- ACP-server vs ACP-client: treated as separate options under Q2 with the explicit decision to bundle them architecturally despite being separable.
+
+Surfaced for next session (Q5/Q6/Q7):
+
+- **Sequencing.** Which new surface ships first? MCP-server has the smallest cost (reuses MCP library already in tree); ACP-server has the highest user-facing visibility; ACP-client unlocks composition of existing ACP agents. No commitment yet.
+- **v0.1.3 fate.** With CLI demoted to dev tool, #137 (CLI grammar v2) loses most of its scope. #143 and #154 are independent. Whether v0.1.3 ships as-is, folds into v0.1.2, or restructures around Q5 is open.
+- **Dev-REPL feature line.** Q3 doesn't define what "minimal dev REPL" excludes. Worth pinning down so the REPL doesn't re-grow into a product surface by drift.
+
+Issue hygiene deferred to a separate session per the framing-vs-resolution discipline in `AGENTS.md`. When that session happens, candidates are: #128 (workspace split deferred indefinitely, not "until forcing function"), #132 (BFF rejected on the merits; ACP integration happens via hub-as-server), #146 (pkg manager direction confirmed), #137 (likely de-scope or close), and possibly a new issue for the dev-REPL scope (Q7).
+
 ### 2026-05-17 — doc seeded
 
 First commit: skeleton, context, ecosystem snapshot. Decision frame and open questions stubbed but not populated. Next session: populate §3 with the actual questions and their framings (intentionally deferred to keep AI-assisted framing from fossilizing before the human reasons through it).
-
-Three meta-questions to revisit when §3 is being filled in:
-
-- Should Question D (workspace split timing) be part of this doc at all, or does it belong as a comment on #128 once A/B/C resolve? Lean: keep it here as the *integration point* with the existing record, but make it explicit that the *resolution* updates #128 rather than living in this doc.
-- The (a)/(b) integration-direction framing surfaced in conversation may not be the right axis once we write out the actual options. It came from a single back-and-forth; we should be willing to throw it out if a better decomposition emerges.
-- ACP-server vs ACP-client are described together in §1.2 but they are independent decisions with different cost profiles. §3 should treat them as separate options, not bundled.
