@@ -19,11 +19,49 @@ concurrency:
 # semantics GitHub uses for required checks. This avoids the well-known
 # `paths-ignore` deadlock (workflow skipped = check never reports = PR
 # unmergeable) without needing duplicate "skip" workflows or per-job path
-# filtering. When new jobs are added below, add them to `ci-required.needs`
-# and they're automatically covered.
+# filtering at the workflow level.  When new jobs are added below, add them
+# to `ci-required.needs` and they're automatically covered.
+#
+# Selective execution (see docs/decisions.md § CI required checks):
+#
+# A `changes` job runs `dorny/paths-filter` on every PR to detect whether any
+# code (i.e. anything that isn't pure docs/prose) was modified.  The expensive
+# jobs (`format`, `lint`, `typecheck`, `test`, `test-windows`) gate on that
+# output.  When a PR only touches markdown/docs, all expensive jobs skip and
+# the `ci-required` sentinel reports success per GitHub's "skipped job =
+# success for required-check purposes" rule.  This is the canonical 2025
+# pattern; see docs/decisions.md for the full rationale and the alternatives
+# considered.
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          predicate-quantifier: 'every'
+          # `code` is true when any changed file matches `**` AND none of the
+          # negation patterns match — i.e. the PR touched something that
+          # isn't pure prose.  Lockfiles, build config, justfile, devenv, and
+          # `.github/workflows/**` deliberately count as "code" so changes to
+          # the environment or CI itself still exercise the full suite.
+          filters: |
+            code:
+              - '**'
+              - '!**.md'
+              - '!docs/**'
+              - '!.github/ISSUE_TEMPLATE/**'
+              - '!.github/PULL_REQUEST_TEMPLATE.md'
+
   format:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -34,6 +72,8 @@ jobs:
       - run: nix shell nixpkgs#just nixpkgs#treefmt nixpkgs#nixfmt-rfc-style nixpkgs#ruff --command just check
 
   lint:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -49,6 +89,8 @@ jobs:
           "
 
   typecheck:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -63,6 +105,8 @@ jobs:
           "
 
   test:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -77,6 +121,8 @@ jobs:
           "
 
   test-windows:
+    needs: changes
+    if: ${{ needs.changes.outputs.code == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -89,20 +135,21 @@ jobs:
   # Single aggregation job referenced as the only required status check in the
   # `main` branch ruleset. Uses GitHub Actions' "skipped = success" semantics:
   # this job only runs (and fails) when any upstream job failed or was
-  # cancelled.  When all upstream jobs succeed (or are skipped, e.g. by path
-  # filtering in the future), this job is skipped — and skipped jobs count as
-  # success for required-check purposes.
+  # cancelled.  When all upstream jobs succeed (or are skipped — e.g. doc-only
+  # PRs where the `changes` job emits `code=false`), this job is skipped — and
+  # skipped jobs count as success for required-check purposes.
   #
   # See https://devopsdirective.com/posts/2025/08/github-actions-required-checks-for-conditional-jobs/
   # for the pattern.  Add new jobs to `needs` below as they're introduced.
   ci-required:
     runs-on: ubuntu-latest
-    needs: [format, lint, typecheck, test, test-windows]
+    needs: [changes, format, lint, typecheck, test, test-windows]
     if: ${{ cancelled() || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
       - name: Fail if any required upstream job failed or was cancelled
         run: |
           echo "::error::One or more required CI jobs failed or were cancelled."
+          echo "changes=${{ needs.changes.result }}"
           echo "format=${{ needs.format.result }}"
           echo "lint=${{ needs.lint.result }}"
           echo "typecheck=${{ needs.typecheck.result }}"
