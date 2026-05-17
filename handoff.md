@@ -15,6 +15,14 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-17 (seventh session — doc migration complete):** Durable claims from `docs/platform-stance.md` migrated to the forever-docs. The platform-stance work is fully retired; the next session resumes dev work.
+
+- **→ `docs/architecture.md`** — *Deliverables: Hub vs Client* renamed to *Deliverables: Hub vs CLI* and rewritten ("hub as the deliverable; CLI is a dev tool"). New *Inbound protocol surfaces* subsection names A2A-server (existing), MCP-server (committed, unmilestoned), ACP-server (v0.1.3, see [#162](https://github.com/ColeB1722/fin-assist/issues/162)) plus the outbound surfaces. Vision intro replaced "CLI-first, TUI-later" with "Hub as the deliverable; clients are protocol peers." Design principle #5 rewritten. Non-goal added ("CLI that grows into an end-user conversational client"). CLI entry-points section gained a forward-pointing note that the verification-only contraction is in-flight via v0.1.3 + v0.2.1.
+- **→ `docs/decisions.md`** — stale `CLI-first development` row updated to `CLI as dev tool, not product`. New `## Platform stance` section with: a header explaining the stance origin + the core verbatim quote; a table covering Q1 (integration direction), Q2 (protocol surfaces), Q3 (CLI as dev tool), Q4 (workspace split), Q5 (ACP-server first), Q7 (verification-only); a long-form `### Verification-only dev REPL — the feature line` subsection with "what stays" + "what's explicitly out" tables that name the closed/deferred issues by number (the calibration list per Q7's drift-prevention contract).
+- **→ `docs/platform-stance.md`** — compressed from 572 lines to a 13-line historical pointer. Names the migration targets, explains why it's a stub instead of a deletion (~13 issue comments still link to it), and points at `git log -p -- docs/platform-stance.md` for the full archaeology.
+
+The decision frame's working notes (§6 dated session logs for all five decision sessions + the recorded thinking on #128 / #132 / #146) are preserved in git history only.
+
 **2026-05-17 (sixth session — issue-hygiene pass complete):** All Q6 + Q7 enumerated GitHub mutations executed (~22 mutations + 3 milestone description rewrites + 1 new issue). State of the world after the pass:
 
 - **Closed:** #133 (Telegram), #134 (iOS), #132 (ACP/BFF), #67 (splash), #91 (rich tool_result), #94 (`fin do`/`prompt`), #95 (`/spec`), #97 (`--edit`). Eight issues retired as moot under Q3 + Q7.
@@ -36,7 +44,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 | v0.2.1 | 6 | Tracing maturation + #92 |
 | v0.3 | 3 | Federation + repo-as-package (unchanged, undercommitted at issue level) |
 
-**Carryover from sessions 1–5 (decision frame):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 / §4 / §6 reflect Q1–Q7. The platform stance is "harmonize, don't decompose": the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a verification-only dev REPL; the #128 workspace split is deferred indefinitely (#132's BFF framing rejected on the merits). All seven decision questions resolved 2026-05-17; the hygiene pass executed Q6's mutations with Q7's #137 disposition in hand.
+**Carryover from sessions 1–5 (decision frame, now migrated):** the platform stance is "harmonize, don't decompose" — the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a verification-only dev REPL; the #128 workspace split is deferred indefinitely (#132's BFF framing rejected on the merits). All seven decision questions resolved 2026-05-17 and now live in [`docs/decisions.md`](docs/decisions.md#platform-stance) (rationale) + [`docs/architecture.md`](docs/architecture.md#deliverables-hub-vs-cli) (architectural shape). The hygiene pass executed Q6's mutations with Q7's #137 disposition in hand.
 
 **2026-05-17 (take-stock pass — sessions 4–7 closed out):** PR #152 (MCP + tooling context overhaul) and PR #159 (CI required-check deadlock fix) are both on `main`. Foundation hardening is materially complete; v0.1.1 milestone went from 9 → 7 open after a hygiene pass: closed four shipped-but-still-open issues (#141, #142, #115, #129) and milestoned #156 into v0.1.1, #158 into v0.1.2.
 
@@ -57,22 +65,18 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Strategic decision phase + issue-hygiene pass are both complete.** Remaining phases, in order:
+**Strategic decision phase, issue-hygiene pass, *and* doc migration are all complete.** The remaining work is: (a) decide v0.1.1-vs-v0.1.3 starting point, (b) open the cohesive PR, (c) resume dev work.
 
-1. **Doc migration** — *this is the next session's job*. Move durable claims from `platform-stance.md` into the forever-docs:
-   - **→ `docs/architecture.md`** — update *Deliverables: Hub vs CLI* section to reflect "hub is the single deliverable; CLI is a dev tool"; add new **Inbound protocol surfaces** subsection naming A2A-server (existing), MCP-server (committed but unmilestoned), ACP-server (v0.1.3, see #162); name the verification-only dev REPL as one A2A consumer among many. v0.3 federation section is A2A-shaped (already correct).
-   - **→ `docs/decisions.md`** — add Q7 verification-only principle as a new decision row, with the non-exhaustive examples list as calibration ("not in scope: session switching, splash, rich tool_result rendering, `$EDITOR`, conversation polish, multi-line edit"). Also record the Q4 "protocol-peer-not-BFF" resolution if it doesn't already live there.
-   - **Compress or delete `docs/platform-stance.md`** per its lifecycle clause (the file's status header explicitly anticipates deletion-or-compression once migration completes). Prefer compression to a one-paragraph historical pointer that links to `architecture.md` / `decisions.md` so the reasoning trail in §6 working notes isn't lost — but only if the pointer earns its keep. Otherwise delete; git log preserves the full archaeology.
-   - **Repoint comments filed during hygiene pass.** ~13 issues now link to `docs/platform-stance.md` from comment bodies. After migration, sweep these to point at the new homes. Not load-bearing (the file will still resolve in git history) but worth doing for navigability if the doc gets deleted rather than compressed.
-
-2. **Decide v0.1.1-vs-v0.1.3 starting point.** Per the explicit agreement, this decision lives at the end of the doc-migration session. With concrete milestone shapes now visible (v0.1.3 has a real anchor in #162; v0.1.1 has 7 foundation issues), the trade-off is clearer than it was when deferred:
+1. **Decide v0.1.1-vs-v0.1.3 starting point.** With concrete milestone shapes now visible (v0.1.3 has a real anchor in #162; v0.1.1 has 7 foundation issues), the trade-off:
    - **v0.1.1 path** — close out foundation hardening before opening a new protocol surface. Conservative; ships the existing recommended sequence (#125 + #123 → #85 → #156 → #124 → #135 → #89, then #135 dogfooding as exit gate). Probably ~half-day to a few days of work.
    - **v0.1.3 path** — start #162 (ACP-server first cut) immediately. Aggressive; the Q5 dogfooding-as-verification argument applies now and every v0.1.1 day spent is a day Q4's protocol-peer claim stays unverified. But #162 is bigger than any single v0.1.1 issue and will benefit from foundation work landing first.
    - Tentative lean (write-up only, not a decision): finish v0.1.1 first. The cost is small, the foundation issues feed into ACP-server's verification loop (per-subcommand approval #156 directly affects the permission round-trip scope), and v0.1.1's dogfooding agent (#135) is *the* baseline that ACP-server's dogfooding builds on.
 
-3. **Resume dev work.** Either path resumes the normal SDD → TDD loop in `AGENTS.md`.
+2. **Open the cohesive PR.** Branch state: 7 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7 → hygiene-pass handoff → doc migration), all pushed. The PR is "platform stance + hygiene + migration" as one cohesive unit per the agreed plan.
 
-**Pre-merge note:** the `discussion/integration-brainstorming` branch will probably open a PR after the doc migration lands — it'll be one cohesive "platform stance + hygiene + migration" PR rather than separate PRs. Branch state currently: 5 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7), all pushed. The hygiene-pass commit lands next.
+3. **Resume dev work.** Either v0.1.1 sequence or v0.1.3 — both resume the normal SDD → TDD loop in `AGENTS.md`.
+
+**Optional follow-up (not load-bearing):** ~13 GitHub issue comments filed during the hygiene pass link to `docs/platform-stance.md`. The compressed stub resolves those links to a useful redirect (so the comments work without further action), but sweeping them to point at `decisions.md#platform-stance` / `architecture.md#inbound-protocol-surfaces` directly would be cleaner for navigation. Worth doing if it comes up naturally; not worth a dedicated session.
 
 **If continuing v0.1.1 implementation work:**
 

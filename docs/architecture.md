@@ -17,21 +17,35 @@ Developer reference for fin-assist's internals. For the user-facing pitch, see [
 
 **Protocol-native.** Built on A2A. Any A2A-compatible client can communicate with the hub. This enables future agent-to-agent workflows (e.g., SDD agent handing off to TDD agent).
 
-**CLI-first, TUI-later.** Start with a simple CLI client for fast iteration and testing, then layer on TUI and other clients. The server is the stable core; clients are interchangeable.
+**Hub as the deliverable; clients are protocol peers.** fin-assist ships one thing — the hub — and exposes it through standardized inbound protocol surfaces (A2A, MCP-server, ACP-server). Any conformant client (an editor, an MCP host, a future A2A peer) can drive the hub. The CLI is a development tool for hub system operations and a verification-only dev REPL, not an end-user product surface. See *Deliverables: Hub vs CLI* and *Inbound protocol surfaces* below.
 
-## Deliverables: Hub vs Client
+## Deliverables: Hub vs CLI
 
-fin-assist is two distinct deliverables in one repository, separated by the A2A protocol:
+fin-assist is structurally two pieces in one repository, separated by the A2A protocol — but only one of them is the **deliverable**:
 
-| Deliverable | Role | Lives in | Talks to clients via |
-|-------------|------|----------|----------------------|
-| **Agent Hub** | Platform server — hosts agents, routes A2A traffic, persists context | `src/fin_assist/hub/` | A2A (JSON-RPC over HTTP, SSE for streaming) |
-| **Platform abstractions** | Shared infra used by both products — specs, backends, tools, skills, config, context, credentials, LLM registry | `src/fin_assist/agents/`, `config/`, `context/`, `credentials/`, `llm/`, `providers.py` | n/a (internal, not a networked service) |
-| **CLI** | Client — one of N possible A2A clients; today the only one. REPL, prompt, rendering, session storage | `src/fin_assist/cli/` | n/a (it *is* the user interface) |
+| Piece | Role | Lives in | Talks to clients via |
+|-------|------|----------|----------------------|
+| **Agent Hub** | The deliverable. Platform server — hosts agents, routes traffic across inbound protocol surfaces, persists context | `src/fin_assist/hub/` | A2A (JSON-RPC + SSE) today; MCP-server and ACP-server committed |
+| **Platform abstractions** | Shared infra consumed by hub + CLI — specs, backends, tools, skills, config, context, credentials, LLM registry | `src/fin_assist/agents/`, `config/`, `context/`, `credentials/`, `llm/`, `providers.py` | n/a (internal, not a networked service) |
+| **CLI** | Development tool — hub system operations (`start`/`stop`/`status`/`/connect`/`fin pkg`) plus a verification-only dev REPL. One A2A consumer among many; not an end-user product | `src/fin_assist/cli/` | A2A client (`cli/client.py`) for the dev REPL |
 
-These sibling packages sit alongside `hub/` and `cli/` in the flat namespace (`src/fin_assist/`), not nested under either deliverable. They are platform types consumed by both sides — the CLI imports `agents.metadata` and `config.loader`, the hub imports `agents.backend` and `agents.tools`. Nesting them under `hub/` would break the import firewall. The workspace split ([#128](https://github.com/ColeB1722/fin-assist/issues/128)) is the right moment to reorganize into a shared `fin-protocol` package.
+These sibling packages sit alongside `hub/` and `cli/` in the flat namespace (`src/fin_assist/`), not nested under either piece. They are platform types consumed by both sides — the CLI imports `agents.metadata` and `config.loader`, the hub imports `agents.backend` and `agents.tools`. Nesting them under `hub/` would break the import firewall. The workspace split ([#128](https://github.com/ColeB1722/fin-assist/issues/128)) is deferred indefinitely (see [`decisions.md`](decisions.md)) — under the protocol-peer architecture there's no forcing function for it.
 
-**The protocol is the contract.** The hub does not know what kind of client is talking to it. The CLI does not know any hub internals — it only knows the A2A wire format and the `fin_assist:meta` agent-card extension. A future TUI, web UI, or remote-Tailscale deployment is a different *client* or *deployment topology*, not a different product.
+**The protocol is the contract.** The hub does not know what kind of client is talking to it — the CLI's dev REPL is one A2A consumer among the inbound surfaces listed below. The CLI does not know any hub internals — it only knows the A2A wire format and the `fin_assist:meta` agent-card extension. End-user conversational use happens through inbound surfaces (MCP hosts, ACP editors, future A2A clients), not through the CLI.
+
+## Inbound protocol surfaces
+
+The hub exposes itself to external systems through protocol surfaces. Each surface is a fixed, externally-shaped contract — the hub adapts to the surface, not the other way around. Sibling protocols at different layers (agent ↔ agent, agent ↔ tool, client ↔ agent), not substitutes:
+
+| Surface | Role | Status | Consumers / peers |
+|---------|------|--------|-------------------|
+| **A2A-server** | Agent ↔ agent. Each agent mounted as an A2A sub-app at `/agents/{name}/`. JSON-RPC + SSE. | Implemented. | CLI dev REPL today; future A2A peers (federation, [#80](https://github.com/ColeB1722/fin-assist/issues/80) second backend) |
+| **MCP-server** | Hub exposes its agents as MCP tools to external hosts. | Architecturally committed; unmilestoned. Awaiting evidence from ACP-server. | Claude Desktop, Claude Code, opencode-as-host, Cursor — any MCP host |
+| **ACP-server** | Hub speaks Agent Client Protocol so editors can drive fin agents. | First cut targeted at v0.1.3 ([#162](https://github.com/ColeB1722/fin-assist/issues/162)). Scope: session lifecycle, streaming text, permission round-trip. Edit visualization and full MCP-server forwarding deferred. | Zed (primary dogfooding client), JetBrains, Neovim (via Code Companion), VS Code (via `vscode-acp`) |
+
+The hub also has **outbound** protocol surfaces it speaks as a client: MCP-client (implemented, v0.1.1 [#84](https://github.com/ColeB1722/fin-assist/issues/84)); A2A-client (v0.3 federation); ACP-client (architecturally committed; unmilestoned — plausible future home is v0.3, see [`decisions.md`](decisions.md)).
+
+**Why ACP-server first.** Until a non-fin client drives the hub through a standardized protocol surface, the claim *"the protocol is the contract; new inbound consumers are protocol peers, not BFF clients"* is asserted rather than verified — the CLI controls both ends of its own A2A round-trip. ACP-server is the smallest realistic surface that produces this verification: the contract is fixed (Zed-led, Apache 2.0, well-documented), the hub has to fit, and bugs in the protocol-peer architecture surface as concrete client failures rather than design-doc speculation. The first cut is intentionally minimal; richer ACP features land later or never, depending on what the dogfooding loop reveals.
 
 **Import-firewall rule.** Code in `hub/` must never import from `cli/`. Code in `cli/` must never import from `hub/` *for client purposes* — the only allowed direction is the in-process launcher path used by `fin-assist serve` (which loads `hub.app`/`logging`/`pidfile`/`tracing` to boot the FastAPI app in this process).
 
@@ -51,16 +65,16 @@ Notably, `cli/server.py` (process-lifecycle: `start`/`stop`/`status`/`ensure_run
 1. **Config-driven agents** — Behavior (system prompt, output type, thinking, serving modes, approval, skills) lives in TOML, not Python subclasses. New agents are config entries, not new classes.
 2. **Protocol-native** — A2A via a2a-sdk v1.0 for standardized agent communication. Multi-path routing: N agents, N agent cards, one server.
 3. **Platform owns abstractions, backends adapt them** — Tools, approval, context, step events, tracing are framework-agnostic platform types in `agents/`. LLM frameworks plug in via backends that adapt platform concepts to their APIs. The platform never imports from backends.
-4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default. Local-first for iteration speed (fast feedback, no infra overhead), not as a permanent constraint. Remote topologies (Tailscale, remote workstation) are planned once the local experience is stable — same pattern as CLI-first, TUI-later.
-5. **Hub-first development** — Build the agent hub (server) as the stable core, then iterate on clients.
+4. **Local-first** — Server binds to `127.0.0.1` only; no network exposure by default. Local-first for iteration speed (fast feedback, no infra overhead), not as a permanent constraint. Remote topologies (Tailscale, remote workstation) are planned once the local experience is stable.
+5. **Hub is the deliverable** — The hub is the platform; clients are protocol peers reached via standardized inbound surfaces (A2A, MCP-server, ACP-server). The CLI is a development tool, not an end-user product surface. See *Deliverables: Hub vs CLI* and *Inbound protocol surfaces* above.
 6. **Metadata-driven clients** — Clients read agent capabilities from agent cards and adapt dynamically. No client-side agent-specific code.
-7. **Protocol is the contract** — The hub and its clients communicate only through A2A + the `fin_assist:meta` extension. `cli/` does not import from `hub/` (except the in-process launcher path for `fin-assist serve`); `hub/` never imports from `cli/`. See *Deliverables: Hub vs Client* above.
+7. **Protocol is the contract** — The hub and its clients communicate only through A2A + the `fin_assist:meta` extension. `cli/` does not import from `hub/` (except the in-process launcher path for `fin-assist serve`); `hub/` never imports from `cli/`. See *Deliverables: Hub vs CLI* above.
 
 ## Non-goals
 
 - Network-accessible deployment (personal use only, local-first — remote topologies planned post-v0.2)
 - Real-time command suggestions (on-demand only)
-- IDE/editor integration (beyond future MCP)
+- A CLI that grows into an end-user conversational client. The CLI is a verification-only dev REPL plus hub system operations; end-user use happens through inbound protocol surfaces (see [`decisions.md`](decisions.md))
 - TOML-based agent *creation* — agents are defined via TOML config, but `AgentSpec` is the only spec implementation. There is no `fin ingest` to create new agent classes from TOML.
 
 ## Maintenance contract
@@ -455,6 +469,8 @@ The A2A protocol defines transport as pluggable. a2a-sdk v1.0 supports JSON-RPC,
 | gRPC | gRPC | Future | Protocol-native; a2a-sdk v1.0 supports it |
 
 ## CLI entry points
+
+The CLI is a development tool (see *Deliverables: Hub vs CLI*). It has two responsibilities: hub system operations and a verification-only dev REPL. The entry points below reflect the **current implementation**; the verification-only contraction (per [`decisions.md`](decisions.md)) is in-flight — `--edit`, the `fin do` vs `fin prompt` split, and richer REPL UX features will drop as v0.1.3 ([#137](https://github.com/ColeB1722/fin-assist/issues/137), [#162](https://github.com/ColeB1722/fin-assist/issues/162)) and the v0.2.1 split execute. Treat the list as the current surface, not the target surface.
 
 ```text
 fin-assist serve                            → start agent hub in foreground on 127.0.0.1:4096

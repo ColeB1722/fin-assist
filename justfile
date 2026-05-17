@@ -27,7 +27,7 @@ lint-fix:
     uv run ruff check --fix src/
 
 # Architecture firewall — enforces hub/cli import boundary.
-# See docs/architecture.md § "Deliverables: Hub vs Client".
+# See docs/architecture.md § "Deliverables: Hub vs CLI".
 lint-imports:
     uv run lint-imports
 

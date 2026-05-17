@@ -83,11 +83,14 @@ reportMissingImports = true
 reportMissingTypeStubs = false
 
 # ---------------------------------------------------------------------------
-# Architecture firewall — see docs/architecture.md § "Deliverables: Hub vs Client"
+# Architecture firewall — see docs/architecture.md § "Deliverables: Hub vs CLI"
 #
-# fin-assist is two deliverables in one repo, separated by the A2A protocol:
+# fin-assist ships one deliverable — the hub — exposed through standardized
+# inbound protocol surfaces (A2A, MCP-server, ACP-server). The CLI is a
+# development tool (hub system ops + verification-only dev REPL) that talks
+# to the hub via A2A like any other client. Hygiene firewall:
 #   - hub/  is the platform (Agent Hub)
-#   - cli/  is one A2A client (today the only one)
+#   - cli/  is one A2A consumer among many
 #
 # The contracts below enforce the import boundary. Run with `just lint-imports`
 # (also part of `just ci`).
