@@ -27,12 +27,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from fin_assist.config.schema import ContextSettings
+    from fin_assist.config.schema import ContextSettings, MCPServerConfig
 
 
 @dataclass
@@ -148,16 +148,49 @@ class ToolDefinition:
     approval_policy: ApprovalPolicy | None = None
 
 
+class ToolProvider(Protocol):
+    """Discovers and contributes ToolDefinitions to the registry.
+
+    Each provider encapsulates a source of tools (built-in, MCP, file-based,
+    etc.).  The registry calls ``discover()`` at startup to ingest the
+    provider's contributions.
+    """
+
+    @property
+    def name(self) -> str:
+        """Provider identifier for logging and debugging."""
+        ...
+
+    def discover(self) -> list[ToolDefinition]:
+        """Return all tools this provider contributes.  Called at startup."""
+        ...
+
+
 class ToolRegistry:
     """Global registry of tool definitions.  Shared across all agents.
 
     Tools are registered once (at startup or on first import) and looked
     up by name.  The registry is a singleton-by-convention — create one
     instance and pass it where needed.
+
+    Providers are an ingestion path — each ``ToolProvider`` contributes
+    tools via ``discover()`` and the registry aggregates them into the
+    flat lookup table.
     """
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDefinition] = {}
+        self._providers: dict[str, ToolProvider] = {}
+
+    def add_provider(self, provider: ToolProvider) -> None:
+        """Register a provider and merge its tools into the registry."""
+        self._providers[provider.name] = provider
+        for tool in provider.discover():
+            self.register(tool)
+
+    def get_provider(self, name: str) -> ToolProvider | None:
+        """Return a provider by its identifier, or None."""
+        return self._providers.get(name)
 
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._tools:
@@ -181,6 +214,7 @@ class ToolRegistry:
 
 def create_default_registry(
     context_settings: ContextSettings | None = None,
+    mcp_servers: dict[str, MCPServerConfig] | None = None,
 ) -> ToolRegistry:
     """Create a ``ToolRegistry`` pre-loaded with built-in context tools.
 
@@ -190,137 +224,154 @@ def create_default_registry(
 
     ``context_settings`` is forwarded to provider constructors so tool
     callables respect the same limits as the user-driven context path.
+
+    ``mcp_servers`` is an optional mapping of server name to
+    ``MCPServerConfig``.  Each enabled server gets an ``MCPToolProvider``
+    that connects eagerly and registers its tools with namespaced names
+    (``mcp.<server>.<tool>``).
     """
     registry = ToolRegistry()
+    registry.add_provider(BuiltinToolProvider(context_settings=context_settings))
+    if mcp_servers:
+        from fin_assist.agents.mcp import MCPToolProvider
 
-    registry.register(
-        ToolDefinition(
-            name="read_file",
-            description=(
-                "Read a file and return its contents. "
-                "Use this to inspect source code, config files, or any text file."
-            ),
-            callable=_make_read_file(context_settings),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": (
-                            "Path to the file to read. "
-                            "Can be absolute or relative to the current working directory."
-                        ),
-                    },
-                },
-                "required": ["path"],
-            },
-        )
-    )
-
-    registry.register(
-        ToolDefinition(
-            name="git",
-            description=(
-                "Run a git subcommand and return its output. "
-                "The argument is passed directly to git (e.g. 'diff', 'log --oneline -5', "
-                "'status --porcelain'). Requires user approval before execution."
-            ),
-            callable=_make_scoped_cli("git"),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": (
-                            "Arguments to pass to git (e.g. 'diff', 'status', 'log --oneline -10')."
-                        ),
-                    },
-                },
-                "required": ["args"],
-            },
-            approval_policy=ApprovalPolicy(
-                mode="always",
-                description=(
-                    "Git commands require approval (per-subcommand approval planned in Skills API)"
-                ),
-            ),
-        )
-    )
-
-    registry.register(
-        ToolDefinition(
-            name="gh",
-            description=(
-                "Run a GitHub CLI (gh) subcommand and return its output. "
-                "The argument is passed directly to gh (e.g. 'pr create', 'issue list'). "
-                "Requires user approval before execution."
-            ),
-            callable=_make_scoped_cli("gh"),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "args": {
-                        "type": "string",
-                        "description": (
-                            "Arguments to pass to gh (e.g. 'pr create --title X', 'pr list')."
-                        ),
-                    },
-                },
-                "required": ["args"],
-            },
-            approval_policy=ApprovalPolicy(
-                mode="always",
-                description=(
-                    "GitHub CLI commands require approval "
-                    "(per-subcommand approval planned in Skills API)"
-                ),
-            ),
-        )
-    )
-
-    registry.register(
-        ToolDefinition(
-            name="shell_history",
-            description="Show recent shell command history.",
-            callable=_make_shell_history(context_settings),
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Optional filter to search for specific commands.",
-                    },
-                },
-            },
-        )
-    )
-
-    registry.register(
-        ToolDefinition(
-            name="run_shell",
-            description=(
-                "Execute a shell command and return its output. "
-                "Requires user approval before execution."
-            ),
-            callable=_run_shell,
-            parameters_schema={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The shell command to execute.",
-                    },
-                },
-                "required": ["command"],
-            },
-            approval_policy=ApprovalPolicy(
-                mode="always",
-                description="Shell command execution requires approval",
-            ),
-        )
-    )
-
+        for name, cfg in mcp_servers.items():
+            if cfg.enabled:
+                registry.add_provider(MCPToolProvider(name, cfg))
     return registry
+
+
+class BuiltinToolProvider:
+    """Built-in tool provider — the 5 core context tools.
+
+    Extracted from the original ``create_default_registry()`` so that
+    the registry becomes an aggregator rather than a hardcoded list.
+    """
+
+    def __init__(self, context_settings: ContextSettings | None = None) -> None:
+        self._context_settings = context_settings
+
+    @property
+    def name(self) -> str:
+        return "builtin"
+
+    def discover(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="read_file",
+                description=(
+                    "Read a file and return its contents. "
+                    "Use this to inspect source code, config files, or any text file."
+                ),
+                callable=_make_read_file(self._context_settings),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": (
+                                "Path to the file to read. "
+                                "Can be absolute or relative to the current working directory."
+                            ),
+                        },
+                    },
+                    "required": ["path"],
+                },
+            ),
+            ToolDefinition(
+                name="git",
+                description=(
+                    "Run a git subcommand and return its output. "
+                    "The argument is passed directly to git (e.g. 'diff', 'log --oneline -5', "
+                    "'status --porcelain'). Requires user approval before execution."
+                ),
+                callable=_make_scoped_cli("git"),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "args": {
+                            "type": "string",
+                            "description": (
+                                "Arguments to pass to git "
+                                "(e.g. 'diff', 'status', 'log --oneline -10')."
+                            ),
+                        },
+                    },
+                    "required": ["args"],
+                },
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    description=(
+                        "Git commands require approval "
+                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
+                    ),
+                ),
+            ),
+            ToolDefinition(
+                name="gh",
+                description=(
+                    "Run a GitHub CLI (gh) subcommand and return its output. "
+                    "The argument is passed directly to gh (e.g. 'pr create', 'issue list'). "
+                    "Requires user approval before execution."
+                ),
+                callable=_make_scoped_cli("gh"),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "args": {
+                            "type": "string",
+                            "description": (
+                                "Arguments to pass to gh (e.g. 'pr create --title X', 'pr list')."
+                            ),
+                        },
+                    },
+                    "required": ["args"],
+                },
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    description=(
+                        "GitHub CLI commands require approval "
+                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
+                    ),
+                ),
+            ),
+            ToolDefinition(
+                name="shell_history",
+                description="Show recent shell command history.",
+                callable=_make_shell_history(self._context_settings),
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Optional filter to search for specific commands.",
+                        },
+                    },
+                },
+            ),
+            ToolDefinition(
+                name="run_shell",
+                description=(
+                    "Execute a shell command and return its output. "
+                    "Requires user approval before execution."
+                ),
+                callable=_run_shell,
+                parameters_schema={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The shell command to execute.",
+                        },
+                    },
+                    "required": ["command"],
+                },
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    description="Shell command execution requires approval",
+                ),
+            ),
+        ]
 
 
 def _make_scoped_cli(prefix: str, timeout: int = 30):

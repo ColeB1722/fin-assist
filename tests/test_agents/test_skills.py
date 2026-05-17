@@ -1,26 +1,26 @@
-"""Tests for the Skills API — SkillDefinition, SkillCatalog, SkillLoader."""
+"""Tests for the Skills API — SkillConfig, SkillLoader, SkillManager."""
 
 from __future__ import annotations
 
 import pytest
 
-from fin_assist.agents.skills import SkillCatalog, SkillDefinition, SkillLoader
-from fin_assist.config.schema import SkillConfig, ToolPolicyConfig
+from fin_assist.agents.skills import SkillLoader
+from fin_assist.config.schema import SkillConfig
 
 
-def _make_skill(name: str = "test", **overrides) -> SkillDefinition:
+def _make_skill(name: str = "test", **overrides) -> SkillConfig:
     defaults = {
         "name": name,
         "description": f"Test skill: {name}",
         "tools": [],
     }
     defaults.update(overrides)
-    return SkillDefinition(**defaults)
+    return SkillConfig(**defaults)
 
 
-class TestSkillDefinition:
+class TestSkillConfig:
     def test_stores_fields(self) -> None:
-        skill = SkillDefinition(
+        skill = SkillConfig(
             name="commit",
             description="Generate commit messages",
             tools=["git", "read_file"],
@@ -38,16 +38,22 @@ class TestSkillDefinition:
         assert skill.serving_modes is None
 
 
-class TestSkillCatalog:
+class TestSkillManagerCatalog:
     def test_empty_catalog_renders_empty_string(self) -> None:
-        catalog = SkillCatalog()
-        assert catalog.render() == ""
+        from fin_assist.agents.skills import SkillManager
+
+        mgr = SkillManager(skills=[])
+        assert mgr.catalog_text() == ""
 
     def test_renders_available_skills(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit", description="Commit changes", tools=["git"]))
-        catalog.add(_make_skill("pr", description="Create PR", tools=["gh"]))
-        text = catalog.render()
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [
+            _make_skill("commit", description="Commit changes", tools=["git"]),
+            _make_skill("pr", description="Create PR", tools=["gh"]),
+        ]
+        mgr = SkillManager(skills=skills)
+        text = mgr.catalog_text()
         assert "**commit**" in text
         assert "**pr**" in text
         assert "Commit changes" in text
@@ -55,41 +61,52 @@ class TestSkillCatalog:
         assert "load_skill" in text
 
     def test_loaded_skills_excluded_from_catalog(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit", description="Commit changes"))
-        catalog.add(_make_skill("pr", description="Create PR"))
-        catalog.mark_loaded("commit")
-        text = catalog.render()
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [
+            _make_skill("commit", description="Commit changes"),
+            _make_skill("pr", description="Create PR"),
+        ]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        text = mgr.catalog_text()
         assert "commit" not in text
         assert "pr" in text
 
     def test_available_skills_excludes_loaded(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit"))
-        catalog.mark_loaded("commit")
-        assert catalog.available_skills() == []
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [_make_skill("commit"), _make_skill("pr")]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        assert mgr.available_skills() == [skills[1]]
 
     def test_available_skills_returns_unloaded(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit"))
-        catalog.add(_make_skill("pr"))
-        catalog.mark_loaded("commit")
-        available = catalog.available_skills()
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [_make_skill("commit"), _make_skill("pr")]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        available = mgr.available_skills()
         assert len(available) == 1
         assert available[0].name == "pr"
 
     def test_render_shows_tools(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit", tools=["git", "read_file"]))
-        text = catalog.render()
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [_make_skill("commit", tools=["git", "read_file"])]
+        mgr = SkillManager(skills=skills)
+        text = mgr.catalog_text()
         assert "git" in text
         assert "read_file" in text
 
     def test_all_loaded_renders_empty(self) -> None:
-        catalog = SkillCatalog()
-        catalog.add(_make_skill("commit"))
-        catalog.mark_loaded("commit")
-        assert catalog.render() == ""
+        from fin_assist.agents.skills import SkillManager
+
+        skills = [_make_skill("commit")]
+        mgr = SkillManager(skills=skills)
+        mgr.load_skill("commit")
+        assert mgr.catalog_text() == ""
 
 
 class TestSkillLoader:

@@ -182,7 +182,11 @@ async def run_chat_loop(
         # not know what precedes it and starts printing immediately.
         console.print()
 
-        resolved_input = resolve_at_references(user_input, context_settings=fp.context_settings)
+        resolved_input = resolve_at_references(
+            user_input,
+            context_settings=fp.context_settings,
+            registry=fp.context_registry,
+        )
 
         # --- Stream and render response ---
         try:

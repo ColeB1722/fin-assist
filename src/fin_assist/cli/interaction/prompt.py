@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from prompt_toolkit.document import Document
 
     from fin_assist.config.schema import ContextSettings
+    from fin_assist.context.base import ContextProviderRegistry
     from fin_assist.context.files import FileFinder
 
 from fin_assist.paths import HISTORY_PATH
@@ -136,7 +137,9 @@ _AT_CONTEXT_TYPES: dict[str, str] = {
     "file:": "Inject file contents",
     "git:diff": "Inject git diff",
     "git:log": "Inject git log",
+    "git:status": "Inject git status",
     "history:": "Inject shell history",
+    "env:": "Inject environment variables",
 }
 
 
@@ -213,6 +216,7 @@ _AT_PATTERN = re.compile(r"@(\w+:\S*)")
 def resolve_at_references(
     text: str,
     context_settings: ContextSettings | None = None,
+    registry: ContextProviderRegistry | None = None,
 ) -> str:
     """Replace ``@type:ref`` tokens in *text* with resolved context content.
 
@@ -221,16 +225,23 @@ def resolve_at_references(
     - ``@file:<path>`` — file contents via ``FileFinder``
     - ``@git:diff`` — git diff via ``GitContext``
     - ``@git:log`` — git log via ``GitContext``
+    - ``@git:status`` — git status via ``GitContext``
     - ``@history:`` or ``@history:<query>`` — shell history
+    - ``@env:`` or ``@env:<var>`` — environment variables
 
     Unrecognised ``@type:ref`` tokens are left as-is (not an error).
     """
+    if registry is None:
+        from fin_assist.context.base import create_default_context_registry
+
+        registry = create_default_context_registry(settings=context_settings)
+
     context_sections: list[str] = []
     remaining = text
 
     for match in _AT_PATTERN.finditer(text):
         ref = match.group(1)
-        resolved = _resolve_single_ref(ref, context_settings)
+        resolved = _resolve_single_ref(ref, registry)
         if resolved is not None:
             remaining = remaining.replace(match.group(0), "", 1)
             context_sections.append(resolved)
@@ -245,49 +256,71 @@ def resolve_at_references(
     return f"Context:\n{context_block}"
 
 
-def _resolve_single_ref(
-    ref: str,
-    context_settings: ContextSettings | None,
-) -> str | None:
-    """Resolve a single ``type:ref`` string.  Returns None for unknown types."""
+def _resolve_single_ref(ref: str, registry: ContextProviderRegistry) -> str | None:
+    """Resolve a single ``type:ref`` string using the registry.  Returns None for unknown types."""
     if ref.startswith("file:"):
         path = ref[len("file:") :]
-        from fin_assist.context.files import FileFinder
-
-        finder = FileFinder(settings=context_settings)
-        item = finder.get_item(path)
+        provider = registry.get_by_type("file")
+        if provider is None:
+            return None
+        item = provider.get_item(path)
         if item.status == "available":
             return f"[FILE: {path}]\n{item.content}"
         return f"[FILE: {path}] Error: {item.error_reason}"
 
     if ref == "git:diff":
-        from fin_assist.context.git import GitContext
-
-        ctx = GitContext(settings=context_settings)
-        item = ctx.get_item("git_diff:diff")
+        provider = registry.get_by_type("git_diff")
+        if provider is None:
+            return None
+        item = provider.get_item("git_diff:diff")
         if item.status == "available":
             return f"[GIT DIFF]\n{item.content}"
         return f"[GIT DIFF] Error: {item.error_reason}"
 
     if ref == "git:log":
-        from fin_assist.context.git import GitContext
-
-        ctx = GitContext(settings=context_settings)
-        item = ctx.get_item("git_log:log")
+        provider = registry.get_by_type("git_log")
+        if provider is None:
+            return None
+        item = provider.get_item("git_log:log")
         if item.status == "available":
             return f"[GIT LOG]\n{item.content}"
         return f"[GIT LOG] Error: {item.error_reason}"
 
-    if ref.startswith("history:"):
-        from fin_assist.context.history import ShellHistory
+    if ref == "git:status":
+        provider = registry.get_by_type("git_status")
+        if provider is None:
+            return None
+        item = provider.get_item("git_status:status")
+        if item.status == "available":
+            return f"[GIT STATUS]\n{item.content}"
+        return f"[GIT STATUS] Error: {item.error_reason}"
 
-        history = ShellHistory(settings=context_settings)
+    if ref.startswith("history:"):
+        provider = registry.get_by_type("history")
+        if provider is None:
+            return None
         query = ref[len("history:") :]
-        items = history.search(query) if query else history.get_all()
+        items = provider.search(query) if query else provider.get_all()
         if items:
             content = "\n".join(item.content for item in items)
             return f"[SHELL HISTORY]\n{content}"
         return "[SHELL HISTORY] No history available"
+
+    if ref.startswith("env:"):
+        provider = registry.get_by_type("env")
+        if provider is None:
+            return None
+        var_name = ref[len("env:") :]
+        if var_name:
+            item = provider.get_item(var_name)
+            if item.status == "available":
+                return f"[ENV: {var_name}]\n{item.content}"
+            return f"[ENV: {var_name}] Error: {item.error_reason}"
+        items = provider.get_all()
+        if items:
+            content = "\n".join(f"{item.id}={item.content}" for item in items)
+            return f"[ENVIRONMENT]\n{content}"
+        return "[ENVIRONMENT] No environment variables available"
 
     return None
 
@@ -316,11 +349,23 @@ class FinPrompt:
         self.history_path = history_path
         self._context_settings = context_settings
         self._file_finder: FileFinder | None = None
+        self._context_registry: ContextProviderRegistry | None = None
         self._skills = skills or []
 
     @property
     def context_settings(self) -> ContextSettings | None:
         return self._context_settings
+
+    @property
+    def context_registry(self) -> ContextProviderRegistry:
+        """Lazily construct and reuse a single ``ContextProviderRegistry``."""
+        if self._context_registry is None:
+            from fin_assist.context.base import create_default_context_registry
+
+            self._context_registry = create_default_context_registry(
+                settings=self._context_settings
+            )
+        return self._context_registry
 
     def _get_file_finder(self) -> FileFinder:
         """Lazily construct and reuse a single ``FileFinder``."""

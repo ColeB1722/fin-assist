@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
     from fin_assist.agents.backend import AgentBackend
     from fin_assist.agents.spec import AgentSpec
-    from fin_assist.config.schema import ContextSettings
+    from fin_assist.config.schema import ContextSettings, MCPServerConfig
 
 
 def _extract_card_meta(sub_app: FastAPI) -> dict:
@@ -48,6 +48,7 @@ def create_hub_app(
     base_url: str = "http://127.0.0.1:4096",
     backend_factory: Callable[[AgentSpec], AgentBackend] | None = None,
     context_settings: ContextSettings | None = None,
+    mcp_servers: dict[str, MCPServerConfig] | None = None,
 ) -> FastAPI:
     """Build and return the parent FastAPI hub application.
 
@@ -66,10 +67,16 @@ def create_hub_app(
         context_settings: Optional ``ContextSettings`` forwarded to tool
                          callables so model-driven tools respect the same
                          limits as the user-driven context path.
+        mcp_servers:    Optional mapping of server name to ``MCPServerConfig``
+                         for MCP tool providers.
     """
     agents = agents or []
     context_store = ContextStore(db_path=db_path)
-    factory = AgentFactory(context_store=context_store, context_settings=context_settings)
+    factory = AgentFactory(
+        context_store=context_store,
+        context_settings=context_settings,
+        mcp_servers=mcp_servers,
+    )
 
     app = FastAPI(
         title="fin-assist Agent Hub",

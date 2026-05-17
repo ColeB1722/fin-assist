@@ -223,7 +223,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
     from fin_assist.agents.tools import create_default_registry
     from fin_assist.hub.tracing import setup_tracing
 
-    tool_registry = create_default_registry(config.context)
+    tool_registry = create_default_registry(config.context, mcp_servers=config.mcp.servers)
     backends_by_spec = {
         spec: PydanticAIBackend(agent_spec=spec, tool_registry=tool_registry) for spec in agents
     }
@@ -234,6 +234,7 @@ def _serve_command(args: argparse.Namespace, config, config_path: Path | None = 
         db_path=db_path,
         base_url=f"http://{host}:{port}",
         context_settings=config.context,
+        mcp_servers=config.mcp.servers,
         backend_factory=lambda spec: backends_by_spec[spec],
     )
 
@@ -474,7 +475,9 @@ def _list_command(args: argparse.Namespace, config) -> int:
     if resource == "tools":
         from fin_assist.agents.tools import create_default_registry
 
-        registry = create_default_registry(context_settings=config.context)
+        registry = create_default_registry(
+            context_settings=config.context, mcp_servers=config.mcp.servers
+        )
         tools = registry.list_tools()
         if not tools:
             render_info("No tools registered.")
