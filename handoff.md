@@ -15,7 +15,28 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
-**2026-05-17 (in-flight strategic decision — Q1–Q7 resolved; doc-migration + hygiene pass pending):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 / §4 / §6 reflect Q1–Q7. The platform stance is "harmonize, don't decompose": **the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a verification-only dev REPL; the #128 workspace split is deferred indefinitely** (#132's BFF framing rejected on the merits). **Q5: ACP-server first** — the smallest realistic surface that puts the hub under a non-fin protocol peer, which verifies the Q4 protocol-peer-not-BFF assertion rather than leaving it asserted. **Q6: holistic roadmap reconciliation** — repurpose v0.1.3 as ACP-server first cut + #143; migrate #154 → v0.2; migrate #153 (+#139, #151) into a new unscheduled MCP-client expansion slot; split v0.2.1 (keep tracing; close most CLI polish); close #133/#134; MCP-server + ACP-client stay unmilestoned. **Q7 (fifth session): dev-REPL feature line is verification-only.** The REPL exists to verify an agent works after `/connect` + config — anything beyond verification is out. #137 radically re-scopes to two pieces: positional `fin do <agent> <skill> [prompt]` grammar + `entry_prompt` two-turn fix; everything else drops. #72 and #90 deferred to ACP-server work and the v0.2.1 split respectively. Drift prevention: principle + non-exhaustive examples list migrates to `decisions.md`. **All seven decision questions are resolved.** Next phases: issue-hygiene pass (executes Q6's mutations with Q7's #137 disposition in hand) → doc migration → resume dev work.
+**2026-05-17 (sixth session — issue-hygiene pass complete):** All Q6 + Q7 enumerated GitHub mutations executed (~22 mutations + 3 milestone description rewrites + 1 new issue). State of the world after the pass:
+
+- **Closed:** #133 (Telegram), #134 (iOS), #132 (ACP/BFF), #67 (splash), #91 (rich tool_result), #94 (`fin do`/`prompt`), #95 (`/spec`), #97 (`--edit`). Eight issues retired as moot under Q3 + Q7.
+- **Commented (durable thinking, unmilestoned):** #128 (workspace split deferred indefinitely), #146 (`fin pkg` direction confirmed unchanged).
+- **Re-scoped:** #137 — radically narrowed to positional grammar + `entry_prompt` two-turn fix; original full grammar v2 design preserved in issue body under "Historical scope" header for archaeology.
+- **Migrated:** #154 v0.1.3 → v0.2; #153 v0.1.2 → unmilestoned (joins #139 + #151 as natural MCP-client expansion cluster, no tracking issue filed per Q6c).
+- **Unmilestoned (deferred to evidence):** #72 (progressive thinking, defer to ACP-server), #90 (rendering constants, defer to post-v0.2.1-split).
+- **Filed:** **#162 — ACP-server first cut.** Session lifecycle, streaming text, permission round-trip per Q5's scope discipline. Anchor of repurposed v0.1.3.
+- **Milestone descriptions rewritten:** v0.1.2 (narrowed to #127 + #158), v0.1.3 (repurposed: #162 + #143 + minimal #137), v0.2.1 (tracing-only + #92 tech-debt ship-along).
+
+**Final milestone shape:**
+
+| Milestone | Open | Scope |
+|---|---|---|
+| v0.1.1 | 7 | Foundation hardening (unchanged) |
+| v0.1.2 | 2 | Visibility: #127 README + #158 MCP ship-along |
+| v0.1.3 | 3 | **ACP-server first cut** + #143 + minimal #137 |
+| v0.2 | 10 | Sub-agents + migrated #154 |
+| v0.2.1 | 6 | Tracing maturation + #92 |
+| v0.3 | 3 | Federation + repo-as-package (unchanged, undercommitted at issue level) |
+
+**Carryover from sessions 1–5 (decision frame):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 / §4 / §6 reflect Q1–Q7. The platform stance is "harmonize, don't decompose": the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a verification-only dev REPL; the #128 workspace split is deferred indefinitely (#132's BFF framing rejected on the merits). All seven decision questions resolved 2026-05-17; the hygiene pass executed Q6's mutations with Q7's #137 disposition in hand.
 
 **2026-05-17 (take-stock pass — sessions 4–7 closed out):** PR #152 (MCP + tooling context overhaul) and PR #159 (CI required-check deadlock fix) are both on `main`. Foundation hardening is materially complete; v0.1.1 milestone went from 9 → 7 open after a hygiene pass: closed four shipped-but-still-open issues (#141, #142, #115, #129) and milestoned #156 into v0.1.1, #158 into v0.1.2.
 
@@ -36,24 +57,22 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**Strategic decision phase is complete — Q1–Q7 all resolved.** Next phases, in order:
+**Strategic decision phase + issue-hygiene pass are both complete.** Remaining phases, in order:
 
-1. **Issue-hygiene pass.** Execute Q6's enumerated GitHub mutations with Q7's #137 disposition in hand:
-   - Close #133 (Telegram) and #134 (iOS) — moot under Q3.
-   - Comment on #128 (deferred indefinitely, not "until forcing function") and #132 (BFF rejected on the merits; ACP work happens via Q5 hub-as-server).
-   - Migrate #154 from v0.1.3 to v0.2 (foundation for sub-agents).
-   - Migrate #153 out of v0.1.2 into a new unscheduled MCP-client expansion slot (pair with #139 + #151).
-   - Repurpose v0.1.3 around ACP-server first cut + #143 + **radically re-scoped #137** (positional grammar + `entry_prompt` two-turn fix only; everything else dropped per Q7). Update #137's scope and v0.1.3's milestone description.
-   - Split v0.2.1: keep tracing-infrastructure issues (#106, #107, #108, #109, #111); close most CLI-polish issues (#67, #91, #94, #95, #97); defer #72 to ACP-server work and #90 to post-v0.2.1-split per Q7; keep #92 as tech-debt.
-   - Update v0.1.2 description to reflect narrowed scope after #153 migrates out (#127 + #158 only).
-   - File new issue for the ACP-server work itself.
-   - Confirm #146 direction unchanged.
+1. **Doc migration** — *this is the next session's job*. Move durable claims from `platform-stance.md` into the forever-docs:
+   - **→ `docs/architecture.md`** — update *Deliverables: Hub vs CLI* section to reflect "hub is the single deliverable; CLI is a dev tool"; add new **Inbound protocol surfaces** subsection naming A2A-server (existing), MCP-server (committed but unmilestoned), ACP-server (v0.1.3, see #162); name the verification-only dev REPL as one A2A consumer among many. v0.3 federation section is A2A-shaped (already correct).
+   - **→ `docs/decisions.md`** — add Q7 verification-only principle as a new decision row, with the non-exhaustive examples list as calibration ("not in scope: session switching, splash, rich tool_result rendering, `$EDITOR`, conversation polish, multi-line edit"). Also record the Q4 "protocol-peer-not-BFF" resolution if it doesn't already live there.
+   - **Compress or delete `docs/platform-stance.md`** per its lifecycle clause (the file's status header explicitly anticipates deletion-or-compression once migration completes). Prefer compression to a one-paragraph historical pointer that links to `architecture.md` / `decisions.md` so the reasoning trail in §6 working notes isn't lost — but only if the pointer earns its keep. Otherwise delete; git log preserves the full archaeology.
+   - **Repoint comments filed during hygiene pass.** ~13 issues now link to `docs/platform-stance.md` from comment bodies. After migration, sweep these to point at the new homes. Not load-bearing (the file will still resolve in git history) but worth doing for navigability if the doc gets deleted rather than compressed.
 
-2. **Doc migration.** Move durable claims from `platform-stance.md` into `docs/architecture.md` (Deliverables: Hub vs CLI section + new "Inbound protocol surfaces" subsection that names A2A-server / MCP-server / ACP-server as the three inbound surfaces and the verification-only dev REPL as the one A2A consumer among them) and `docs/decisions.md` (the Q7 verification-only principle + non-exhaustive examples list lives here). Compress `platform-stance.md` to a one-paragraph pointer or delete it per its lifecycle clause.
+2. **Decide v0.1.1-vs-v0.1.3 starting point.** Per the explicit agreement, this decision lives at the end of the doc-migration session. With concrete milestone shapes now visible (v0.1.3 has a real anchor in #162; v0.1.1 has 7 foundation issues), the trade-off is clearer than it was when deferred:
+   - **v0.1.1 path** — close out foundation hardening before opening a new protocol surface. Conservative; ships the existing recommended sequence (#125 + #123 → #85 → #156 → #124 → #135 → #89, then #135 dogfooding as exit gate). Probably ~half-day to a few days of work.
+   - **v0.1.3 path** — start #162 (ACP-server first cut) immediately. Aggressive; the Q5 dogfooding-as-verification argument applies now and every v0.1.1 day spent is a day Q4's protocol-peer claim stays unverified. But #162 is bigger than any single v0.1.1 issue and will benefit from foundation work landing first.
+   - Tentative lean (write-up only, not a decision): finish v0.1.1 first. The cost is small, the foundation issues feed into ACP-server's verification loop (per-subcommand approval #156 directly affects the permission round-trip scope), and v0.1.1's dogfooding agent (#135) is *the* baseline that ACP-server's dogfooding builds on.
 
-3. **Decide v0.1.1-vs-v0.1.3 starting point.** Per the explicit agreement, this decision defers to the end of the hygiene-pass session — concrete milestone shapes make the call obvious.
+3. **Resume dev work.** Either path resumes the normal SDD → TDD loop in `AGENTS.md`.
 
-4. **Resume dev work.** Either continue v0.1.1 foundation hardening (existing recommended sequence: #125 + #123 → #85 → #156 → #124 → #135 → #89) or start the repurposed v0.1.3 (ACP-server first cut + #143 + minimal #137).
+**Pre-merge note:** the `discussion/integration-brainstorming` branch will probably open a PR after the doc migration lands — it'll be one cohesive "platform stance + hygiene + migration" PR rather than separate PRs. Branch state currently: 5 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7), all pushed. The hygiene-pass commit lands next.
 
 **If continuing v0.1.1 implementation work:**
 
@@ -66,7 +85,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 5. **#135 dogfooding** — v0.1.1 exit gate. Best done *after* the above so it actually validates the foundation it's meant to validate.
 6. **#89** — defer or split as a design-first issue. The "loadable markdown files" question is real but the design conversation hasn't happened yet; not a blocker for v0.1.1 ship.
 
-**Sequence (post-Q6 reshuffle, pending execution by hygiene pass):** v0.1.1 (7 issues left, ~half-day to a few days of work) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (narrowed to README + #158 ship-along once #153 migrates out) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (*repurposed* — ACP-server first cut + #143) → [v0.2](https://github.com/ColeB1722/fin-assist/milestone/2) (sub-agents, plus migrated #154). v0.2.1 splits into tracing-only post-cleanup; v0.3 unchanged but undercommitted at the issue level; MCP-client expansion and MCP-server/ACP-client remain unscheduled per Q6c.
+**Sequence (post-hygiene-pass, live state):** v0.1.1 (7 issues left, ~half-day to a few days of work) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (#127 README + #158 MCP ship-along) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (#162 ACP-server first cut + #143 + minimal #137) → [v0.2](https://github.com/ColeB1722/fin-assist/milestone/2) (sub-agents, plus migrated #154). [v0.2.1](https://github.com/ColeB1722/fin-assist/milestone/3) is now tracing-only + #92 ship-along; v0.3 unchanged but undercommitted at the issue level; MCP-client expansion (#153 + #139 + #151) and MCP-server/ACP-client remain unscheduled per Q6c.
 
 **Earlier session context (kept for reference):**
 
