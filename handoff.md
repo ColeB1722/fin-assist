@@ -15,7 +15,7 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
-**2026-05-17 (in-flight strategic decision — Q1–Q4 resolved):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 and §4 are now populated. The platform stance is "harmonize, don't decompose": **the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a minimal dev REPL; the #128 workspace split is deferred indefinitely** (#132's BFF framing rejected on the merits). A2A / MCP / ACP are sibling protocols at different layers (agent↔agent, agent↔tool, client↔agent) — they don't substitute for one another. Three follow-on questions remain open (Q5 sequencing of new surfaces, Q6 v0.1.3 fate, Q7 dev-REPL feature line), plus a deferred issue-hygiene pass against #128 / #132 / #137 / #146.
+**2026-05-17 (in-flight strategic decision — Q1–Q5 resolved):** [`docs/platform-stance.md`](docs/platform-stance.md) §3 / §4 / §6 reflect Q1–Q5. The platform stance is "harmonize, don't decompose": **the hub grows three new protocol surfaces (MCP-server, ACP-server, ACP-client) alongside the existing A2A-server / MCP-client / planned A2A-client; the CLI contracts to hub system ops + a minimal dev REPL; the #128 workspace split is deferred indefinitely** (#132's BFF framing rejected on the merits). **Q5 (third session): ACP-server first** — the smallest realistic surface that puts the hub under a non-fin protocol peer, which is what verifies the Q4 protocol-peer-not-BFF assertion rather than leaving it asserted. Dogfooding loop: open Zed (or another ACP host), drive fin agents, find what breaks. MCP-server and ACP-client remain committed and deferred; their relative order intentionally left open. Two follow-on questions remain (Q6 milestone placement now that ACP-server is in the picture, Q7 dev-REPL feature line), plus a deferred issue-hygiene pass against #128 / #132 / #137 / #146 and a likely new issue for ACP-server itself.
 
 **2026-05-17 (take-stock pass — sessions 4–7 closed out):** PR #152 (MCP + tooling context overhaul) and PR #159 (CI required-check deadlock fix) are both on `main`. Foundation hardening is materially complete; v0.1.1 milestone went from 9 → 7 open after a hygiene pass: closed four shipped-but-still-open issues (#141, #142, #115, #129) and milestoned #156 into v0.1.1, #158 into v0.1.2.
 
@@ -36,13 +36,12 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Next session
 
-**If continuing the platform-stance decision:** open [`docs/platform-stance.md`](docs/platform-stance.md). §3/§4 Q1–Q4 are resolved; pick one of the three open questions to bite off:
+**If continuing the platform-stance decision:** open [`docs/platform-stance.md`](docs/platform-stance.md). §3/§4 Q1–Q5 are resolved; two open questions left:
 
-- **Q5 — surface sequencing.** Of MCP-server / ACP-server / ACP-client, which lands first? Each has a different cost profile and motivating consumer. Enumerate options, frame trade-offs, resolve.
-- **Q6 — v0.1.3 fate.** With CLI demoted to dev tool, #137 (CLI grammar v2) loses most of its scope. Does v0.1.3 ship as-is with reduced #137, fold into v0.1.2, or restructure around Q5?
-- **Q7 — dev-REPL feature line.** Define what "minimal dev REPL" excludes so the REPL doesn't re-grow into a product surface by drift.
+- **Q6 — milestone placement + v0.1.3 fate.** With CLI demoted to dev tool (Q3), #137 (CLI grammar v2) loses most of its scope. With ACP-server first (Q5), a new milestone window is needed for that work. Does v0.1.3 ship as-is with reduced #137, fold into v0.1.2, or get restructured around ACP-server? Where does ACP-server land — new v0.1.4 / v0.2-adjacent slot, or its own milestone? The Q5 working hypothesis is "own slot, not v0.3 federation, because v0.3 federation is A2A-shaped" — Q6 confirms or rejects.
+- **Q7 — dev-REPL feature line.** Define what "minimal dev REPL" excludes so it doesn't re-grow into a product surface by drift. ACP-server's existence (Q5) is the natural forcing function for this — once a rich editor can drive fin, the REPL exclusion list becomes obvious. Q7 might be easier *after* ACP-server has started landing.
 
-Once Q5–Q7 land, the **issue-hygiene pass** is the natural follow-up — comment on #128 (deferred indefinitely, not "until forcing function"), #132 (BFF rejected on the merits), #146 (pkg manager direction confirmed), and re-scope or close #137. After that, durable claims from `platform-stance.md` migrate into `docs/architecture.md` (Deliverables: Hub vs CLI section) and `docs/decisions.md`, and the decision doc compresses to a one-paragraph pointer or is deleted.
+Once Q6 and Q7 land, the **issue-hygiene pass** is the natural follow-up — comment on #128 (deferred indefinitely, not "until forcing function"), #132 (BFF rejected on the merits), #146 (pkg manager direction confirmed), re-scope or close #137, file a new issue for ACP-server work, and likely file a v0.1.4 / new milestone. After that, durable claims from `platform-stance.md` migrate into `docs/architecture.md` (Deliverables: Hub vs CLI section) and `docs/decisions.md`, and the decision doc compresses to a one-paragraph pointer or is deleted.
 
 **If continuing v0.1.1 implementation work:**
 

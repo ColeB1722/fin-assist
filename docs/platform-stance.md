@@ -202,6 +202,26 @@ The custom REST routes already slated for removal in v0.1.3 (#143) align with th
 
 The hub-CLI import-linter firewall stays in CI for hygiene, but the workspace split is no longer on any horizon. #128 should reflect this resolution; #132's BFF framing is rejected on the merits, not just deferred. Issue updates are a follow-on session (see §4 Q6).
 
+### Question E — Which new protocol surface ships first
+
+> Of the three surfaces committed in Question B (MCP-server, ACP-server, ACP-client), which lands first?
+
+**Resolved (2026-05-17): ACP-server first.** The platform-stance claim — *"fin is a platform with the CLI as one A2A consumer among many"* — is currently **unverified**. The CLI is the only consumer that exists today. Until a non-fin client drives the hub through a standardized protocol surface, the Question D resolution (new inbound consumers are *protocol peers*, not BFF clients) is asserted rather than tested. ACP-server is the smallest realistic surface that produces this verification: it forces the hub to serve a client whose shape, transport, and UX are not under fin's control.
+
+**The dogfooding argument.** This is *not* the visibility-and-reach argument the original Q5 stub seeded (Zed/JetBrains/Neovim user base). The argument is narrower and more honest: a rich, externally-shaped integration point is the only way to exercise fin agents like a real consumer would. The current CLI is not a hostile test surface — fin controls both ends, and the protocol contract is shaped by the consumer's needs. ACP-server inverts that: the protocol contract is fixed (Zed-led, Apache 2.0, well-documented), and the hub has to fit. Bugs in the protocol-peer architecture surface as concrete client failures rather than design-doc speculation. Available ACP clients for the dogfooding loop: Zed (primary), Neovim via Code Companion, JetBrains, VS Code via `vscode-acp`. The user does not have to switch editors to test — Zed-as-test-client is sufficient.
+
+**Secondary effects that make this the right first surface:**
+
+- **Tests `Executor` under non-CLI request shapes.** Streaming text/edit deltas, permission round-trips, and ACP's client-to-agent MCP-server forwarding are paths the current CLI does not exercise. The hub's protocol-agnostic claim becomes verifiable.
+- **Forcing function for Q7 (dev-REPL feature line).** Once a real editor can drive fin, "what does the dev REPL exclude?" becomes obvious — anything the editor does better. Q7 gets easier once ACP-server exists.
+- **Validates Q4 on the merits.** If the protocol-peer architecture were wrong, ACP-server is where it would visibly fail (cross-cutting concerns leaking through the protocol, BFF-shaped translation needed in the hub, etc.). The absence of that pressure under a real second consumer is what would let Q4 ossify into a load-bearing claim.
+
+**Scope discipline for the first cut.** ACP is a richer protocol than MCP-server would be — streaming, permission prompts, MCP-server forwarding from client to agent, edit visualization. The first cut is intentionally minimal: session lifecycle, streaming text, and permission round-trip. Edit visualization and full MCP forwarding land later or never, depending on what the dogfooding loop reveals. The point is to verify the architecture, not to ship a comprehensive ACP implementation.
+
+**MCP-server and ACP-client remain committed** per Question B, sequenced behind ACP-server. Their order relative to each other is intentionally left open — different motivating evidence will likely emerge once ACP-server exists, and pinning their order now would burn that information.
+
+**Milestone placement is Q6.** A working hypothesis (not a commitment): ACP-server first probably means a new v0.1.x or v0.2-adjacent slot, not v0.3 federation. v0.3 federation in `docs/architecture.md` is currently A2A-shaped; ACP-client (not ACP-server) is the surface that bundles cleanly with it. ACP-server is its own thing and likely deserves its own milestone window. Q6 confirms or contradicts.
+
 ---
 
 ## 4. Open questions, decomposed
@@ -256,20 +276,25 @@ Q1–Q4 map one-to-one onto §3 Questions A–D and carry the options that were 
 
 ---
 
-### Q5: Surface sequencing — which new protocol surface ships first?
+### Q5: Surface sequencing — which new protocol surface ships first? (→ §3 Question E)
 
-**Framing:** Q2 commits to three new surfaces (MCP-server, ACP-server, ACP-client) but not the order. Each has a different cost profile, a different motivating consumer, and a different relationship to in-flight v0.1.x / v0.2 / v0.3 milestone work. The sequencing decision determines what (if any) new milestone work attaches and how the v0.1.x → v0.2 → v0.3 trajectory reshuffles.
+**Framing:** Q2 commits to three new surfaces (MCP-server, ACP-server, ACP-client) but not the order. Each has a different cost profile, a different motivating consumer, and a different relationship to in-flight v0.1.x / v0.2 / v0.3 milestone work. The sequencing decision determines what (if any) new milestone work attaches and how the v0.1.x → v0.2 → v0.3 trajectory reshuffles. The dominant decision axis is **dogfooding fit** — which surface most directly tests the platform claim under realistic load — *not* user-facing visibility, since the platform stance is explicitly personal.
 **Depends on:** Q2.
 **Blocks:** Q6.
-**Options under consideration:** to be enumerated in a follow-up session. Candidates include: ACP-server first (highest user-facing visibility, ties into Zed/JetBrains/Neovim usage); MCP-server first (smallest surface — fin already speaks MCP-client, the server side reuses much of the same library); ACP-client first (enables composing existing ACP agents into fin workflows without waiting on inbound consumers).
-**Resolution:** pending.
+**Options considered:**
+- *MCP-server first.* Smallest cost (fin already speaks MCP-client; the server side reuses much of the same library). Motivating consumers: opencode-as-host, Claude Desktop, Claude Code. **Considered but rejected as first** — the dogfooding loop is thin until multiple specialist fin agents exist worth delegating to, and "fin agents as opencode tools" is a feature-in-search-of-a-workflow at current maturity.
+- *ACP-client first.* Enables composing existing ACP-speaking CLI agents (cursor-agent, claude-acp, gemini-cli, goose) into fin workflows. **Considered but rejected as first** — strong personal-tool-composition use case, but ACP-client adds *capability* without testing the platform *claim*. The hub still only has one inbound consumer (the CLI), so the protocol-peer architecture remains unverified.
+- **ACP-server first.** *Chosen.* The first inbound consumer that is not under fin's control. Forces the hub to serve a non-fin client through a fixed external protocol contract. Validates the Q4 protocol-peer-not-BFF assertion on the merits, exercises `Executor` under non-CLI request shapes (streaming, permission round-trip), and creates the natural forcing function for Q7 (dev-REPL feature line).
+- *All three in parallel.* Rejected — splits attention three ways before any single surface has produced architectural feedback. Sequencing exists precisely to extract that feedback.
+- *None — finish v0.2 sub-agents first.* Rejected — v0.2 (sub-agents in-process) and the platform-claim verification are independent. v0.2 makes fin do more; ACP-server makes fin *prove it is a platform*. Different axes; no reason to gate one on the other.
+**Resolution:** resolved 2026-05-17 — ACP-server first, with a minimal first cut (session lifecycle, streaming text, permission round-trip; defer edit visualization and full MCP forwarding). MCP-server and ACP-client remain committed (per Q2) and deferred; their order relative to each other is intentionally left open. Rationale in §3 Question E.
 
-### Q6: v0.1.3 fate — what does "CLI grammar v2" mean if the CLI is a dev tool?
+### Q6: v0.1.3 fate — what does "CLI grammar v2" mean if the CLI is a dev tool, and where does ACP-server land?
 
-**Framing:** v0.1.3 currently contains #137 (CLI grammar v2), #143 (dead-code removal from hub), and #154 (async cascade). Q3's resolution (CLI as dev tool only) significantly drops the urgency of #137 — there's much less surface area to grammar-define. #143 still applies (dead-code removal from hub is independent of CLI shape). #154 also independent. The question is whether v0.1.3 should ship as-is with reduced #137 scope, fold into v0.1.2, or be reorganized around the new surface work from Q5.
+**Framing:** v0.1.3 currently contains #137 (CLI grammar v2), #143 (dead-code removal from hub), and #154 (async cascade). Q3's resolution (CLI as dev tool only) significantly drops the urgency of #137 — there's much less surface area to grammar-define. #143 still applies (dead-code removal from hub is independent of CLI shape). #154 also independent. Q5's resolution (ACP-server first) adds a second dimension: ACP-server needs a milestone window. The Q5 working hypothesis is that ACP-server likely deserves its own slot (not v0.3 federation, which is A2A-shaped), but the placement is not yet resolved.
 **Depends on:** Q3, Q5.
 **Blocks:** issue hygiene pass.
-**Options under consideration:** to be enumerated in a follow-up session.
+**Options under consideration:** to be enumerated in a follow-up session. Candidates include: ship v0.1.3 as-is with #137 de-scoped; fold #143/#154 into v0.1.2 and close v0.1.3; restructure v0.1.3 around ACP-server (treat the dev-REPL grammar work as part of the larger "what the dev REPL is" question Q7 surfaces); or insert ACP-server as a new v0.1.4 / v0.2-adjacent slot independent of the existing v0.1.3 contents.
 **Resolution:** pending.
 
 ### Q7: What "dev REPL" actually means in scope
@@ -303,6 +328,26 @@ Filed 2026-05-16 as durable design thinking, deferred until v0.2 / v0.3 ship. Vi
 ## 6. Working notes
 
 Dated scratch space. Most recent entries on top.
+
+### 2026-05-17 (third session) — Q5 resolved (ACP-server first)
+
+Worked through Q5 in one session. The initial framing I proposed (ACP-client first, on a personal-tool-composition argument) was corrected by Cole mid-session: the real dogfooding gap isn't *"what can fin do that I can't already do manually"* — it's *"do we even know fin works as a platform?"* That reframe flipped the answer.
+
+The corrected framing: the Q4 resolution (new inbound consumers are protocol peers, not BFF clients) is currently *unfalsified*. Until a non-fin client drives the hub through a standardized protocol surface, Q4 is asserted rather than verified. ACP-server is the smallest realistic surface that produces this verification — it's the first inbound consumer whose shape, transport, and UX are not under fin's control.
+
+Key clarifications during the session:
+
+- "Highest user-facing visibility" was the wrong frame for ACP-server. The right frame is "richest external integration point available today, therefore the strongest test of the platform claim." That's a dogfooding argument, not a reach argument.
+- ACP-client (composing external CLI agents into fin workflows) is a *capability* argument, not a *platform-verification* argument. Capability matters but it doesn't test what Q4 claimed.
+- MCP-server (opencode-as-host, Claude-Desktop-as-host) is a "fin agents as someone else's tools" loop. Strong in principle, thin in practice until multiple specialist fin agents exist worth delegating to.
+- Cole doesn't have to switch editors (Helix is daily-driver) to dogfood ACP-server. Zed-as-test-client is sufficient; the dogfooding loop is "open Zed, drive fin, find what breaks."
+- Bundling ACP-client with v0.3 A2A federation still makes sense in principle (per session 2), but that's a downstream decision now that Q5 picks a different surface first.
+
+Open follow-ons unchanged: Q6 (milestone placement, especially with ACP-server now in the picture) and Q7 (dev-REPL feature line, which ACP-server's existence will help define). The Q6 working hypothesis added to §3 Question E: ACP-server likely deserves its own milestone slot, not v0.3 federation, because v0.3 federation is A2A-shaped and ACP-server is structurally different. Q6 confirms or rejects.
+
+Order of MCP-server and ACP-client (both deferred) intentionally left open — different motivating evidence will emerge once ACP-server exists, and pinning the order now would burn that information.
+
+Issue-hygiene pass still deferred — now blocked on Q6 explicitly (was implicitly blocked on Q5+Q6 before). Candidates unchanged from session 2 plus: new issue likely needed for ACP-server work itself (filed as part of the hygiene pass, not during Q5/Q6 resolution).
 
 ### 2026-05-17 (second session) — §3 and §4 resolved (Q1–Q4)
 
