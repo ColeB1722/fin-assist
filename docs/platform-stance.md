@@ -1,8 +1,8 @@
 # Platform Stance
 
-**Status:** in-progress decision (started 2026-05-17).
+**Status:** all questions resolved 2026-05-17. Awaiting issue-hygiene pass + doc migration before deletion / compression.
 **Owner:** Cole, with AI-assisted synthesis.
-**Lifecycle:** this doc is *not* a forever-doc. Once the decisions below resolve, durable claims migrate to [`architecture.md`](architecture.md) and [`decisions.md`](decisions.md), and this file is either deleted or compressed to a one-paragraph historical pointer. While in progress, it is the single source of truth for the reasoning; once resolved, it should not be.
+**Lifecycle:** this doc is *not* a forever-doc. Now that all decisions have resolved, the next two phases are (1) the issue-hygiene pass that executes Q6's enumerated GitHub mutations with Q7's #137 disposition in hand, and (2) migration of durable claims to [`architecture.md`](architecture.md) and [`decisions.md`](decisions.md). After migration, this file is either deleted or compressed to a one-paragraph historical pointer.
 
 **What this doc is:** a decision frame for a cluster of strategic questions about fin-assist's relationship to the broader agent ecosystem — what protocol surfaces the hub exposes, what the CLI is (product or reference client), how that interacts with the long-pending workspace split (#128), and the underlying platform-vs-UX stance that resolves which question is even worth asking.
 
@@ -242,11 +242,45 @@ The reshuffled roadmap:
 
 Execution (the GitHub mutations) is the issue-hygiene pass. This doc captures intent.
 
+### Question G — Dev-REPL feature line
+
+> What does the "minimal dev REPL" (per Q3) actually include and exclude, so it doesn't re-grow into a product surface by drift?
+
+**Resolved (2026-05-17): verification-only.** The CLI's REPL exists to verify that an agent works after `/connect` + config. That is the entire job. Anything beyond verification — session management, conversation polish, multi-line edit, splash screens, rich rendering of tool results, `$EDITOR` integration for prompts — is out of scope. The principle is intentionally tight: the dev REPL is not a "small chat client" or a "developer-facing daily-driver"; it is the smallest thing that lets a developer confirm a newly configured agent responds correctly and that a skill loads and dispatches.
+
+**What stays:**
+
+- **Hub system operations** (per Q3): `fin start` / `stop` / `status` / `health`, `/connect`, `fin pkg` (#146 when it ships).
+- **Basic A2A round-trip**: send a prompt, receive a response, see streaming tokens, see tool calls and approval prompts.
+- **`@`-completion** (`@file:` / `@git:` / `@history:` / `@env:`): these stay because verifying a context-consuming agent *requires* injecting context. Removing completion would make some agents impossible to test from the dev REPL.
+- **Positional grammar `fin do <agent> <skill> [prompt]`**: makes verification cleaner ("test this skill on this agent") and the two-turn `entry_prompt` semantics fix a real bug. The remainder of #137 (`--workflow` mode flag, `fin list skills` annotation rework) drops.
+- **Core slash commands**: `/help`, `/exit`, `/connect`, `/agents`, `/skill:<name>` (skill loading is verification-shape).
+- **Session persistence + `--resume`**: present-day mechanism. Out-of-REPL operations only (run `fin talk <agent> --list` then `--resume <slug>`).
+
+**What's explicitly out (non-exhaustive):**
+
+- **Interactive REPL session switching** (#64) — conversation management, not verification.
+- **Splash screen / startup banner** (#67) — product polish.
+- **Richer tool_result rendering beyond 120-char truncation** (#91) — visualization, not verification.
+- **`fin do` vs `fin prompt` semantic split** (#94) — verification needs one entry point; duplicate semantics are exactly the drift Q7 prevents. `fin prompt` likely closes; #94 absorbs into the cleanup.
+- **`/spec` verbose agent ASCII art** (#95) — product polish.
+- **`$EDITOR` integration via `--edit`** (#97) — multi-line composition is a real client's job.
+- **Telegram / iOS / other bespoke clients** (#133, #134) — moot under Q3, doubly moot under Q7.
+
+**Deferred-to-evidence (Q6a flagged these for Q7):**
+
+- **Progressive thinking output** (#72) — verifying agent behavior arguably benefits from seeing reasoning chains. *Resolution: defer to ACP-server work.* If ACP-server's streaming-text path handles thinking exposure, the dev REPL doesn't need its own. If not, file a follow-up.
+- **Rendering constants consolidation** (#90) — pure tech-debt cleanup; only worth doing if the dev REPL keeps enough rendering surface to justify it. *Resolution: defer until the v0.2.1 split executes and the remaining dev-REPL rendering footprint is concrete.*
+
+**Drift-prevention mechanism:** When `platform-stance.md` migrates to `decisions.md`, the verification-only principle ships with a non-exhaustive examples list (session switching, conversation polish, multi-line edit, rich rendering) so future contributors have something concrete to point at. The principle is the rule; the examples are the calibration.
+
+**ACP-server is the forcing function — Q7 is a first cut.** Q5 already named this: once a real editor can drive fin, the exclusion list becomes obvious because the editor will do most of these things better. Q7 commits the framing now (so the issue-hygiene pass has the #137 disposition it needs); ACP-server work is expected to refine it. If ACP-server work reveals something the verification-only framing got wrong, file a follow-up against this resolution rather than re-litigating Q7 wholesale.
+
 ---
 
 ## 4. Open questions, decomposed
 
-Q1–Q6 map one-to-one onto §3 Questions A–F and carry the options that were considered, including the ones not chosen, so the reasoning trail survives. Q6 is itself decomposed into Q6a (milestone walk), Q6b (ACP-server placement), and Q6c (MCP-server / ACP-client speculative slots), reflecting the holistic-decomposition framing used in the fourth session. Q7 is the only question that remains genuinely open.
+Q1–Q7 map one-to-one onto §3 Questions A–G and carry the options that were considered, including the ones not chosen, so the reasoning trail survives. Q6 is itself decomposed into Q6a (milestone walk), Q6b (ACP-server placement), and Q6c (MCP-server / ACP-client speculative slots), reflecting the holistic-decomposition framing used in the fourth session. All seven questions are now resolved; the next phase is the issue-hygiene pass and the doc migration to `architecture.md` + `decisions.md`.
 
 ### Q1: Integration direction (→ §3 Question A)
 
@@ -383,13 +417,39 @@ Q6 is therefore decomposed into three sub-questions. Q6a does the holistic miles
 
 ---
 
-### Q7: What "dev REPL" actually means in scope
+### Q7: Dev-REPL feature line (→ §3 Question G)
 
-**Framing:** Q3 resolves the CLI to "hub system ops + dev REPL for testing agent configurations" but doesn't define the dev-REPL's feature line. Current REPL has `@file:` / `@git:` / `@history:` / `@env:` completion, prompt-toolkit session, Rich rendering, slash-command system. Some of that is "essential to verifying an agent works" (basic A2A round-trip, slash commands like `/connect`, `/agents`), some is "polish that arguably belongs in a real client" (multi-line edit, completion menus). A clear feature line keeps the dev-REPL from re-acquiring "product" characteristics by drift.
-**Depends on:** Q3.
-**Blocks:** none directly, but informs which CLI improvements are worth filing as issues.
-**Options under consideration:** to be enumerated in a follow-up session.
-**Resolution:** pending.
+**Framing:** Q3 resolves the CLI to "hub system ops + dev REPL for testing agent configurations" but doesn't define the dev-REPL's feature line. The risk is drift: without an explicit principle, the REPL accumulates polish PR-by-PR and quietly re-becomes a product surface. The Q6a milestone walk already triaged most of v0.2.1's CLI-polish issues against the (un-formalized) Q3 framing; Q7 makes that triage principled rather than ad-hoc, decides the two issues Q6a deferred (#72, #90), and pins #137's disposition (which Q6a explicitly blocked on Q7).
+
+The dominant decision axis is **scoping principle** — what's the rule that decides whether a candidate CLI feature is in or out. Q1–Q6 already constrain a great deal; Q7 is largely about pinning the principle so it's enforceable rather than interpreted on a per-PR basis.
+
+**Depends on:** Q3, Q6.
+**Blocks:** #137 disposition (in the hygiene pass); #72 and #90 disposition (in the v0.2.1 split execution).
+
+**Options considered:**
+
+- **Verification-only.** *Chosen.* The REPL exists to verify that an agent works after `/connect` + config. Anything beyond verification is out. Tight, defensible, and directly downstream of Q3's "minimal test harness" framing. Includes `@`-completion (verifying a context-consuming agent requires injecting context) and positional `fin do <agent> <skill>` grammar (verification is a per-skill operation).
+- *Hub-ops + smoke test.* Even tighter — REPL is "does it respond when I ping it" + hub-ops only. Considered but rejected: would force removing `@`-completion, which makes context-consuming agents impossible to test from the CLI. Real test surface, not just polish.
+- *Last-resort interactive.* Frame the REPL as "exists for cases where no real client supports the agent type yet." Implies the REPL shrinks over time. Considered but rejected: the trajectory is real (per Q5, ACP-server starts the trend; MCP-server / future A2A clients continue it) but it's a *consequence* of verification-only, not a different principle. Verification-only naturally shrinks the REPL as real clients cover more cases.
+- *Test harness + verification (broader).* Includes "verify agent behavior across realistic multi-turn prompts," not just "does it respond." Considered but rejected: this is what a real client is for. Multi-turn behavioral testing is a v0.2 sub-agent / `evals/` story, not a dev-REPL story.
+
+**Sub-resolution: #137 disposition.** Radically re-scope. Keep two pieces of the original #137:
+
+1. **Positional grammar** `fin do <agent> <skill> [prompt]` — verification-shape (test a specific skill on a specific agent).
+2. **`entry_prompt` two-turn fix** — the silent `entry_prompt or prompt` discard is a real bug regardless of CLI shape.
+
+Drop the rest: `--workflow` mode flag (no "workflow" concept in a verification REPL), `fin list skills` workflow-mode annotation (annotation is correct but it's now a smaller surface), the elaborate mode-resolution table (no modes to resolve). Update #137's scope in the hygiene pass; the milestone description for the repurposed v0.1.3 reflects "minimal #137" alongside ACP-server first cut and #143.
+
+**Sub-resolution: #72 (progressive thinking) and #90 (rendering constants).** Defer both:
+
+- **#72** — defer to ACP-server work. If ACP-server's streaming-text path handles thinking-token exposure cleanly, the dev REPL inherits the same path or doesn't need its own. If ACP-server reveals a gap, file a follow-up.
+- **#90** — defer until v0.2.1 splits and the remaining dev-REPL rendering footprint is concrete. Tech-debt cleanup is worth its cost only if there's enough rendering surface to clean up.
+
+**Sub-resolution: drift-prevention mechanism.** Principle + non-exhaustive examples list, migrated to `decisions.md`. The principle ("REPL exists to verify an agent works after `/connect` + config; anything beyond verification is out") is the rule; the examples list (session switching, splash, rich tool_result rendering, `$EDITOR`, conversation polish) is the calibration. Future PRs that add CLI features get pointed at the principle; if the contributor argues their feature is verification-shape, the discussion happens against a concrete reference rather than vibes.
+
+**Resolution:** resolved 2026-05-17 (fifth session). Q7 is a first cut — ACP-server work is expected to refine it. If implementation reveals the verification-only framing is wrong somewhere, file a follow-up against this resolution rather than re-litigating Q7 wholesale.
+
+---
 
 ---
 
@@ -414,6 +474,27 @@ Filed 2026-05-16 as durable design thinking, deferred until v0.2 / v0.3 ship. Vi
 ## 6. Working notes
 
 Dated scratch space. Most recent entries on top.
+
+### 2026-05-17 (fifth session) — Q7 resolved (dev-REPL feature line)
+
+Worked through Q7 in one session, framing-only as agreed at the start. The session opener acknowledged the Q5/Q7 chicken-and-egg: Q5 explicitly named ACP-server as the forcing function for Q7, but Q6a deferred #137's disposition to Q7, which the hygiene pass needs. Resolution: Q7 is a first cut, refinable when ACP-server work surfaces new information. The principle is committed; the calibration list is committed; revisits happen as follow-ups against the resolution, not as full Q7 re-litigation.
+
+Three sub-decisions resolved together:
+
+1. **Principle: verification-only.** REPL exists to verify an agent works after `/connect` + config. Tight, downstream of Q3's "minimal test harness" framing. Considered three alternatives (hub-ops + smoke test, last-resort interactive, broader test harness) and rejected each — verification-only is the right scoping rule because it both excludes the right things (product polish, conversation management) and *includes* the right things (`@`-completion for context-consuming agents, positional grammar for per-skill verification).
+
+2. **#137 radically re-scopes.** Keep positional `fin do <agent> <skill> [prompt]` grammar (verification-shape) and the `entry_prompt` two-turn fix (genuine bug). Drop everything else: `--workflow` mode flag (no "workflow" concept in a verification REPL), the elaborate mode-resolution table, the `fin list skills` annotation rework. The repurposed v0.1.3 milestone description (set in the hygiene pass) will reflect "minimal #137" as a third anchor alongside ACP-server first cut and #143.
+
+3. **Drift prevention: principle + non-exhaustive examples list.** When `platform-stance.md` migrates to `decisions.md`, the verification-only principle ships with a concrete examples list (session switching, splash, rich tool_result rendering, `$EDITOR`, etc.) so future contributors have something specific to point at. Principle is the rule; examples are the calibration.
+
+Q6a's two deferred-to-Q7 items resolved cleanly:
+
+- **#72 (progressive thinking)** — defer to ACP-server work. If ACP-server's streaming-text path handles thinking-token exposure, the dev REPL inherits it; if not, file a follow-up. The verification-only principle doesn't take a strong position on thinking-token rendering — it depends on whether ACP-server's path is sufficient.
+- **#90 (rendering constants)** — defer until v0.2.1 splits and the remaining dev-REPL rendering footprint is concrete. Tech-debt cleanup is worth its cost only if there's enough rendering surface left after Q7 prunes.
+
+A meta-observation worth recording: Q7's framing was easier than expected because Q1–Q6 already constrained so much. The session was 90% "make the principle explicit and pin two deferred items" and 10% genuinely-open decision. This is the right shape for late-stage decision work — the load-bearing questions get debated upstream; the downstream questions become consequences of upstream resolutions, with shrinking optionality. If a downstream question feels hard, that's evidence an upstream question got framed wrong, not evidence the downstream question is bad.
+
+The next phase (issue-hygiene pass) is now fully unblocked. All Q6 enumerated mutations now have concrete dispositions including #137. After the hygiene pass, the doc-migration phase retires this file. Then dev work resumes — starting milestone deferred to end-of-hygiene-pass session per the agreed sequencing.
 
 ### 2026-05-17 (fourth session) — Q6 resolved (holistic roadmap reconciliation)
 
