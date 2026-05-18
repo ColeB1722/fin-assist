@@ -83,17 +83,25 @@ reportMissingImports = true
 reportMissingTypeStubs = false
 
 # ---------------------------------------------------------------------------
-# Architecture firewall — see docs/architecture.md § "Deliverables: Hub vs CLI"
+# Protocol-peer firewall — see docs/architecture.md § "Deliverables: Hub vs CLI"
 #
 # fin-assist ships one deliverable — the hub — exposed through standardized
 # inbound protocol surfaces (A2A, MCP-server, ACP-server). The CLI is a
-# development tool (hub system ops + verification-only dev REPL) that talks
-# to the hub via A2A like any other client. Hygiene firewall:
-#   - hub/  is the platform (Agent Hub)
-#   - cli/  is one A2A consumer among many
+# development tool: it talks to the hub via plain HTTP for hub-level routes
+# (/health, /agents, per-agent /skills*) and via A2A for agent-traffic
+# messaging in the dev REPL. For that A2A traffic specifically, the CLI is
+# one consumer among many — held to the same contract as Zed-via-ACP or
+# Claude-Desktop-via-MCP.
 #
-# The contracts below enforce the import boundary. Run with `just lint-imports`
-# (also part of `just ci`).
+# These contracts are NOT hygiene; they are what makes the protocol-peer
+# architecture testable rather than aspirational. If cli/ could grow private
+# hub imports, it would become a privileged consumer with a back-channel that
+# no real external client gets, and the dogfood loop for inbound surfaces
+# would silently weaken. The Q5 verification argument (see docs/decisions.md
+# § Platform stance) depends on the CLI being held to the same contract as
+# external clients — which is exactly what these contracts enforce.
+#
+# Run with `just lint-imports` (also part of `just ci`).
 #
 # When a new cli/ file legitimately needs the in-process launcher path (for
 # `fin-assist serve`), add the specific import to `ignore_imports` with a
@@ -116,8 +124,10 @@ source_modules = ["fin_assist.cli"]
 forbidden_modules = ["fin_assist.hub"]
 ignore_imports = [
     # `fin-assist serve` boots the FastAPI hub in-process. These four imports
-    # are the launcher path; everything else in cli/ talks to the hub via
-    # cli/client.py over A2A.
+    # are the launcher path. Everything else in cli/ reaches the hub through
+    # protocol-peer paths only — plain HTTP (httpx) for hub-level routes
+    # (/health, /agents, /skills*) and A2A (cli/client.py wrapping a2a-sdk)
+    # for agent-traffic messaging.
     "fin_assist.cli.main -> fin_assist.hub.app",
     "fin_assist.cli.main -> fin_assist.hub.logging",
     "fin_assist.cli.main -> fin_assist.hub.pidfile",
