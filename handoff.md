@@ -65,18 +65,32 @@ The decision frame's working notes (§6 dated session logs for all five decision
 
 ## Next session
 
-**Strategic decision phase, issue-hygiene pass, *and* doc migration are all complete.** The remaining work is: (a) decide v0.1.1-vs-v0.1.3 starting point, (b) open the cohesive PR, (c) resume dev work.
+**Strategic decision phase, issue-hygiene pass, doc migration, *and* the v0.1.1-vs-v0.1.3 starting-point decision are all complete.** The next session opens the cohesive PR and starts dev work.
 
-1. **Decide v0.1.1-vs-v0.1.3 starting point.** With concrete milestone shapes now visible (v0.1.3 has a real anchor in #162; v0.1.1 has 7 foundation issues), the trade-off:
-   - **v0.1.1 path** — close out foundation hardening before opening a new protocol surface. Conservative; ships the existing recommended sequence (#125 + #123 → #85 → #156 → #124 → #135 → #89, then #135 dogfooding as exit gate). Probably ~half-day to a few days of work.
-   - **v0.1.3 path** — start #162 (ACP-server first cut) immediately. Aggressive; the Q5 dogfooding-as-verification argument applies now and every v0.1.1 day spent is a day Q4's protocol-peer claim stays unverified. But #162 is bigger than any single v0.1.1 issue and will benefit from foundation work landing first.
-   - Tentative lean (write-up only, not a decision): finish v0.1.1 first. The cost is small, the foundation issues feed into ACP-server's verification loop (per-subcommand approval #156 directly affects the permission round-trip scope), and v0.1.1's dogfooding agent (#135) is *the* baseline that ACP-server's dogfooding builds on.
+### Starting-point decision (resolved 2026-05-17, seventh session)
 
-2. **Open the cohesive PR.** Branch state: 7 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7 → hygiene-pass handoff → doc migration), all pushed. The PR is "platform stance + hygiene + migration" as one cohesive unit per the agreed plan.
+**Resolution: Path C — selective v0.1.1 prefix, then #162.** Ship the v0.1.1 work that's directly load-bearing for ACP-server's first cut, then jump to #162. Backfill the rest of v0.1.1 as it closes out (or migrate to v0.1.2 / v0.2 as appropriate).
 
-3. **Resume dev work.** Either v0.1.1 sequence or v0.1.3 — both resume the normal SDD → TDD loop in `AGENTS.md`.
+**Why Path C, not Path A or B:**
 
-**Optional follow-up (not load-bearing):** ~13 GitHub issue comments filed during the hygiene pass link to `docs/platform-stance.md`. The compressed stub resolves those links to a useful redirect (so the comments work without further action), but sweeping them to point at `decisions.md#platform-stance` / `architecture.md#inbound-protocol-surfaces` directly would be cleaner for navigation. Worth doing if it comes up naturally; not worth a dedicated session.
+- **Path A (finish v0.1.1 first)** burns ~week+ on issues that are only partially load-bearing for ACP-server. #85 (GitContext limits), #124 (`/connect`), and #89 (system prompts as markdown) are orthogonal to ACP-server. #135 (dogfooding) is sort of meta — ACP-server itself becomes a more honest dogfooding loop than `fin talk`. Every day of v0.1.1 is a day Q4's protocol-peer claim stays unverified.
+- **Path B (jump straight to #162)** builds ACP-server's permission round-trip on top of `ApprovalPolicy.evaluate()` that's only consulted at top-level mode for scoped CLI tools (#156 wires per-rule fnmatch gating), and ships ACP-server on top of a skill-loading path where `fin list skills` shows files that `fin do --skill` rejects (#125 + #123). That's shipping a protocol-peer that exposes the same incoherence to Zed. Likely surfaces more friction than it prevents.
+- **Path C respects the dependency graph, ignores the milestone number.** Versioning-narrative cost is small: v0.1.1 doesn't ship as a clean milestone until later. Material cost is zero — Git tags don't care about issue order within a milestone.
+
+### Execution order
+
+1. **#125 + #123** — one PR. SKILL.md runtime wiring + skill tracing share the same code paths. After this, `fin list skills` and `fin do --skill` agree on what skills exist, and skill loads emit `fin_assist.skill_load` spans. Load-bearing for ACP-server because the protocol-peer should not expose a skill loader inconsistency to Zed.
+2. **#156** — per-subcommand approval at executor for scoped CLI tools. `ApprovalPolicy.evaluate()` consulted at the backend approval gate, not just top-level mode. Load-bearing for ACP-server's `session/request_permission` round-trip; the same mechanism is exposed across the protocol boundary in #162.
+3. **#162 (ACP-server first cut)** — with both foundations in place. Issue body is well-specified: session lifecycle, streaming text, permission round-trip; Zed as test client. Plus #143 (dead-code removal — natural pairing) and minimal #137 (positional grammar + `entry_prompt` two-turn fix) per the repurposed v0.1.3 milestone description.
+4. **Backfill v0.1.1 closure** — #85, #124, #89, #135. Order is flexible; #135 (dogfooding) is best last so it validates the post-#162 state. #89 (system prompts as loadable markdown) is design-first; defer or split if the conversation hasn't happened.
+
+### Open the cohesive PR
+
+Branch state: 7 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7 → hygiene-pass handoff → doc migration), 6 pushed, last commit (`1483000` doc migration) local. Push, then open one PR — "platform stance + hygiene + migration" — per the agreed plan.
+
+### Optional follow-up (not load-bearing)
+
+~13 GitHub issue comments filed during the hygiene pass link to `docs/platform-stance.md`. The compressed stub resolves those links to a useful redirect (so the comments work without further action), but sweeping them to point at `decisions.md#platform-stance` / `architecture.md#inbound-protocol-surfaces` directly would be cleaner for navigation. Worth doing if it comes up naturally; not worth a dedicated session.
 
 **If continuing v0.1.1 implementation work:**
 
