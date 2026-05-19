@@ -15,6 +15,40 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-05-18 (eighth session — concept-inventory alignment surfaced as blocking for ACP):** The execution plan from the seventh session's resolution (Path C, dependency-driven interleaving starting with #125+#123) was paused mid-execution to dig into a broader architectural question raised during the design conversation for #125's agent-binding decision.
+
+The conversation generalized from "how do SKILL.md skills bind to agents?" to "what is the hub's concept inventory and what authoring patterns govern it?" Audit of current state revealed organic-growth misalignment: tools and models follow "infrastructure global, behavior per-agent," but skills, system prompts, MCP servers, and context providers don't — each grew its own pattern independently.
+
+**Destination state (resolved this session):**
+
+- Tool registry → **MCP server registry only**. Built-in tools deleted; skill-specific tools live as skill-bound `@tool`-decorated Python modules.
+- Context providers → **deleted**. ACP carries inbound editor context; MCP carries data-shaped context (resources). The `ContextProvider` abstraction shipped in PR #152 is reverted as part of this alignment.
+- Skills → **unified registry** merging project SKILL.md > user SKILL.md > top-level TOML > inline TOML. SKILL.md frontmatter declares `agents: [...]` binding.
+- MCP servers → **per-agent opt-in** (`mcp_servers = [...]` in `AgentConfig`), not global-implicit.
+- System prompts → **scope is open**. Default lean is inline; explicitly flagged for revisit per the eighth-session conversation. See open question 5 in `docs/concept-inventory.md`.
+- `config.toml` → **pure orchestration**; binding-only with the inline-shorthand convenience for skills.
+
+Canonical destination-state reference: `docs/concept-inventory.md` (new this session). Migration sketch lives below in Design Sketches.
+
+**Why this is blocking for ACP-server (#162):** the original v0.1.3 plan was to ship ACP on top of the current concept inventory. Concrete risk: ACP-server has to bridge between *"ACP context"* (carried inbound by the protocol) and *fin's* `ContextProvider` registry — gluing two abstractions instead of one. Deleting `ContextProvider` first turns ACP-server into "unpack ACP context into the agent's prompt envelope," which is the intended shape. Same logic applies to `ToolRegistry` aggregation: ACP-server wants to forward MCP tools cleanly, and the existing `ToolProvider` aggregation layer adds a translation seam that disappears once the registry is MCP-only.
+
+**Cost to name honestly:**
+
+- PR #152 shipped `ContextProviderRegistry` (Phase A of the now-rejected ToolProvider/ContextProvider sketch). That code gets deleted as part of this alignment. Roughly: `src/fin_assist/context/base.py` registry shape, `create_default_context_registry()`, all `ContextProvider` subclasses' registration glue, and the wiring through `cli/main.py` and `hub/factory.py`. The provider classes themselves (`FileFinder`, `GitContext`, `ShellHistory`, `Environment`) may survive as MCP-server-backed equivalents or as CLI-local conveniences — TBD during execution per open question 2 in `docs/concept-inventory.md`.
+- The "ToolProvider + ContextProvider Protocols" sketch below is now **superseded**. Retained in this file with a header marker so the old context isn't lost mid-conversation; deletes when the alignment ships.
+
+**Milestone shape (resolved end of eighth session):** new `v0.1.2 — Concept inventory alignment` milestone with three step-issues (one per migration step). Existing v0.1.2/v0.1.3 renumber to v0.1.3/v0.1.4. #125 migrates from v0.1.1 into the new v0.1.2 (folded into Step 2). #85 stays in v0.1.1 but rescopes (now about CLI `@git:` helper size limits, not `GitContext` provider). #123 stays in v0.1.1 (orthogonal to alignment). See Concept Inventory Migration sketch in Design Sketches for full milestone table + GitHub mutations checklist.
+
+**All five open questions resolved end of session.** Concrete decisions:
+
+1. **Built-in tool fate:** all 5 rehome as skill-bound `@tool`s (conservative path; nothing deleted).
+2. **`@-completion` backing:** thin CLI helpers fresh; `FileFinder`'s scan logic extracted to a CLI utility module.
+3. **Migration ordering:** context-deletion first → skills+tools as one big PR → MCP scoping tail.
+4. **MCP server scope:** lazy startup based on union of agent opt-ins.
+5. **System prompts:** deferred to #89 with two-option sketch in handoff.md.
+
+---
+
 **2026-05-17 (seventh session — doc migration complete + transport-precision fix):** Durable claims from `docs/platform-stance.md` migrated to the forever-docs. The platform-stance work is fully retired; the next session resumes dev work.
 
 - **→ `docs/architecture.md`** — *Deliverables: Hub vs Client* renamed to *Deliverables: Hub vs CLI* and rewritten ("hub as the deliverable; CLI is a dev tool"). New *Inbound protocol surfaces* subsection names A2A-server (existing), MCP-server (committed, unmilestoned), ACP-server (v0.1.3, see [#162](https://github.com/ColeB1722/fin-assist/issues/162)) plus the outbound surfaces. Vision intro replaced "CLI-first, TUI-later" with "Hub as the deliverable; clients are protocol peers." Design principle #5 rewritten. Non-goal added ("CLI that grows into an end-user conversational client"). CLI entry-points section gained a forward-pointing note that the verification-only contraction is in-flight via v0.1.3 + v0.2.1.
@@ -63,13 +97,39 @@ The decision frame's working notes (§6 dated session logs for all five decision
 - **CI required-check deadlock fixed.** `paths-ignore: [docs/**, *.md]` + ruleset-required `format`/`lint`/`test` was a deadlock for doc-only PRs (skipped workflow → required checks perpetually pending). Reworked `ci.yml` to drop `paths-ignore` *and* add a `ci-required` sentinel job (skipped = success). Ruleset updated to require only `ci-required`; future jobs added by listing them in `ci-required.needs`. Industry consensus (DevOps Directive Aug 2025) grounded the choice. Full write-up in `docs/decisions.md` § CI required checks.
 - **Process lesson:** PR #152 was merged before its handoff doc-update commit (`a925b5d`) was pushed. The "Pre-Merge Documentation Discipline" section in `AGENTS.md` was renamed and tightened in response — code, tests, and docs are one logical unit per commit.
 
-**Open in v0.1.1 (7 issues):** #85 (GitContext limits), #89 (system prompts — design-first), #123 (skill tracing wiring), #124 (`/connect`), #125 (SKILL.md runtime wiring), #135 (dogfooding repo agent), #156 (per-subcommand approval at executor).
+**Open in v0.1.1 (4 issues):** #85 (GitContext limits), #123 (skill tracing wiring), #125 (SKILL.md runtime wiring), #156 (per-subcommand approval at executor). #124 moved to v0.1.2 (pairs with README/demo), #135 moved to v0.1.3 (validates post-ACP state), #89 unmilestoned (design-first, needs conversation before commitment).
 
 ## Next session
 
-**Strategic decision phase, issue-hygiene pass, doc migration, *and* the v0.1.1-vs-v0.1.3 starting-point decision are all complete.** The next session opens the cohesive PR and starts dev work.
+**The alignment is fully scoped, decided, and committed to GitHub.** Next session opens the first migration PR cold.
 
-### Starting-point decision (resolved 2026-05-17, seventh session)
+### Ninth-session pickup (the next session)
+
+1. **Read `docs/concept-inventory.md`** — destination state. Five resolved questions in the "Resolved execution decisions" section.
+2. **Read the "Concept Inventory Migration" sketch** in Design Sketches below — code-level touchpoints for Step 1.
+3. **Open the v0.1.2 milestone on GitHub** — three step-issues filed; Step 1 is the starting point.
+4. **Start Step 1 (context provider deletion)** following SDD → TDD per AGENTS.md:
+   - Branch: `step-1-delete-context-providers` (or similar) off `main`
+   - Files to touch: enumerated in the migration sketch's Step 1 touchpoints table
+   - Tests first: `tests/test_cli/test_completions.py` + `tests/test_cli/test_file_scan.py` (new); delete `tests/test_context/`
+   - Implementation: extract `file_scan.py`, write helpers, delete `src/fin_assist/context/`, remove `ContextProvider` plumbing from backend + hub + CLI startup
+   - Pre-merge doc updates per AGENTS.md: update `docs/concept-inventory.md` "What this displaces" row for context providers (mark as done); update `handoff.md` (mark Step 1 shipped under Recent work); update v0.1.1 #85 issue scope; close v0.1.2 Step 1 issue when PR merges
+   - Run `just ci`; open PR to main
+5. **After Step 1 merges:** ACP-server work (#162 in v0.1.4) is unblocked; Step 2 (skills + tools) starts.
+
+### Carryover gotchas
+
+- **PR #152 reversion narrative.** When Step 1's PR description is written, be honest: `ContextProviderRegistry` shipped in #152 and is being reverted. Link to the platform-stance work that drove the reversal so future archaeology has the trail.
+- **`ContextSettings` fate.** Currently threaded through hub + CLI as a hub-level setting. After Step 1, the size limits live with CLI helpers. Decide during Step 1 whether `ContextSettings` survives as a CLI-local config or gets inlined into the helpers. Lean: keep as CLI-local (still tunable; just no longer plumbed through the hub).
+- **`#123` (skill tracing) timing.** Orthogonal to alignment; ships when convenient. Could be a small standalone PR before Step 1, between Step 1 and Step 2, or alongside Step 2. Don't gate Step 1 on it.
+
+### Earlier session context — seventh-session resolution (superseded by eighth session)
+
+The seventh session resolved a starting-point decision (Path C — selective v0.1.1 prefix, then #162) with a 7-step dependency-driven execution plan. **That plan is superseded** by the concept-inventory alignment surfaced in the eighth session. The v0.1.4 (renumbered from v0.1.3) ACP-server work (#162) is now gated on the alignment milestone (v0.1.2). The portions of the seventh-session plan that survive (#85 rescoped, #156, #123) stay in v0.1.1.
+
+The seventh-session reasoning chain is preserved in `git log` (see commit history around 2026-05-17) and `docs/decisions.md § Platform stance` for the architectural decisions that grounded it.
+
+### Original seventh-session execution plan (preserved for reference)
 
 **Resolution: Path C — selective v0.1.1 prefix, then #162.** Ship the v0.1.1 work that's directly load-bearing for ACP-server's first cut, then jump to #162. Backfill the rest of v0.1.1 as it closes out (or migrate to v0.1.2 / v0.2 as appropriate).
 
@@ -79,33 +139,45 @@ The decision frame's working notes (§6 dated session logs for all five decision
 - **Path B (jump straight to #162)** builds ACP-server's permission round-trip on top of `ApprovalPolicy.evaluate()` that's only consulted at top-level mode for scoped CLI tools (#156 wires per-rule fnmatch gating), and ships ACP-server on top of a skill-loading path where `fin list skills` shows files that `fin do --skill` rejects (#125 + #123). That's shipping a protocol-peer that exposes the same incoherence to Zed. Likely surfaces more friction than it prevents.
 - **Path C respects the dependency graph, ignores the milestone number.** Versioning-narrative cost is small: v0.1.1 doesn't ship as a clean milestone until later. Material cost is zero — Git tags don't care about issue order within a milestone.
 
-### Execution order
+### Execution plan (eighth session, 2026-05-18)
 
-1. **#125 + #123** — one PR. SKILL.md runtime wiring + skill tracing share the same code paths. After this, `fin list skills` and `fin do --skill` agree on what skills exist, and skill loads emit `fin_assist.skill_load` spans. Load-bearing for ACP-server because the protocol-peer should not expose a skill loader inconsistency to Zed.
-2. **#156** — per-subcommand approval at executor for scoped CLI tools. `ApprovalPolicy.evaluate()` consulted at the backend approval gate, not just top-level mode. Load-bearing for ACP-server's `session/request_permission` round-trip; the same mechanism is exposed across the protocol boundary in #162.
-3. **#162 (ACP-server first cut)** — with both foundations in place. Issue body is well-specified: session lifecycle, streaming text, permission round-trip; Zed as test client. Plus #143 (dead-code removal — natural pairing) and minimal #137 (positional grammar + `entry_prompt` two-turn fix) per the repurposed v0.1.3 milestone description.
-4. **Backfill v0.1.1 closure** — #85, #124, #89, #135. Order is flexible; #135 (dogfooding) is best last so it validates the post-#162 state. #89 (system prompts as loadable markdown) is design-first; defer or split if the conversation hasn't happened.
+**Branching strategy: dependency-driven interleaving, all on main.** Research confirms the dominant best practice for sequential dependencies across milestones: merge each PR to main independently in dependency order, rather than milestone-per-branch. Milestones are tracking labels, not branch names. Each PR targets main directly — no stacking, no feature flags. (Source: stacked-PR pattern, trunk-based development, "merge early / never branch from another feature" rule.)
 
-### Open the cohesive PR
+**Issue mutations (eighth session):**
 
-Branch state: 7 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7 → hygiene-pass handoff → doc migration), 6 pushed, last commit (`1483000` doc migration) local. Push, then open one PR — "platform stance + hygiene + migration" — per the agreed plan.
+- #124 → v0.1.2 (pairs with README/demo work)
+- #135 → v0.1.3 (validates post-ACP state, becomes v0.1.3 exit gate)
+- #89 → unmilestoned (design-first, needs conversation before commitment per AGENTS.md §Issues vs milestones)
 
-### Optional follow-up (not load-bearing)
+**Final milestone shape:**
 
-~13 GitHub issue comments filed during the hygiene pass link to `docs/platform-stance.md`. The compressed stub resolves those links to a useful redirect (so the comments work without further action), but sweeping them to point at `decisions.md#platform-stance` / `architecture.md#inbound-protocol-surfaces` directly would be cleaner for navigation. Worth doing if it comes up naturally; not worth a dedicated session.
+| Milestone | Open | Scope |
+|---|---|---|
+| v0.1.1 | 4 | #125 + #123 (skill coherence), #156 (approval gate), #85 (GitContext limits) |
+| v0.1.2 | 3 | #127 README + #158 MCP ship-along + #124 `/connect` |
+| v0.1.3 | 4 | #137 (positional grammar) → #143 (dead-code removal) → #162 (ACP-server) → #135 (dogfooding exit gate) |
+| v0.2 | 10 | Sub-agents + migrated #154 |
+| v0.2.1 | 6 | Tracing maturation + #92 |
+| v0.3 | 3 | Federation + repo-as-package |
 
-**If continuing v0.1.1 implementation work:**
+**Execution order (dependency graph):**
 
-**Recommended sequence:**
+1. **#125 + #123** — one PR to main. SKILL.md runtime wiring + skill tracing share the same code paths. Load-bearing: protocol-peer should not expose skill loader inconsistency.
+2. **#156** — one PR to main. Per-subcommand approval at executor gate. Load-bearing: ACP-server's `session/request_permission` uses the same mechanism.
+3. **#85** — one PR to main. GitContext size limits. Standalone, not load-bearing for ACP.
+4. **#137** — one PR to main. Positional grammar + entry_prompt two-turn fix. Changes how skill-load signals flow; must land before #143 deletes the old routes.
+5. **#143** — one PR to main. Dead-code removal of `/skills` + `/skills/invoke` REST routes. Natural consequence of #137; pairs with ACP wiring.
+6. **#162** — one PR to main. ACP-server first cut. Depends on #125/#123 and #156 being in place.
+7. **#135** — one PR to main. Dogfooding repo agent. v0.1.3 exit gate — validates post-ACP state.
 
-1. **#125 + #123 together** — same code paths (SkillManager + tracing). One PR delivers "SKILL.md actually loads at runtime *and* emits a span when it does." Highest-leverage v0.1.1 closer; pre-empts a v0.1.2-demo embarrassment where `fin list skills` shows files that don't actually load.
-2. **#85** — small, safe, closes the unbounded `git diff` output gap. Easy follow-up.
-3. **#156** — per-subcommand approval at executor. Code comments in `agents/tools.py:306, 334` already reference this issue as a known v0.1.x deferral; landing it removes the "see #156" annotations.
-4. **#124** — `/connect` UX. Probably best paired with v0.1.2 README/demo work since the demo benefits from a polished first-run flow.
-5. **#135 dogfooding** — v0.1.1 exit gate. Best done *after* the above so it actually validates the foundation it's meant to validate.
-6. **#89** — defer or split as a design-first issue. The "loadable markdown files" question is real but the design conversation hasn't happened yet; not a blocker for v0.1.1 ship.
+**Unscheduled:** #89 (system prompts — unmilestoned, design-first). Returns to a milestone when the design conversation resolves.
 
-**Sequence (post-hygiene-pass, live state):** v0.1.1 (7 issues left, ~half-day to a few days of work) → [v0.1.2](https://github.com/ColeB1722/fin-assist/milestone/5) (#127 README + #158 MCP ship-along) → [v0.1.3](https://github.com/ColeB1722/fin-assist/milestone/6) (#162 ACP-server first cut + #143 + minimal #137) → [v0.2](https://github.com/ColeB1722/fin-assist/milestone/2) (sub-agents, plus migrated #154). [v0.2.1](https://github.com/ColeB1722/fin-assist/milestone/3) is now tracing-only + #92 ship-along; v0.3 unchanged but undercommitted at the issue level; MCP-client expansion (#153 + #139 + #151) and MCP-server/ACP-client remain unscheduled per Q6c.
+**Open questions (now resolved):**
+
+- **#124 placement:** → v0.1.2. Pairs with demo/README work.
+- **#89 placement:** → unmilestoned. Design-first per its own issue body; AGENTS.md says issues are for conversation, milestones for committed work.
+- **#135 placement:** → v0.1.3. Validates post-ACP state; better exit gate than v0.1.1 entry gate.
+- **Interleaving vs sequential:** → dependency-driven interleaving, all on main. Milestone boundaries are tracking labels, not branch boundaries.
 
 **Earlier session context (kept for reference):**
 
@@ -115,6 +187,172 @@ Branch state: 7 commits ahead of `main` (seed → Q1–Q4 → Q5 → Q6 → Q7 �
 ---
 
 ## Design Sketches
+
+### Concept Inventory Migration (sketched 2026-05-18, resolved end of eighth session)
+
+**Status:** Decided. Destination state in `docs/concept-inventory.md`; all five open questions resolved; milestone shape decided. This sketch holds the in-flight migration plan (code touchpoints + step-by-step ordering) until the first migration PR lands.
+
+#### Resolved decisions (one-line summary; full reasoning in `docs/concept-inventory.md`)
+
+1. **Built-in tool fate.** All five (`read_file`, `git`, `gh`, `shell_history`, `run_shell`) rehome as skill-bound `@tool` functions. Conservative path — nothing deleted in this iteration.
+2. **`@-completion` backing.** Thin CLI-local helpers per `@-prefix`, written fresh. `FileFinder`'s gitignore+fuzzy-match+caching logic extracted to a CLI utility module (e.g. `cli/file_scan.py`) to preserve perf work. `ContextItem` dropped; helpers return plain strings.
+3. **Migration ordering.** Modified Option B: context-deletion first → skills+tools+built-ins as one big step → MCP scoping as small tail.
+4. **MCP server scope.** Hub starts MCP servers lazily based on the union of agents' `mcp_servers` opt-in lists. CLI itself doesn't consume MCP (no change from today).
+5. **System prompts.** Deferred to #89. Two-option sketch below for when #89 picks up.
+
+#### Migration steps — final ordering
+
+**Step 1: Context provider deletion + CLI `@-completion` rewrite.** (ACP-unblock; mechanically isolated; smallest blast radius.)
+
+- Delete `src/fin_assist/context/` package (`base.py`, `files.py`, `git.py`, `history.py`, `environment.py`) — entire module gone
+- Extract `FileFinder._scan_paths` + `_load_gitignore_spec` + `_matches_spec` into new `src/fin_assist/cli/file_scan.py` as plain functions (no class, no ABC)
+- Write thin CLI helpers in `src/fin_assist/cli/completions.py` (or fold into `cli/prompt.py`): one helper per `@-prefix`. `@file:` uses `file_scan`; `@git:diff` / `@git:status` / `@git:log` shell out fresh; `@history:` reads shell history fresh; `@env:VAR` reads `os.environ` fresh
+- Remove `ContextProvider` plumbing from `agents/backend.py` (tool delegation no longer needs it)
+- Remove `ContextProviderRegistry` from `cli/main.py` startup + `hub/factory.py`
+- Remove `context_settings: ContextSettings` parameter threading through the hub (the size limits now live with the CLI helpers, not in a hub abstraction) — *or* keep `ContextSettings` as a CLI-local config (TBD; lean: keep, it controls helper behavior)
+- Update tests: delete `tests/test_context/`, write fresh `tests/test_cli/test_completions.py` + `tests/test_cli/test_file_scan.py`
+- Absorbs #85 (GitContext size limits → CLI `@git:` helper size limits)
+
+**Step 2: Unified skill registry + skill-bound `@tool` + built-in rehoming.** (The big one; ships as one PR to keep the replacement story coherent.)
+
+- Add top-level `[skills.<name>]` parsing in `config/schema.py`
+- `SkillLoader.load_all()` merges sources: project SKILL.md > user SKILL.md > top-level TOML > inline TOML
+- SKILL.md frontmatter `agents: [...]` parsed for binding
+- `AgentSpec.get_skill_definitions()` consults the unified registry, no longer reads only from `AgentConfig.skills`
+- New `@tool` decorator in `src/fin_assist/agents/skill_tools.py` (location TBD; could be `skills/tools.py` for clearer scoping)
+- `SkillLoader` discovers skill-bound tools: for each skill, look for `tools.py` in the skill directory; import; collect `@tool`-decorated functions
+- `SkillManager.load_skill()` registers the skill's tools; `unload_skill()` removes them (skill manager already has lifecycle hooks for this)
+- Built-in rehoming: move each of the five built-ins from `agents/tools.py` `create_default_registry()` into a shipped-default skill:
+  - `read_file` → `core` skill (shipped default at `~/.config/fin/skills/core/`)
+  - `git` → `git` skill
+  - `gh` → `git` skill (gh subcommands are part of the git workflow) or separate `github` skill (TBD during execution)
+  - `shell_history` → `shell` skill
+  - `run_shell` → `shell` skill
+- Delete `create_default_registry()` builtin definitions; the function shrinks to MCP-only
+- Absorbs #125 (SKILL.md runtime wiring) — folded entirely
+- Includes #123 (skill tracing wiring) if scheduling allows; otherwise ships independently
+- `cli/main.py:_resolve_skill` reads from the unified registry
+
+**Step 3: Per-agent MCP opt-in with lazy startup.** (Small mechanical change.)
+
+- Add `mcp_servers: list[str] = []` field to `AgentConfig` in `config/schema.py`
+- At hub startup, compute `union = set().union(*[agent.mcp_servers for agent in agents])`; only spawn MCP server processes in `union`
+- `agents/backend.py` tool registration filters: an agent's tool set includes only MCP-tools from servers in its `mcp_servers` opt-in list
+- Tests: agent-with-no-mcp-servers gets no MCP tools; servers not in any opt-in are not spawned
+- Validation: warn at startup if `[mcp.servers.X]` is defined but no agent opts in (X is unused)
+
+#### Code touchpoints (updated for resolved ordering)
+
+Step 1 (Context deletion):
+
+| File | Change |
+|---|---|
+| `src/fin_assist/context/` (whole package) | DELETE |
+| `src/fin_assist/cli/file_scan.py` (new) | Extract `_scan_paths` / `_load_gitignore_spec` / `_matches_spec` as plain functions |
+| `src/fin_assist/cli/completions.py` (new, or extend `cli/prompt.py`) | Thin helpers per `@-prefix`, returning plain strings |
+| `src/fin_assist/agents/backend.py` | Remove `ContextProvider` plumbing |
+| `src/fin_assist/cli/main.py` | Remove `create_default_context_registry` calls + parameter threading |
+| `src/fin_assist/hub/factory.py` | Remove context registry from `create_hub_app` |
+| `tests/test_context/` | DELETE; replaced by `tests/test_cli/test_completions.py` + `tests/test_cli/test_file_scan.py` |
+
+Step 2 (Skills + tools):
+
+| File | Change |
+|---|---|
+| `src/fin_assist/config/schema.py` | Add top-level `[skills.X]` table parsing; `SkillConfig.agents` for SKILL.md binding |
+| `src/fin_assist/agents/skills.py` | `SkillLoader.load_all()` merges sources with precedence; SKILL.md frontmatter `agents:` parsed |
+| `src/fin_assist/agents/skill_tools.py` (new) | `@tool` decorator; skill-directory discovery |
+| `src/fin_assist/agents/spec.py` | `get_skill_definitions()` consults unified registry |
+| `src/fin_assist/agents/tools.py` | `create_default_registry()` shrinks to MCP-only; built-ins removed |
+| Shipped-default skills (new) | `core/` (read_file), `git/` (git, gh), `shell/` (shell_history, run_shell) |
+| `src/fin_assist/cli/main.py` | `_resolve_skill` reads unified registry; `fin list skills` reflects new sources |
+| `src/fin_assist/hub/factory.py` | `/skills` + `/skills/invoke` (existing) use unified registry |
+| `tests/test_agents/test_skills.py` | Merge + binding tests |
+
+Step 3 (MCP scoping):
+
+| File | Change |
+|---|---|
+| `src/fin_assist/config/schema.py` | `AgentConfig.mcp_servers: list[str] = []` |
+| `src/fin_assist/agents/backend.py` | Tool registration filters by agent's opt-in list |
+| `src/fin_assist/agents/mcp.py` | `MCPToolProvider` consumes union, not full set |
+| `src/fin_assist/cli/main.py` / `hub/factory.py` | Lazy startup logic; warn on unused server |
+| `tests/test_agents/test_mcp.py` | Opt-in filtering + lazy-startup tests |
+
+#### Milestone shape
+
+**Resolved:** new `v0.1.2 — Concept inventory alignment` milestone, three issues (one per step). Existing `v0.1.2` (visibility) renumbers to `v0.1.3`; existing `v0.1.3` (ACP-server) renumbers to `v0.1.4`. `#125` migrates from `v0.1.1` into the new `v0.1.2` (folded into Step 2 issue). `#123` stays in `v0.1.1` (orthogonal). `#85` stays in `v0.1.1` but is rescoped (now about CLI `@git:` helper size limits, not `GitContext`).
+
+Final milestone shape after mutations:
+
+| Milestone | Open | Scope |
+|---|---|---|
+| v0.1.1 | 3 | #85 (rescoped: CLI helper size limits), #123 (skill tracing), #156 (per-subcommand approval) |
+| **v0.1.2 (new)** | 3 | **Step 1 (context deletion), Step 2 (skills + tools), Step 3 (MCP opt-in)** |
+| v0.1.3 (was v0.1.2) | 3 | #127 README + #158 + #124 |
+| v0.1.4 (was v0.1.3) | 4 | #137, #143, #162 ACP-server (gated on v0.1.2 Step 1), #135 |
+| v0.2 | 10 | Sub-agents (unchanged) |
+| v0.2.1 | 6 | Tracing maturation (unchanged) |
+| v0.3 | 3 | Federation + repo-as-package (unchanged; v0.2/v0.3 milestone descriptions need updating to drop stale `FileToolProvider` references) |
+
+#### System prompts: two-option sketch (for when #89 picks up)
+
+The alignment work doesn't touch prompts. When #89 graduates, the two candidate shapes:
+
+**Option 1 — Two-shape pattern (mirrors skills):** `system_prompt` field accepts either inline string content OR a `@name` reference resolving through: `[prompts.<name>]` TOML → `.fin/prompts/<name>.md` → `~/.config/fin/prompts/<name>.md` → hardcoded Python registry as fallback. Same precedence rule as skills. No breaking changes; current configs that reference `"chain-of-thought"` etc. still work via the Python-registry fallback.
+
+**Option 2 — Delete the Python registry, require config:** Current `SHELL_INSTRUCTIONS` / `CHAIN_OF_THOUGHT_INSTRUCTIONS` / `TEST_INSTRUCTIONS` move to shipped-default markdown files in the repo (e.g. `fin_assist/data/prompts/chain-of-thought.md`). The hardcoded `SYSTEM_PROMPTS` dict goes away. Breaks current configs unless we ship the markdown files in the package data.
+
+**Default lean: Option 1.** Same reasoning as skills — additive change, no breakage, clear precedence.
+
+**Note for #89 author:** the destination state for prompts depends partly on whether skills end up having `prompt_template` references (see `SkillConfig.prompt_template` in `config/schema.py:205`). If skills carry prompt fragments, prompts and skills might want to share a lookup mechanism. Worth checking the skill code surface when picking up #89.
+
+#### Issues to update on GitHub (eighth-session mutations)
+
+Captured here as a checklist; mutations execute during the eighth-session end-of-session GitHub pass.
+
+- [ ] Comment on closed #129: its Phase A resolution shipped but is being reverted as part of this alignment; the new direction is in `docs/concept-inventory.md`
+- [ ] Rename existing v0.1.2 milestone → v0.1.3
+- [ ] Rename existing v0.1.3 milestone → v0.1.4
+- [ ] Create new v0.1.2 milestone "Concept inventory alignment" with description pointing at `docs/concept-inventory.md` + this migration sketch
+- [ ] File 3 step-issues under new v0.1.2 milestone (one per migration step)
+- [ ] Move #125 from v0.1.1 into new v0.1.2 (commenting that it's folded into Step 2 issue)
+- [ ] Rewrite v0.1.1 description: drop stale `ToolProvider` and `ContextProvider` architecture notes; remove #125 reference; rescope #85 mention
+- [ ] Rewrite v0.1.3 (was v0.1.2) milestone description: still visibility, but ships after alignment so demo shows new state
+- [ ] Rewrite v0.1.4 (was v0.1.3) milestone description: ACP-server now depends on v0.1.2 alignment Step 1
+- [ ] Rewrite v0.2 milestone description: drop "File-based tool discovery note" referencing `FileToolProvider`; point at `docs/concept-inventory.md` for the new direction (skill-bound `@tool`)
+- [ ] Update #85 issue body: scope shifts from `GitContext` provider size limits to CLI `@git:` helper size limits
+
+#### What this sketch is not
+
+- **Not a destination-state spec.** That's `docs/concept-inventory.md`.
+- **Not a code patch.** The touchpoints tables are for planning, not implementation.
+
+#### When this sketch retires
+
+This sketch retires when the first migration PR (Step 1: context deletion) opens. At that point: the durable destination state is in `docs/concept-inventory.md`; the milestone exists with three issues; the work is committed. This sketch deletes.
+
+---
+
+### ~~ToolProvider + ContextProvider Protocols: Unifying Provider Registration (sketched 2026-05-10, extended 2026-05-16)~~ — SUPERSEDED 2026-05-18
+
+**Status:** **Superseded by the Concept Inventory Migration sketch above (2026-05-18).** The architectural premise (unify tool sources under a `ToolProvider` aggregation; build a parallel `ContextProviderRegistry`) is no longer the direction. The destination state in `docs/concept-inventory.md` deletes both abstractions:
+
+- `ToolProvider` aggregation → `MCPServerRegistry` (MCP only); built-in tools rehome to skills via `@tool` decorator
+- `ContextProviderRegistry` → deleted entirely; ACP carries inbound context, MCP carries data-shaped context
+
+PR #152 shipped Phase A of this sketch's plan (`ContextProviderRegistry` in `src/fin_assist/context/base.py`). That code is being reverted as part of the alignment.
+
+This sketch is retained in this file with a strikethrough header so:
+
+1. Eighth-session readers see the pivot context inline (the "what changed and why" surfaces here)
+2. The industry-pattern research (Strands, mcpp, Pi, AgentPatterns.ai, InitRunner, R2R) isn't lost — some of it informed the eventual skill-bound `@tool` decision
+
+It deletes when the alignment migration ships. Until then, treat any reference to "ToolProvider protocol" or "ContextProviderRegistry" in milestone descriptions or issue bodies as stale; the canonical state is `docs/concept-inventory.md`.
+
+The original sketch body follows for reference.
+
+---
 
 ### Sub-agents as Context Compression (sketched 2026-05-09)
 
