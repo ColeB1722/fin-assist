@@ -11,6 +11,7 @@ Each context surface has **one job** and **one update cadence**. If you find you
 | `README.md` | Project soul — vision, getting started, architecture overview | Major shifts only | Forever |
 | `docs/*.md` | Architecture deep dives, design decision rationale | Per architectural change | Forever |
 | `AGENTS.md` (this file) | Development workflow, conventions, skill authoring | Per workflow change | Forever |
+| `docs/<decision>.md` (experimental) | In-progress strategic decisions — decision frames, open questions, working notes | Per question resolved | Deleted or compressed to a pointer once the decision lands |
 | `handoff.md` | In-flight design sketches + last 1–2 sessions of rolling context | Per session | Rolling — old content prunes |
 | GitHub **milestones** | Committed work that we know we want to ship | Per planning cycle | Until shipped |
 | GitHub **issues** | Ideas, bugs, refactor discussions, things-to-discuss | Per discussion | Until closed/promoted to milestone |

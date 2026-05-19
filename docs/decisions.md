@@ -21,9 +21,53 @@ The "why" behind structural choices. New decisions go here when they shape the p
 | Default agent shortcut | `fin do "prompt"` → `[general] default_agent` | Reduces friction for common case; agent arg optional |
 | Context for `do` / `talk` | `@`-completion in FinPrompt | Replaces `--file`/`--git-diff` CLI flags; context injected inline before sending |
 | Local-only server | Bind 127.0.0.1 | Personal tool, no network exposure; future opt-in |
-| CLI-first development | CLI before TUI | Faster iteration on hub + agent behavior; TUI becomes a client later |
+| CLI as dev tool, not product | CLI is hub system ops + verification-only dev REPL; end-user use happens through inbound protocol surfaces | Resolved 2026-05-17 (platform stance Q3). See [§Platform stance](#platform-stance) below |
 | UI metadata transport | Static in agent card, dynamic in artifacts | Agent card declares capabilities; per-response hints in artifact metadata |
 | Testing approach | Deep evals + CI | LLM-as-judge by default, pytest-compatible, post-merge regression checks |
+
+## Platform stance
+
+**Date:** resolved 2026-05-17 across five working sessions; the working-notes archaeology lives in git history (`git log -- docs/platform-stance.md`). The stance answers a cluster of strategic questions about fin-assist's relationship to the broader agent ecosystem — what protocol surfaces the hub exposes, what the CLI is, and how new inbound consumers relate to the hub architecturally.
+
+**Core stance:** *"I want a system that I can, with a reasonable amount of work, integrate with arbitrary systems in order to make that system agent-enhanced. […] I am more interested conceptually with fin as a platform, vs thinking through the user experience."*
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Integration direction (Q1) | Both inbound and outbound; no sequencing implied | Maps to protocol *roles* (inbound surfaces vs outbound surfaces), not competing product directions. Each surface grows when its motivating consumer or peer exists |
+| Protocol surfaces (Q2) | Three inbound (A2A-server existing; MCP-server + ACP-server committed), three outbound (MCP-client existing; A2A-client + ACP-client committed) | A2A, MCP, ACP are sibling protocols at different layers (agent ↔ agent, agent ↔ tool, client ↔ agent), not substitutes. ACP-client bundled with ACP-server architecturally because the protocol library and session model are shared |
+| CLI stance (Q3) | Dev tool only — hub system ops + verification-only dev REPL | Collapses the previous "two deliverables" framing in `architecture.md` into one deliverable (the hub) with multiple inbound integration surfaces. The CLI talks to the hub via plain HTTP for hub-level routes and via A2A for agent-traffic messaging in the dev REPL — for that A2A traffic specifically, it is one consumer among many. See *Deliverables: Hub vs CLI* in `architecture.md` |
+| Workspace split (Q4) | Deferred indefinitely; #132's BFF framing rejected on the merits | New inbound consumers are **protocol peers**, not BFF clients. The protocol *is* the boundary; no BFF layer is needed. Hub-CLI import-linter firewall stays in CI for hygiene; no forcing function expected to fire. See [#128](https://github.com/ColeB1722/fin-assist/issues/128) for the deferred workspace-split design thinking |
+| Surface sequencing (Q5) | ACP-server first ([#162](https://github.com/ColeB1722/fin-assist/issues/162)) | Dogfooding-as-platform-verification: the platform claim is unverified until a non-fin client drives the hub through a fixed external protocol contract. Minimal first cut: session lifecycle, streaming text, permission round-trip. See *Inbound protocol surfaces* in `architecture.md` |
+| Dev-REPL feature line (Q7) | **Verification-only** | The REPL exists to verify that an agent works after `/connect` + config. Anything beyond verification (conversation polish, session switching, multi-line edit, rich tool_result rendering, `$EDITOR` integration, splash screens) is out. Examples list below is the calibration |
+
+### Verification-only dev REPL — the feature line
+
+The principle is intentionally tight: the dev REPL is not a "small chat client" or a "developer-facing daily-driver." It is the smallest thing that lets a developer confirm a newly configured agent responds correctly and that a skill loads and dispatches. End-user conversational use happens through inbound protocol surfaces — MCP-host clients, ACP-speaking editors, future A2A clients.
+
+**What stays:**
+
+- **Hub system operations** — `fin start` / `stop` / `status` / `health`, `/connect`, `fin pkg` ([#146](https://github.com/ColeB1722/fin-assist/issues/146) when it ships).
+- **Basic A2A round-trip** — send a prompt, receive a response, see streaming tokens, see tool calls and approval prompts.
+- **`@`-completion** (`@file:` / `@git:` / `@history:` / `@env:`) — verifying a context-consuming agent *requires* injecting context. Removing completion would make some agents impossible to test from the dev REPL.
+- **Positional grammar `fin do <agent> <skill> [prompt]`** — verification is a per-skill operation. The two-turn `entry_prompt` semantics fix is a real bug regardless of CLI shape. (The rest of [#137](https://github.com/ColeB1722/fin-assist/issues/137) — `--workflow` mode flag, mode-resolution table, listing annotations — drops.)
+- **Core slash commands** — `/help`, `/exit`, `/connect`, `/agents`, `/skill:<name>`.
+- **Session persistence + `--resume`** — out-of-REPL operations only.
+
+**What's explicitly out (non-exhaustive):**
+
+| Out-of-scope | Issue | Why |
+|---|---|---|
+| Interactive REPL session switching | [#64](https://github.com/ColeB1722/fin-assist/issues/64) | Conversation management, not verification |
+| Splash screen / startup banner | [#67](https://github.com/ColeB1722/fin-assist/issues/67) (closed) | Product polish |
+| Richer tool_result rendering | [#91](https://github.com/ColeB1722/fin-assist/issues/91) (closed) | Visualization, not verification |
+| `fin do` vs `fin prompt` semantic split | [#94](https://github.com/ColeB1722/fin-assist/issues/94) (closed) | Verification needs one entry point |
+| `/spec` verbose agent ASCII art | [#95](https://github.com/ColeB1722/fin-assist/issues/95) (closed) | Product polish |
+| `$EDITOR` integration via `--edit` | [#97](https://github.com/ColeB1722/fin-assist/issues/97) (closed) | Multi-line composition is a real client's job |
+| Telegram / iOS / other bespoke clients | [#133](https://github.com/ColeB1722/fin-assist/issues/133), [#134](https://github.com/ColeB1722/fin-assist/issues/134) (both closed) | Moot under Q3 |
+
+**Drift-prevention contract:** When a new CLI feature is proposed, the principle ("REPL exists to verify an agent works after `/connect` + config; anything beyond verification is out") is the rule; the table above is the calibration. If a contributor argues their feature is verification-shape, the discussion happens against this concrete reference rather than vibes. The examples list is intentionally non-exhaustive — new exclusions are added as they come up.
+
+**ACP-server is the forcing function.** Once a real editor can drive fin, the exclusion list becomes obvious because the editor will do most of these things better. Q7 is a first cut; if ACP-server work ([#162](https://github.com/ColeB1722/fin-assist/issues/162)) reveals something the verification-only framing got wrong, file a follow-up against this resolution rather than re-litigating the principle wholesale.
 
 ## Windows
 

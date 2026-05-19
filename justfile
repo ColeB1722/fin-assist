@@ -26,8 +26,9 @@ lint:
 lint-fix:
     uv run ruff check --fix src/
 
-# Architecture firewall — enforces hub/cli import boundary.
-# See docs/architecture.md § "Deliverables: Hub vs Client".
+# Protocol-peer firewall — enforces hub/cli import boundary so the CLI is held
+# to the same contract as external protocol peers (ACP, MCP, A2A).
+# See docs/architecture.md § "Deliverables: Hub vs CLI" and pyproject.toml [tool.importlinter].
 lint-imports:
     uv run lint-imports
 
