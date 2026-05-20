@@ -493,6 +493,14 @@ class Executor(AgentExecutor):
                 ctx.tracer.end_step_span()
             case "deferred":
                 ctx.tracer.emit_approval_request_span(event)
+                deferred_call = event.content
+                if isinstance(deferred_call, DeferredToolCall):
+                    logger.info(
+                        "tool deferred for approval tool=%s tool_call_id=%s args=%s",
+                        event.tool_name,
+                        deferred_call.tool_call_id,
+                        deferred_call.args,
+                    )
                 await self._emit_deferred_artifact(event, ctx)
 
     async def _emit_artifact(

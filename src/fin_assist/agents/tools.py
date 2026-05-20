@@ -13,8 +13,11 @@ tools the agent needs.
 
 **Scoped CLI tools** (``git``, ``gh``) support per-subcommand approval
 via ``ApprovalPolicy.rules`` — each rule is an fnmatch pattern matched
-against the tool's args string.  This enables e.g. ``git diff`` → never
-require approval while ``git push`` → always requires approval.
+against the tool's args string.  At call time, the backend wrapper
+evaluates ``policy.evaluate(args)`` and raises ``ApprovalRequired`` for
+``mode="always"`` matches, causing pydantic-ai to defer only that call.
+This enables e.g. ``git diff`` → execute immediately while ``git push``
+→ defer for human approval.
 
 MCP integration (#84): A future ``MCPToolset`` would wrap an MCP client
 and register discovered tools into the ``ToolRegistry`` with appropriate
@@ -301,10 +304,7 @@ class BuiltinToolProvider:
                 },
                 approval_policy=ApprovalPolicy(
                     mode="always",
-                    description=(
-                        "Git commands require approval "
-                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
-                    ),
+                    description="Git commands require approval",
                 ),
             ),
             ToolDefinition(
@@ -329,10 +329,7 @@ class BuiltinToolProvider:
                 },
                 approval_policy=ApprovalPolicy(
                     mode="always",
-                    description=(
-                        "GitHub CLI commands require approval "
-                        "(per-subcommand approval via ApprovalPolicy.rules — see #156)"
-                    ),
+                    description="GitHub CLI commands require approval",
                 ),
             ),
             ToolDefinition(

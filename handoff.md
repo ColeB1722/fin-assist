@@ -99,19 +99,15 @@ The decision frame's working notes (§6 dated session logs for all five decision
 
 **Open in v0.1.1 (4 issues):** #85 (GitContext limits), #123 (skill tracing wiring), #125 (SKILL.md runtime wiring), #156 (per-subcommand approval at executor). #124 moved to v0.1.2 (pairs with README/demo), #135 moved to v0.1.3 (validates post-ACP state), #89 unmilestoned (design-first, needs conversation before commitment).
 
+**2026-05-19 (ninth session — PR 1 #156 implemented):** Per-subcommand approval at executor level is implemented on branch `feature/per-subcommand-approval`. Key change: `_wrap_with_approval` in `backend.py` evaluates `ApprovalPolicy.evaluate(args)` at call time and raises `ApprovalRequired` for `mode="always"` matches. Tools are no longer registered with `requires_approval=True`; instead the callable itself raises `ApprovalRequired` and pydantic-ai defers only that call. This enables `git diff` → execute immediately, `git push` → defer, within the same tool.
+
+Changes: `backend.py` (new `_wrap_with_approval` + `_build_args_string`, replaced `_policy_requires_approval` → `_tool_has_approval_policy`, updated `_get_approval_description` to accept `call_args`), `tools.py` (updated docstring + descriptions), `executor.py` (structured logging on deferred events), 254 lines of new tests. All `just ci` checks pass.
+
+Next: PR 2 (`step-1-delete-context-providers`, #165 + closes #85) — the ninth-session execution plan in Design Sketches has full TDD order.
+
 ## Next session
 
-**The alignment is fully scoped, decided, and committed to GitHub.** Next session opens the first migration PR cold.
-
-### Ninth-session pickup (the next session)
-
-1. **Read `docs/concept-inventory.md`** — destination state. Five resolved questions in the "Resolved execution decisions" section.
-2. **Read the "Concept Inventory Migration" sketch** in Design Sketches below — code-level touchpoints for Step 1.
-3. **Open the v0.1.2 milestone on GitHub** — three step-issues filed; Step 1 is the starting point.
-4. **Start Step 1 (context provider deletion)** following SDD → TDD per AGENTS.md:
-   - Branch: `step-1-delete-context-providers` (or similar) off `main`
-   - Files to touch: enumerated in the migration sketch's Step 1 touchpoints table
-   - Tests first: `tests/test_cli/test_completions.py` + `tests/test_cli/test_file_scan.py` (new); delete `tests/test_context/`
+**Start PR 2 (#165) implementation** — delete `context/` package, extract to `cli/file_scan.py` + `cli/completions.py`, rewrite `resolve_at_references`. Full plan in the "Ninth-session execution plan" sketch below.
    - Implementation: extract `file_scan.py`, write helpers, delete `src/fin_assist/context/`, remove `ContextProvider` plumbing from backend + hub + CLI startup
    - Pre-merge doc updates per AGENTS.md: update `docs/concept-inventory.md` "What this displaces" row for context providers (mark as done); update `handoff.md` (mark Step 1 shipped under Recent work); update v0.1.1 #85 issue scope; close v0.1.2 Step 1 issue when PR merges
    - Run `just ci`; open PR to main

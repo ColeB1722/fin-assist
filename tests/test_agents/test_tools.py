@@ -10,9 +10,12 @@ import pytest
 from fin_assist.agents.tools import (
     ApprovalDecision,
     ApprovalPolicy,
+    ApprovalRule,
     DeferredToolCall,
     ToolDefinition,
     ToolRegistry,
+    _make_scoped_cli,
+    _run_shell,
     create_default_registry,
 )
 
@@ -550,3 +553,79 @@ class TestCreateDefaultRegistryContextSettings:
     def test_none_context_settings_works(self):
         registry = create_default_registry(context_settings=None)
         assert registry is not None
+
+
+class TestScopedCliApproval:
+    @pytest.mark.asyncio
+    async def test_raises_approval_required_for_always_args(self) -> None:
+        from pydantic_ai import ApprovalRequired
+
+        from fin_assist.agents.backend import _wrap_with_approval
+
+        policy = ApprovalPolicy(
+            mode="always",
+            default="always",
+            rules=[
+                ApprovalRule(pattern="git diff*", mode="never"),
+                ApprovalRule(pattern="git status*", mode="never"),
+            ],
+        )
+        base_callable = _make_scoped_cli("git")
+        wrapped = _wrap_with_approval(base_callable, policy, tool_name="git")
+        with pytest.raises(ApprovalRequired):
+            await wrapped(args="push origin main")
+
+    @pytest.mark.asyncio
+    async def test_executes_immediately_for_never_args(self) -> None:
+        from fin_assist.agents.backend import _wrap_with_approval
+
+        policy = ApprovalPolicy(
+            mode="always",
+            default="always",
+            rules=[
+                ApprovalRule(pattern="git diff*", mode="never"),
+                ApprovalRule(pattern="git status*", mode="never"),
+            ],
+        )
+        proc = _FakeProc(stdout=b"M file.py\n")
+        with patch("asyncio.create_subprocess_shell", return_value=proc):
+            base_callable = _make_scoped_cli("git")
+            wrapped = _wrap_with_approval(base_callable, policy, tool_name="git")
+            result = await wrapped(args="diff HEAD~1")
+        assert "M file.py" in result
+
+    @pytest.mark.asyncio
+    async def test_approval_required_carries_metadata(self) -> None:
+        from pydantic_ai import ApprovalRequired
+
+        from fin_assist.agents.backend import _wrap_with_approval
+
+        policy = ApprovalPolicy(
+            mode="always",
+            default="always",
+            description="Git commands require approval",
+            rules=[
+                ApprovalRule(pattern="git diff*", mode="never"),
+            ],
+        )
+        base_callable = _make_scoped_cli("git")
+        wrapped = _wrap_with_approval(base_callable, policy, tool_name="git")
+        with pytest.raises(ApprovalRequired) as exc_info:
+            await wrapped(args="push origin main")
+        assert exc_info.value.metadata is not None
+        assert "git push origin main" in exc_info.value.metadata.get("args", "")
+
+    @pytest.mark.asyncio
+    async def test_run_shell_approval_with_command_param(self) -> None:
+        from pydantic_ai import ApprovalRequired
+
+        from fin_assist.agents.backend import _wrap_with_approval
+
+        policy = ApprovalPolicy(
+            mode="always",
+            default="always",
+            description="Shell commands require approval",
+        )
+        wrapped = _wrap_with_approval(_run_shell, policy, tool_name="run_shell")
+        with pytest.raises(ApprovalRequired):
+            await wrapped(command="rm -rf /")
