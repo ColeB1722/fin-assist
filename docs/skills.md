@@ -97,7 +97,9 @@ Each tool has exactly one policy definition — no merging, no conflicts.
 
 Rules use fnmatch patterns matched against the tool's args string. `ApprovalPolicy.evaluate(args)` checks rules in first-match order; if no rule matches, `default` applies.
 
-This is conservative in v0.1: if `default="always"` or any rule has `mode="always"`, the tool gets `requires_approval=True` at registration time. Fine-grained per-subcommand evaluation at the executor level is planned for v0.1.1.
+Per-subcommand approval is evaluated at call time: the backend wraps each tool callable with `_wrap_with_approval` in `_build_pydantic_agent()`, which calls `policy.evaluate(args)` before execution. When `evaluate()` returns `mode="always"`, the wrapper raises `ApprovalRequired` (pydantic-ai's native mechanism) and the framework defers only that specific call. When `mode="never"`, the tool executes immediately. This enables e.g. `git diff` → execute immediately while `git push` → defer for human approval, within the same tool.
+
+`DeferredToolRequests` is included in the agent's `output_type` when any tool has an approval policy that can produce `mode="always"` (detected by `_tool_has_approval_policy`).
 
 ## skills/invoke endpoint
 
@@ -203,7 +205,7 @@ CLI usage:
 |---------|---------|
 | v0.1.1 | MCP tool source — `MCPToolset` registers discovered tools into `ToolRegistry` |
 | v0.1.1 | Pluggable base system prompts — user-overridable prompt templates, not hardcoded Python constants |
-| v0.1.1 | Per-subcommand approval evaluation at executor level |
+| v0.1.1 | ~~Per-subcommand approval evaluation at executor level~~ (shipped #156) |
 | v0.1.1 | Registry consistency + policy resolution audit |
 | v0.2 | Skill composability (skills invoking skills) + agent-to-agent orchestration |
 | v0.3 | Eval harness |

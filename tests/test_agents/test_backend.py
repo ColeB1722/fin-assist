@@ -721,6 +721,94 @@ class TestPydanticAIBackendBuildPydanticAgent:
         agent = backend._build_pydantic_agent()
         assert agent.output_type is str
 
+    def test_tool_with_approval_policy_gets_deferred_output_type_without_requires_approval(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from pydantic_ai import DeferredToolRequests
+
+        from fin_assist.agents.tools import (
+            ApprovalPolicy,
+            ApprovalRule,
+            ToolDefinition,
+            ToolRegistry,
+        )
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    default="always",
+                    rules=[ApprovalRule(pattern="git diff*", mode="never")],
+                ),
+            )
+        )
+        spec = AgentSpec(
+            name="git",
+            agent_config=AgentConfig(
+                description="Git agent",
+                system_prompt="git",
+                output_type="text",
+                base_tools=["git"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        assert isinstance(agent.output_type, list)
+        assert DeferredToolRequests in agent.output_type
+
+    def test_tool_with_never_only_policy_has_no_deferred_output_type(
+        self, mock_config, mock_credentials
+    ) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ToolDefinition, ToolRegistry
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="safe_tool",
+                description="Always safe",
+                callable=lambda: "ok",
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(mode="never"),
+            )
+        )
+        spec = AgentSpec(
+            name="test",
+            agent_config=AgentConfig(
+                description="Test agent",
+                system_prompt="test",
+                output_type="text",
+                base_tools=["safe_tool"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        agent = backend._build_pydantic_agent()
+        assert agent.output_type is str
+
+    def test_tool_has_approval_policy_static(self) -> None:
+        from fin_assist.agents.tools import ApprovalPolicy, ApprovalRule
+
+        policy_with_rules = ApprovalPolicy(
+            mode="always",
+            default="always",
+            rules=[ApprovalRule(pattern="git diff*", mode="never")],
+        )
+        assert PydanticAIBackend._tool_has_approval_policy(policy_with_rules) is True
+
+        policy_never = ApprovalPolicy(mode="never")
+        assert PydanticAIBackend._tool_has_approval_policy(policy_never) is False
+
+        policy_always_no_rules = ApprovalPolicy(mode="always")
+        assert PydanticAIBackend._tool_has_approval_policy(policy_always_no_rules) is True
+
     def test_skill_tools_not_registered_when_not_loaded(
         self, mock_config, mock_credentials
     ) -> None:
@@ -1014,6 +1102,93 @@ class TestPydanticAIBackendGetApprovalReason:
         )
         backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
         assert backend._get_approval_description("read_file") is None
+
+    def test_returns_rule_description_when_args_match(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import (
+            ApprovalPolicy,
+            ApprovalRule,
+            ToolDefinition,
+            ToolRegistry,
+        )
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    description="Git commands require approval",
+                    rules=[
+                        ApprovalRule(
+                            pattern="git push*", mode="always", description="Push needs approval"
+                        ),
+                    ],
+                ),
+            )
+        )
+        spec = AgentSpec(
+            name="git",
+            agent_config=AgentConfig(
+                description="Git agent",
+                system_prompt="git",
+                output_type="text",
+                base_tools=["git"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert (
+            backend._get_approval_description("git", {"args": "push origin main"})
+            == "Push needs approval"
+        )
+        assert (
+            backend._get_approval_description("git", {"args": "diff HEAD~1"})
+            == "Git commands require approval"
+        )
+
+    def test_without_args_returns_policy_description(self, mock_config, mock_credentials) -> None:
+        from fin_assist.agents.tools import (
+            ApprovalPolicy,
+            ApprovalRule,
+            ToolDefinition,
+            ToolRegistry,
+        )
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="git",
+                description="Git",
+                callable=lambda args: args,
+                parameters_schema={"type": "object", "properties": {}},
+                approval_policy=ApprovalPolicy(
+                    mode="always",
+                    description="Git commands require approval",
+                    rules=[
+                        ApprovalRule(
+                            pattern="git push*", mode="always", description="Push needs approval"
+                        ),
+                    ],
+                ),
+            )
+        )
+        spec = AgentSpec(
+            name="git",
+            agent_config=AgentConfig(
+                description="Git agent",
+                system_prompt="git",
+                output_type="text",
+                base_tools=["git"],
+            ),
+            config=mock_config,
+            credentials=mock_credentials,
+        )
+        backend = PydanticAIBackend(agent_spec=spec, tool_registry=registry)
+        assert backend._get_approval_description("git") == "Git commands require approval"
 
 
 # -- PydanticAIBackend._build_model -------------------------------------------

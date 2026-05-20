@@ -62,6 +62,66 @@ from fin_assist.agents.serialization import unwrap_payload, wrap_payload
 from fin_assist.agents.step import StepEvent
 from fin_assist.agents.tools import ApprovalDecision, ApprovalPolicy, DeferredToolCall
 
+
+def _wrap_with_approval(callable_fn: Any, policy: ApprovalPolicy, *, tool_name: str = "") -> Any:
+    """Wrap a tool callable to evaluate approval policy before execution.
+
+    If ``policy.evaluate(args)`` returns ``"always"``, raises
+    ``ApprovalRequired`` (pydantic-ai defers the call).  Otherwise,
+    delegates to the original callable.
+
+    The ``args`` string for evaluation is constructed from the
+    callable's keyword arguments: for scoped CLI tools (``git``, ``gh``),
+    the ``args`` parameter is prefixed with ``tool_name`` to match
+    patterns like ``"git diff*"``.
+    """
+    import inspect
+
+    from pydantic_ai import ApprovalRequired
+
+    if inspect.iscoroutinefunction(callable_fn):
+
+        async def _async_wrapper(**kwargs: Any) -> str:
+            args_str = _build_args_string(kwargs, tool_name)
+            mode, _ = policy.evaluate(args_str)
+            if mode == "always":
+                raise ApprovalRequired(metadata={"tool_name": tool_name, "args": args_str})
+            return await callable_fn(**kwargs)
+
+        _async_wrapper.__name__ = getattr(callable_fn, "__name__", "_wrapped")
+        return _async_wrapper
+    else:
+
+        def _sync_wrapper(**kwargs: Any) -> str:
+            args_str = _build_args_string(kwargs, tool_name)
+            mode, _ = policy.evaluate(args_str)
+            if mode == "always":
+                raise ApprovalRequired(metadata={"tool_name": tool_name, "args": args_str})
+            return callable_fn(**kwargs)
+
+        _sync_wrapper.__name__ = getattr(callable_fn, "__name__", "_wrapped")
+        return _sync_wrapper
+
+
+def _build_args_string(kwargs: dict[str, Any], tool_name: str) -> str:
+    """Build the args string for approval policy evaluation.
+
+    For scoped CLI tools (git, gh), the ``args`` param contains
+    the subcommand — we prefix it with ``tool_name`` to match
+    patterns like ``"git diff*"``.  For run_shell, the ``command``
+    param is the full command.  For other tools, we join all param
+    values.
+    """
+    if "args" in kwargs:
+        val = str(kwargs["args"])
+        if tool_name and not val.startswith(f"{tool_name} "):
+            return f"{tool_name} {val}"
+        return val
+    if "command" in kwargs:
+        return str(kwargs["command"])
+    return " ".join(str(v) for v in kwargs.values() if v is not None)
+
+
 _message_ta = TypeAdapter(list[ModelMessage])
 
 
@@ -193,7 +253,9 @@ class _PydanticAIStepHandle:
                             tool_name=call.tool_name,
                             tool_call_id=call.tool_call_id,
                             args=call.args_as_dict(),
-                            description=self._backend._get_approval_description(call.tool_name),
+                            description=self._backend._get_approval_description(
+                                call.tool_name, call.args_as_dict()
+                            ),
                         ),
                         step=step,
                         tool_name=call.tool_name,
@@ -458,24 +520,18 @@ class PydanticAIBackend:
             tool_defs = self._tool_registry.get_for_agent(sorted(active_tool_names))
             for td in tool_defs:
                 effective_policy = self._get_agent_tool_policy(td.name) or td.approval_policy
-                needs_approval = effective_policy is not None and self._policy_requires_approval(
+                if effective_policy is not None and self._tool_has_approval_policy(
                     effective_policy
-                )
-                if needs_approval:
+                ):
                     has_approval_tools = True
-                    pydantic_tools.append(
-                        Tool(
-                            td.callable,
-                            takes_ctx=False,
-                            name=td.name,
-                            description=td.description,
-                            requires_approval=True,
-                        )
-                    )
-                else:
-                    pydantic_tools.append(
-                        Tool(td.callable, takes_ctx=False, name=td.name, description=td.description)
-                    )
+                callable_fn = (
+                    _wrap_with_approval(td.callable, effective_policy, tool_name=td.name)
+                    if effective_policy is not None
+                    else td.callable
+                )
+                pydantic_tools.append(
+                    Tool(callable_fn, takes_ctx=False, name=td.name, description=td.description)
+                )
 
         if skill_mgr is not None and skill_mgr.available_skills():
             pydantic_tools.append(
@@ -531,14 +587,13 @@ class PydanticAIBackend:
         )
 
     @staticmethod
-    def _policy_requires_approval(policy: ApprovalPolicy) -> bool:
-        """Check if an approval policy requires approval for any invocation.
+    def _tool_has_approval_policy(policy: ApprovalPolicy) -> bool:
+        """Check if an approval policy can ever require approval.
 
         Returns True if the default mode is "always" or any rule has mode
-        "always".  This is conservative — some subcommands may not need
-        approval, but pydantic-ai sets approval at registration time, not
-        at call time.  Fine-grained per-subcommand evaluation will be
-        integrated at the executor level in a future version.
+        "always".  When True, the tool's callable may raise
+        ``ApprovalRequired`` at call time and the agent needs
+        ``DeferredToolRequests`` in its output_type.
         """
         if policy.default == "always":
             return True
@@ -578,15 +633,27 @@ class PydanticAIBackend:
 
         return FallbackModel(*models)
 
-    def _get_approval_description(self, tool_name: str) -> str | None:
+    def _get_approval_description(
+        self, tool_name: str, call_args: dict[str, Any] | None = None
+    ) -> str | None:
         agent_policy = self._get_agent_tool_policy(tool_name)
         if agent_policy is not None:
+            if call_args is not None:
+                args_str = _build_args_string(call_args, tool_name)
+                _, desc = agent_policy.evaluate(args_str)
+                if desc is not None:
+                    return desc
             return agent_policy.description
         if self._tool_registry is None:
             return None
         td = self._tool_registry.get(tool_name)
         if td is None or td.approval_policy is None:
             return None
+        if call_args is not None:
+            args_str = _build_args_string(call_args, tool_name)
+            _, desc = td.approval_policy.evaluate(args_str)
+            if desc is not None:
+                return desc
         return td.approval_policy.description
 
     def build_deferred_results(self, decisions: list[ApprovalDecision]) -> Any:
