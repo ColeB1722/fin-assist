@@ -76,30 +76,31 @@ def _wrap_with_approval(callable_fn: Any, policy: ApprovalPolicy, *, tool_name: 
     patterns like ``"git diff*"``.
     """
     import inspect
+    from functools import wraps
 
     from pydantic_ai import ApprovalRequired
 
     if inspect.iscoroutinefunction(callable_fn):
 
-        async def _async_wrapper(**kwargs: Any) -> str:
+        @wraps(callable_fn)
+        async def _async_wrapper(**kwargs: Any):
             args_str = _build_args_string(kwargs, tool_name)
             mode, _ = policy.evaluate(args_str)
             if mode == "always":
                 raise ApprovalRequired(metadata={"tool_name": tool_name, "args": args_str})
             return await callable_fn(**kwargs)
 
-        _async_wrapper.__name__ = getattr(callable_fn, "__name__", "_wrapped")
         return _async_wrapper
     else:
 
-        def _sync_wrapper(**kwargs: Any) -> str:
+        @wraps(callable_fn)
+        def _sync_wrapper(**kwargs: Any):
             args_str = _build_args_string(kwargs, tool_name)
             mode, _ = policy.evaluate(args_str)
             if mode == "always":
                 raise ApprovalRequired(metadata={"tool_name": tool_name, "args": args_str})
             return callable_fn(**kwargs)
 
-        _sync_wrapper.__name__ = getattr(callable_fn, "__name__", "_wrapped")
         return _sync_wrapper
 
 
