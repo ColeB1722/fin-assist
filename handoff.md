@@ -15,6 +15,8 @@ In-flight design sketches and rolling session context. See `AGENTS.md` for what 
 
 ## Current state
 
+**2026-06-02 (off-session — fin × CC:T brainstorm):** Captured the discussion from this session about potential fin × ComputerCraft/CC:Tweaked integration. Hunch validated: CC:T speaks HTTP + WebSockets natively, fin's hub (FastAPI on `127.0.0.1:4096`) is structurally a C2 server, and the integration is natural. Full brainstorm — CC:T capability surface, bridge architecture, tiered project ideas (T1 weekend, T2 multiplayer, T3 ambitious), constraints, and code-surface pointers — preserved in [#169](https://github.com/ColeB1722/fin-assist/issues/169). **Not committed to a milestone**; this entry is the resumability hook. A future session reads handoff.md → follows the link → has full context and a concrete "Suggested first step."
+
 **2026-05-18 (eighth session — concept-inventory alignment surfaced as blocking for ACP):** The execution plan from the seventh session's resolution (Path C, dependency-driven interleaving starting with #125+#123) was paused mid-execution to dig into a broader architectural question raised during the design conversation for #125's agent-binding decision.
 
 The conversation generalized from "how do SKILL.md skills bind to agents?" to "what is the hub's concept inventory and what authoring patterns govern it?" Audit of current state revealed organic-growth misalignment: tools and models follow "infrastructure global, behavior per-agent," but skills, system prompts, MCP servers, and context providers don't — each grew its own pattern independently.
@@ -100,6 +102,8 @@ The decision frame's working notes (§6 dated session logs for all five decision
 **Open in v0.1.1 (4 issues):** #85 (GitContext limits), #123 (skill tracing wiring), #125 (SKILL.md runtime wiring), #156 (per-subcommand approval at executor). #124 moved to v0.1.2 (pairs with README/demo), #135 moved to v0.1.3 (validates post-ACP state), #89 unmilestoned (design-first, needs conversation before commitment).
 
 ## Next session
+
+> **Side thread pending resumption (optional):** the fin × ComputerCraft/CC:T brainstorm from 2026-06-02 is captured in [#169](https://github.com/ColeB1722/fin-assist/issues/169). Resume by reading the issue top-to-bottom — the "Suggested first step" section has the concrete next move. Orthogonal to the v0.1.2 alignment work below.
 
 **The alignment is fully scoped, decided, and committed to GitHub.** Next session opens the first migration PR cold.
 
